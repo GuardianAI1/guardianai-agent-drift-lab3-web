@@ -15,6 +15,7 @@ const FIXED_TEMPERATURE = 0;
 const FIXED_RETRIES = 0;
 const DEFAULT_PROVIDER: APIProvider = "together";
 const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
+const DEFAULT_PROFILE: ExperimentProfile = "drift_amplifying_loop";
 const DEFAULT_TURNS = 200;
 const DEFAULT_MAX_TOKENS = 96;
 const DEFAULT_INTER_TURN_DELAY_MS = 1200;
@@ -2367,8 +2368,8 @@ export default function HomePage() {
   const [apiKey, setApiKey] = useState<string>("");
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
-  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("drift_amplifying_loop");
-  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("drift_amplifying_loop");
+  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
+  const [viewProfile, setViewProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
@@ -2881,6 +2882,8 @@ export default function HomePage() {
 
   function resetAll() {
     stopRun();
+    setSelectedProfile(DEFAULT_PROFILE);
+    setViewProfile(DEFAULT_PROFILE);
     setResults(emptyResults());
     setActiveTrace(null);
     setErrorMessage(null);
