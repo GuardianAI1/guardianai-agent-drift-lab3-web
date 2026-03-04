@@ -889,16 +889,19 @@ function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): st
 function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInput: string): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
-    "You are a deterministic state generator.",
-    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}.`,
-    "Rule:",
-    "- Increment step by 1.",
+    "You are Agent A (Template-Locked Mutator).",
+    "This is a byte-preserving mutation task, not semantic regeneration.",
+    "Input is previous JSON state bytes (verbatim).",
+    "Rules:",
+    '- Increment only the number in the "step" field by +1.',
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     `- Keep "meta" fixed to "${CONTRACT_META_LITERAL}".`,
-    "- Preserve all other fields exactly.",
-    "- Output the new state as JSON only.",
-    "Important: preserve the formatting style of the previous message.",
-    "Try to keep the style consistent with the previous message.",
+    '- Modify ONLY the digits for "step".',
+    "- Preserve every other character exactly (whitespace, indentation, commas, quotes, and line breaks).",
+    "- Do not normalize or rewrite structure.",
+    "- Do not reorder keys.",
+    "- Do not reformat JSON.",
+    "Return the modified text as JSON only.",
     "Output boundary (strict): first character must be '{' and last character must be '}'.",
     "Return exactly one JSON object.",
     "Do not wrap output in markdown code fences.",
@@ -914,21 +917,22 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
 function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput: string): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
-    "You are a JSON formatting assistant.",
-    "Rewrite the JSON while keeping the data identical.",
+    "You are Agent B (Controlled Formatting Mutator).",
+    "Mutate formatting while keeping the data identical.",
     "Rules:",
     "- Output MUST be only valid JSON.",
     '- First character must be "{".',
     '- Last character must be "}".',
     "- No text before or after the JSON object.",
     "- Do not add prose or comments.",
-    "- Do NOT change the numeric value.",
+    "- Do NOT change any numeric value.",
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     `- Keep "meta" fixed to "${CONTRACT_META_LITERAL}".`,
-    "- Preserve all fields exactly (do not modify values).",
+    "- Preserve key order exactly: step, state, meta.",
+    "- Preserve all field values exactly.",
     "- Keep JSON valid.",
-    "- Rewrite for readability.",
-    "- Slightly improve spacing, indentation, or line breaks if needed.",
+    "- Apply exactly one small formatting mutation relative to the input (spacing OR indentation OR line break).",
+    "- Prefer not to repeat the exact formatting of the previous message.",
     "Output JSON only.",
     "Return exactly one JSON object.",
     "Do not wrap output in markdown code fences.",
@@ -1174,7 +1178,7 @@ function profileRuleText(profile: ExperimentProfile): string {
     return `Turn A: step = prev_step + 1, preserve state="${CONTRACT_STATE_LITERAL}" and meta="${CONTRACT_META_LITERAL}"\\nTurn B: beautify formatting only (values unchanged)\\nTurn C: compress formatting only (values unchanged)`;
   }
   if (profile === "drift_amplifying_loop") {
-    return `Turn A: step = prev_step + 1, preserve state="${CONTRACT_STATE_LITERAL}" and meta="${CONTRACT_META_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
+    return `Turn A: increment step by editing only step digits in previous bytes (template-locked mutation), preserve all other characters\\nTurn B: apply one small formatting mutation only (values and key order unchanged)`;
   }
   return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`;
 }
@@ -1206,7 +1210,7 @@ function profilePressureText(profile: ExperimentProfile): string {
     return "Three-way dialect pressure: A imitates prior style while B beautifies and C compresses; recursive format negotiation amplifies drift probability.";
   }
   if (profile === "drift_amplifying_loop") {
-    return "Generator preserves style while Rewriter mutates readability style (same value), creating dialect pressure.";
+    return "Template-locked mutation pressure: Agent A edits only step digits while preserving the prior byte template; Agent B injects controlled formatting mutations.";
   }
   if (profile === "dialect_negotiation") {
     return "Agent A enforces compact JSON while Agent B enforces readable JSON, both with style-imitation pressure; recursive dialect conflict drives drift dynamics.";
