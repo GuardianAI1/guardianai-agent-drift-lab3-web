@@ -1,0 +1,100 @@
+import type { APIProvider } from "@/lib/types";
+
+export const providerOptions: Array<{ value: APIProvider; label: string }> = [
+  { value: "together", label: "Together" },
+  { value: "openAI", label: "OpenAI" },
+  { value: "anthropic", label: "Claude (Anthropic)" },
+  { value: "google", label: "Google" },
+  { value: "mistral", label: "Mistral" },
+  { value: "auto", label: "Auto Detect" }
+];
+
+const modelOptionsByProvider: Record<Exclude<APIProvider, "auto">, Array<{ value: string; label: string }>> = {
+  together: [
+    { value: "google/gemma-3n-e4b-it", label: "google/gemma-3n-e4b-it (Default)" },
+    { value: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free", label: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free" },
+    { value: "Qwen/Qwen2.5-72B-Instruct-Turbo", label: "Qwen/Qwen2.5-72B-Instruct-Turbo" }
+  ],
+  openAI: [
+    { value: "gpt-4o-mini", label: "gpt-4o-mini (Default)" },
+    { value: "gpt-4.1-mini", label: "gpt-4.1-mini" },
+    { value: "gpt-4.1", label: "gpt-4.1" }
+  ],
+  anthropic: [
+    { value: "claude-3-5-haiku-latest", label: "claude-3-5-haiku-latest (Default)" },
+    { value: "claude-3-7-sonnet-latest", label: "claude-3-7-sonnet-latest" }
+  ],
+  google: [
+    { value: "gemini-1.5-flash", label: "gemini-1.5-flash (Default)" },
+    { value: "gemini-1.5-pro", label: "gemini-1.5-pro" }
+  ],
+  mistral: [
+    { value: "mistral-small-latest", label: "mistral-small-latest (Default REP)" },
+    { value: "mistral-medium-latest", label: "mistral-medium-latest" },
+    { value: "open-mistral-nemo", label: "open-mistral-nemo" }
+  ]
+};
+
+export function modelOptionsForProvider(provider: APIProvider): Array<{ value: string; label: string }> {
+  if (provider === "auto") {
+    return modelOptionsByProvider.together;
+  }
+  return modelOptionsByProvider[provider];
+}
+
+export function normalizeApiKeyInput(rawValue: string): string {
+  let value = (rawValue ?? "").trim();
+  if (!value) return "";
+
+  const assignmentMatch = value.match(
+    /^(?:export\s+)?(?:OPENAI_API_KEY|TOGETHER_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY|MISTRAL_API_KEY)\s*=\s*(.+)$/i
+  );
+  if (assignmentMatch) {
+    value = assignmentMatch[1].trim();
+  }
+
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+
+  // Normalize and strip all separators/control chars (incl. zero-width and hidden Unicode)
+  // to avoid clipboard/manager contamination in API key fields.
+  return value.normalize("NFKC").replace(/[\p{Z}\p{C}]+/gu, "");
+}
+
+export function detectKeyProvider(apiKey: string): APIProvider | null {
+  const trimmed = normalizeApiKeyInput(apiKey);
+  if (!trimmed) return null;
+
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("tgp_") || lower.startsWith("tgai_") || lower.startsWith("together_")) return "together";
+  if (lower.startsWith("sk-ant-")) return "anthropic";
+  if (trimmed.startsWith("AIza")) return "google";
+  if (lower.startsWith("mistral-") || lower.startsWith("mistral_")) return "mistral";
+  if (lower.startsWith("sk-")) return "openAI";
+  return null;
+}
+
+export function resolveProvider(preference: APIProvider, apiKey: string): APIProvider {
+  if (preference !== "auto") return preference;
+  return detectKeyProvider(apiKey) ?? "together";
+}
+
+export function defaultModelForProvider(provider: APIProvider): string {
+  switch (provider) {
+    case "together":
+    case "auto":
+      return "google/gemma-3n-e4b-it";
+    case "openAI":
+      return "gpt-4o-mini";
+    case "anthropic":
+      return "claude-3-5-haiku-latest";
+    case "google":
+      return "gemini-1.5-flash";
+    case "mistral":
+      return "mistral-small-latest";
+  }
+}
