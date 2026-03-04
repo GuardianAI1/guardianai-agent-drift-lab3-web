@@ -176,6 +176,8 @@ interface ConditionSummary {
   reinforcementWhenDevB: number | null;
   reinforcementWhenCleanB: number | null;
   reinforcementDeltaB: number | null;
+  prevOutputToNextInputRate: number | null;
+  prevInjectedToNextInputRate: number | null;
   firstSuffixDriftTurn: number | null;
   maxSuffixLen: number | null;
   suffixGrowthSlope: number | null;
@@ -961,6 +963,22 @@ function buildConditionSummary(params: {
   const suffixGrowthSlope = metricSlope(traces, (trace) => trace.suffixLen);
   const lineCountMax = traces.length > 0 ? Math.max(...traces.map((trace) => trace.lineCount)) : null;
 
+  const pairComparisons = Math.max(0, traces.length - 1);
+  let prevOutputToNextInputMatches = 0;
+  let prevInjectedToNextInputMatches = 0;
+  for (let index = 1; index < traces.length; index += 1) {
+    const previous = traces[index - 1];
+    const current = traces[index];
+    if (current.inputBytes === previous.outputBytes) {
+      prevOutputToNextInputMatches += 1;
+    }
+    if (current.inputBytes === previous.injectedBytesNext) {
+      prevInjectedToNextInputMatches += 1;
+    }
+  }
+  const prevOutputToNextInputRate = safeRate(prevOutputToNextInputMatches, pairComparisons);
+  const prevInjectedToNextInputRate = safeRate(prevInjectedToNextInputMatches, pairComparisons);
+
   return {
     runConfig,
     profile: runConfig.profile,
@@ -995,6 +1013,8 @@ function buildConditionSummary(params: {
     reinforcementWhenDevB: drift.reinforcementWhenDevB,
     reinforcementWhenCleanB: drift.reinforcementWhenCleanB,
     reinforcementDeltaB: drift.reinforcementDeltaB,
+    prevOutputToNextInputRate,
+    prevInjectedToNextInputRate,
     firstSuffixDriftTurn,
     maxSuffixLen,
     suffixGrowthSlope,
@@ -1058,6 +1078,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
     `- Agent A delta: ${asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: ${asFixed(summary.reinforcementDeltaB, 4)}`,
+    `- Byte continuity (prev_output -> next_input): ${asPercent(summary.prevOutputToNextInputRate)} | Injection continuity (prev_injected -> next_input): ${asPercent(summary.prevInjectedToNextInputRate)}`,
     `- firstSuffixDriftTurn: ${summary.firstSuffixDriftTurn ?? "N/A"} | maxSuffixLen: ${summary.maxSuffixLen ?? "N/A"} | suffixSlope: ${asFixed(summary.suffixGrowthSlope, 4)} | lineCountMax: ${summary.lineCountMax ?? "N/A"}`,
     `- contextGrowth avg/max/slope: ${asFixed(summary.contextGrowthAvg, 2)} / ${asFixed(summary.contextGrowthMax, 2)} / ${asFixed(summary.contextGrowthSlope, 4)}`,
     `- Phase transition candidate: ${phase ? `turn ${phase.turn} (${phase.reason})` : "none detected"}`,
@@ -1155,6 +1176,7 @@ function buildLabReportMarkdown(params: {
   sections.push("- No semantic judging was used.");
   sections.push("- Metrics are boundary-level: parse success, byte mismatch, and mechanical step evolution.");
   sections.push(`- Reinforcement dev-event is defined as deviationMagnitude > ${DRIFT_DEV_EVENT_THRESHOLD}.`);
+  sections.push("- Byte continuity audit is included: prev_output->next_input and prev_injected->next_input rates.");
   sections.push("- Newline-first drift sentinel is explicitly tracked via suffixLen and firstSuffixDriftTurn.");
   sections.push("- Configuration is captured immutably per run in snapshot.json.");
 
@@ -2478,7 +2500,7 @@ export default function HomePage() {
 
             <div className="policy-inline">
               <p className="tiny">
-                <strong>Architecture:</strong> 2-agent loop with turn alternation A→B→A→B. Agent A and B can use same or different models.
+                <strong>Architecture:</strong> 2-agent loop with turn alternation A→B→A→B. Both agents use the selected shared model.
               </p>
               <p className="tiny">
                 <strong>Selected profile pressure:</strong> {profilePressureText(selectedProfile)}
@@ -2648,6 +2670,7 @@ export default function HomePage() {
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
                     <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
+                    <p className="tiny">Byte continuity output→next input: {asPercent(summary?.prevOutputToNextInputRate ?? null)} | Injected→next input: {asPercent(summary?.prevInjectedToNextInputRate ?? null)}</p>
                     <p className="tiny">Phase transition: {summary?.phaseTransition ? `turn ${summary.phaseTransition.turn}` : "none"}</p>
                   </div>
                 );
@@ -2782,6 +2805,10 @@ export default function HomePage() {
                       </p>
                       <p className="mono">
                         Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
+                      </p>
+                      <p className="mono">
+                        Byte continuity output→next input: {asPercent(summary.prevOutputToNextInputRate)} | Injected→next input:{" "}
+                        {asPercent(summary.prevInjectedToNextInputRate)}
                       </p>
                       <p className="mono">
                         Phase transition: {summary.phaseTransition ? `turn ${summary.phaseTransition.turn} (${summary.phaseTransition.reason})` : "none"}
