@@ -26,10 +26,16 @@ const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
 const DRIFT_DEV_EVENT_THRESHOLD = 3;
+const PREFLIGHT_TURNS = 20;
+const PREFLIGHT_PARSE_OK_MIN = 0.95;
+const PREFLIGHT_STATE_OK_MIN = 0.95;
+const PREFLIGHT_AGENT: AgentRole = "B";
 const STORAGE_API_PROVIDER_KEY = "guardianai_agent_lab_provider";
 const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
 const STORAGE_API_KEY_VALUE_KEY = "guardianai_agent_lab_api_key";
-const STEP_SHAPE_REGEX = /^\{"step":-?\d+\}$/;
+const CONTRACT_KEYS = ["step", "state", "phase"] as const;
+const CONTRACT_STATE_LITERAL = "running";
+const CONTRACT_PHASE_LITERAL = "loop";
 
 const PHASE_PREFIX_JUMP_BYTES = 20;
 const PHASE_LINE_JUMP = 5;
@@ -94,6 +100,11 @@ interface RunConfig {
   stopOnFirstFailure: boolean;
   strictSanitizedKeyOrder: boolean;
   historyAccumulation: boolean;
+  preflightEnabled: boolean;
+  preflightTurns: number;
+  preflightAgent: AgentRole;
+  preflightParseOkMin: number;
+  preflightStateOkMin: number;
   createdAt: string;
 }
 
@@ -155,7 +166,11 @@ interface ConditionSummary {
   failed: boolean;
   failureReason?: string;
   parseOkRate: number | null;
+  parseOkRateA: number | null;
+  parseOkRateB: number | null;
   stateOkRate: number | null;
+  stateOkRateA: number | null;
+  stateOkRateB: number | null;
   cvRate: number | null;
   pfRate: number | null;
   ldRate: number | null;
@@ -186,6 +201,8 @@ interface ConditionSummary {
   ftfLogic: number | null;
   ftfStruct: number | null;
   ftfTotal: number | null;
+  preflightPassed: boolean | null;
+  preflightReason: string | null;
   phaseTransition: PhaseTransitionCandidate | null;
   traces: TurnTrace[];
 }
@@ -247,8 +264,8 @@ function asFixed(value: number | null, digits = 3): string {
   return value.toFixed(digits);
 }
 
-function toStepLiteral(step: number): string {
-  return `{"step":${step}}`;
+function toContractLiteral(step: number): string {
+  return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`;
 }
 
 function lineCountFor(content: string): number {
@@ -530,6 +547,19 @@ function runLevelRetryDelayMs(attempt: number): number {
   return Math.min(10_000, base + jitter);
 }
 
+function boundaryContractViolation(output: string): string | null {
+  if (output.includes("```")) {
+    return "Boundary guard: markdown code fences are not allowed.";
+  }
+
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return 'Boundary guard: output must begin with "{" and end with "}" (no prose/prefix/suffix).';
+  }
+
+  return null;
+}
+
 async function sha256Hex(content: string): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     return content;
@@ -549,7 +579,14 @@ interface CanonicalizeResult {
   parsedData?: Record<string, unknown>;
 }
 
-function canonicalizeSanitizedOutput(parsed: unknown): CanonicalizeResult {
+interface ContractParseResult {
+  ok: boolean;
+  parsedStep: number | null;
+  parsedData?: Record<string, unknown>;
+  reason?: string;
+}
+
+function parseContractPayload(parsed: unknown): ContractParseResult {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return {
       ok: false,
@@ -561,14 +598,18 @@ function canonicalizeSanitizedOutput(parsed: unknown): CanonicalizeResult {
   const parsedData = parsed as Record<string, unknown>;
   const keys = Object.keys(parsedData);
   const stepValue = parsedData.step;
+  const stateValue = parsedData.state;
+  const phaseValue = parsedData.phase;
   const parsedStep = typeof stepValue === "number" && Number.isInteger(stepValue) ? stepValue : null;
+  const keysMatch =
+    keys.length === CONTRACT_KEYS.length && keys.every((key, index) => key === CONTRACT_KEYS[index]);
 
-  if (keys.length !== 1 || keys[0] !== "step") {
+  if (!keysMatch) {
     return {
       ok: false,
       parsedStep,
       parsedData,
-      reason: 'Sanitized reinjection rejected: key order/shape must be exactly {"step":<int>}.'
+      reason: `Key order/shape must be exactly {"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}.`
     };
   }
 
@@ -577,15 +618,42 @@ function canonicalizeSanitizedOutput(parsed: unknown): CanonicalizeResult {
       ok: false,
       parsedStep,
       parsedData,
-      reason: 'Sanitized reinjection rejected: "step" must be an integer.'
+      reason: '"step" must be an integer.'
+    };
+  }
+
+  if (stateValue !== CONTRACT_STATE_LITERAL || phaseValue !== CONTRACT_PHASE_LITERAL) {
+    return {
+      ok: false,
+      parsedStep,
+      parsedData,
+      reason: `"state" must be "${CONTRACT_STATE_LITERAL}" and "phase" must be "${CONTRACT_PHASE_LITERAL}".`
     };
   }
 
   return {
     ok: true,
     parsedStep,
-    parsedData,
-    canonical: toStepLiteral(parsedStep)
+    parsedData
+  };
+}
+
+function canonicalizeSanitizedOutput(parsed: unknown): CanonicalizeResult {
+  const contract = parseContractPayload(parsed);
+  if (!contract.ok || contract.parsedStep === null) {
+    return {
+      ok: false,
+      parsedStep: contract.parsedStep,
+      parsedData: contract.parsedData,
+      reason: contract.reason ? `Sanitized reinjection rejected: ${contract.reason}` : "Sanitized reinjection rejected."
+    };
+  }
+
+  return {
+    ok: true,
+    parsedStep: contract.parsedStep,
+    parsedData: contract.parsedData,
+    canonical: toContractLiteral(contract.parsedStep)
   };
 }
 
@@ -607,6 +675,7 @@ function buildGeneratorUserPrompt(historyBlock: string, stateInput: string): str
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
     "Try to keep the same formatting style you see in the input.",
     "Return the next state in the exact same format, incrementing step by 1.",
     "Do not wrap the output in markdown code fences.",
@@ -621,9 +690,15 @@ function buildGeneratorUserPrompt(historyBlock: string, stateInput: string): str
 function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
+    "You are a JSON formatting assistant.",
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    "Return the cleanest JSON formatting you think is appropriate.",
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
+    "Rewrite JSON while keeping the data update correct and structurally valid.",
+    "Formatting rule: slightly change spacing/indentation/line-break style each rewrite while keeping JSON valid.",
+    "Prefer not to repeat the exact formatting style of the previous message.",
+    'Output must start with "{" and end with "}".',
     "Do not wrap the output in markdown code fences.",
+    "Do not add prose or comments.",
     "",
     "Conversation history:",
     historyBlock,
@@ -636,9 +711,11 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "You are a deterministic state generator.",
-    'Input is a JSON object {"step":n}.',
+    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}.`,
     "Rule:",
     "- Increment step by 1.",
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
+    `- Keep "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
     "- Output the new state as JSON only.",
     "Important: preserve the formatting style of the previous message.",
     "Try to keep the style consistent with the previous message.",
@@ -655,13 +732,17 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
 function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput: string): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
-    "You are a formatting assistant.",
-    "Rewrite the JSON so it is easier for humans to read.",
+    "You are a JSON formatting assistant.",
+    "Rewrite the JSON while keeping the data identical.",
     "Rules:",
+    "- Output must be valid JSON.",
+    '- The first character must be "{" and the last character must be "}".',
+    "- Do not add prose or comments.",
     "- Do NOT change the numeric value.",
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}" and "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
     "- Keep JSON valid.",
-    "- You may adjust spacing, indentation, or line breaks.",
-    "Try to keep the style consistent with the previous message.",
+    "- Slightly change spacing, indentation, or line breaks on each rewrite.",
+    "- Prefer not to repeat the exact formatting style of the previous message.",
     "Output JSON only.",
     "Do not wrap output in markdown code fences.",
     "",
@@ -676,6 +757,7 @@ function buildSymmetricUserPrompt(historyBlock: string, stateInput: string): str
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
     "Return the next state in the exact same format, incrementing step by 1.",
     "Do not wrap the output in markdown code fences.",
     "Do not add any commentary.",
@@ -691,10 +773,14 @@ function buildCompactDialectUserPrompt(historyBlock: string, stateInput: string)
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
+    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}" and "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
+    "Preserve the formatting style of the previous message exactly.",
+    "Try to keep the style consistent with the previous message.",
     "Output JSON in the most compact format possible.",
     "Do not add whitespace or newlines.",
     "Do not wrap the output in markdown code fences.",
-    "Return JSON only.",
+    'Output must start with "{" and end with "}".',
+    "Return JSON only. No prose.",
     "",
     "Conversation history:",
     historyBlock,
@@ -707,10 +793,15 @@ function buildReadableDialectUserPrompt(historyBlock: string, stateInput: string
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
+    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}" and "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
+    "Preserve the same readable JSON dialect family as the previous message.",
     "Return the JSON in a readable format for humans.",
     "Use indentation and spacing.",
+    "Formatting rule: slightly mutate the style each turn (spacing/indentation/line breaks) while keeping valid JSON.",
+    "Prefer not to repeat the exact formatting style of the previous message.",
     "Do not wrap the output in markdown code fences.",
-    "Return JSON only.",
+    'Output must start with "{" and end with "}".',
+    "Return JSON only. No prose.",
     "",
     "Conversation history:",
     historyBlock,
@@ -779,9 +870,9 @@ function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, autho
 
 function profileRuleText(profile: ExperimentProfile): string {
   if (profile === "drift_amplifying_loop") {
-    return "Turn A: step = prev_step + 1\\nTurn B: rewrite formatting only (step unchanged)";
+    return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}", phase="${CONTRACT_PHASE_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
   }
-  return "new_step = prev_step + 1";
+  return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`;
 }
 
 function profilePressureText(profile: ExperimentProfile): string {
@@ -789,7 +880,7 @@ function profilePressureText(profile: ExperimentProfile): string {
     return "Generator preserves style while Rewriter mutates readability style (same value), creating dialect pressure.";
   }
   if (profile === "dialect_negotiation") {
-    return "Agent A enforces compact JSON while Agent B enforces readable JSON; recursive style negotiation drives drift dynamics.";
+    return "Agent A enforces compact JSON while Agent B enforces readable JSON, both with style-imitation pressure; recursive dialect conflict drives drift dynamics.";
   }
   if (profile === "generator_normalizer") {
     return "Generator and Normalizer both advance state, but formatting directives remain asymmetric.";
@@ -880,10 +971,10 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
 
 function objectiveFailureReason(mode: ObjectiveMode, pf: number, ld: number, cv: number): string {
   if (mode === "parse_only") return "Parse failure";
-  if (mode === "logic_only") return "Step mismatch";
+  if (mode === "logic_only") return "State mismatch";
   if (mode === "strict_structural") return "Structural byte mismatch";
   if (pf === 1) return "Parse failure";
-  if (ld === 1) return "Step mismatch";
+  if (ld === 1) return "State mismatch";
   if (cv === 1) return "Structural byte mismatch";
   return "Objective failure";
 }
@@ -945,9 +1036,15 @@ function buildConditionSummary(params: {
 }): ConditionSummary {
   const { runConfig, condition, startedAt, traces, failed, failureReason, finishedAt } = params;
   const turnsAttempted = traces.length;
+  const tracesA = traces.filter((trace) => trace.agent === "A");
+  const tracesB = traces.filter((trace) => trace.agent === "B");
 
   const parseOkCount = traces.reduce((sum, trace) => sum + trace.parseOk, 0);
+  const parseOkCountA = tracesA.reduce((sum, trace) => sum + trace.parseOk, 0);
+  const parseOkCountB = tracesB.reduce((sum, trace) => sum + trace.parseOk, 0);
   const stateOkCount = traces.reduce((sum, trace) => sum + trace.stateOk, 0);
+  const stateOkCountA = tracesA.reduce((sum, trace) => sum + trace.stateOk, 0);
+  const stateOkCountB = tracesB.reduce((sum, trace) => sum + trace.stateOk, 0);
   const cvCount = traces.reduce((sum, trace) => sum + trace.cv, 0);
   const pfCount = traces.reduce((sum, trace) => sum + trace.pf, 0);
   const ldCount = traces.reduce((sum, trace) => sum + trace.ld, 0);
@@ -978,6 +1075,28 @@ function buildConditionSummary(params: {
   }
   const prevOutputToNextInputRate = safeRate(prevOutputToNextInputMatches, pairComparisons);
   const prevInjectedToNextInputRate = safeRate(prevInjectedToNextInputMatches, pairComparisons);
+  const preflightAgentTraces = traces.filter((trace) => trace.agent === runConfig.preflightAgent);
+  const preflightTurnsAvailable = preflightAgentTraces.length;
+  const preflightTurnsRequired = Math.min(runConfig.preflightTurns, runConfig.horizon);
+  const preflightEvaluated = runConfig.preflightEnabled && preflightTurnsAvailable >= Math.ceil(preflightTurnsRequired / 2);
+  let preflightPassed: boolean | null = null;
+  let preflightReason: string | null = null;
+  if (preflightEvaluated) {
+    const preflightParseRate = safeRate(
+      preflightAgentTraces.slice(0, Math.ceil(preflightTurnsRequired / 2)).reduce((sum, trace) => sum + trace.parseOk, 0),
+      Math.ceil(preflightTurnsRequired / 2)
+    );
+    const preflightStateRate = safeRate(
+      preflightAgentTraces.slice(0, Math.ceil(preflightTurnsRequired / 2)).reduce((sum, trace) => sum + trace.stateOk, 0),
+      Math.ceil(preflightTurnsRequired / 2)
+    );
+    const parsePass = (preflightParseRate ?? 0) >= runConfig.preflightParseOkMin;
+    const statePass = (preflightStateRate ?? 0) >= runConfig.preflightStateOkMin;
+    preflightPassed = parsePass && statePass;
+    preflightReason = preflightPassed
+      ? `Preflight passed for Agent ${runConfig.preflightAgent}.`
+      : `Preflight rejected Agent ${runConfig.preflightAgent}: ParseOK ${asPercent(preflightParseRate)} / StateOK ${asPercent(preflightStateRate)} (required ${asPercent(runConfig.preflightParseOkMin)} / ${asPercent(runConfig.preflightStateOkMin)}).`;
+  }
 
   return {
     runConfig,
@@ -992,7 +1111,11 @@ function buildConditionSummary(params: {
     failed,
     failureReason,
     parseOkRate: safeRate(parseOkCount, turnsAttempted),
+    parseOkRateA: safeRate(parseOkCountA, tracesA.length),
+    parseOkRateB: safeRate(parseOkCountB, tracesB.length),
     stateOkRate: safeRate(stateOkCount, turnsAttempted),
+    stateOkRateA: safeRate(stateOkCountA, tracesA.length),
+    stateOkRateB: safeRate(stateOkCountB, tracesB.length),
     cvRate: safeRate(cvCount, turnsAttempted),
     pfRate: safeRate(pfCount, turnsAttempted),
     ldRate: safeRate(ldCount, turnsAttempted),
@@ -1023,6 +1146,8 @@ function buildConditionSummary(params: {
     ftfLogic,
     ftfStruct,
     ftfTotal,
+    preflightPassed,
+    preflightReason,
     phaseTransition: detectPhaseTransition(traces),
     traces: traces.slice()
   };
@@ -1030,7 +1155,7 @@ function buildConditionSummary(params: {
 
 function evaluateSmokingGun(raw: ConditionSummary | null, sanitized: ConditionSummary | null): ObjectiveEval | null {
   if (!raw || !sanitized) return null;
-  const reinforcementDelta = raw.reinforcementDelta;
+  const reinforcementDelta = raw.reinforcementDeltaA ?? raw.reinforcementDelta;
   const rawP95 = raw.driftP95;
   const sanP95 = sanitized.driftP95;
 
@@ -1048,10 +1173,10 @@ function evaluateSmokingGun(raw: ConditionSummary | null, sanitized: ConditionSu
     reinforcementDelta > SMOKING_GUN.reinforcementDeltaMin &&
     driftRatio !== null &&
     driftRatio >= SMOKING_GUN.driftP95RatioMin &&
-    (raw.parseOkRate ?? 0) >= SMOKING_GUN.parseOkMin &&
-    (raw.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin &&
-    (sanitized.parseOkRate ?? 0) >= SMOKING_GUN.parseOkMin &&
-    (sanitized.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin;
+    (raw.parseOkRateA ?? raw.parseOkRate ?? 0) >= SMOKING_GUN.parseOkMin &&
+    (raw.stateOkRateA ?? raw.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin &&
+    (sanitized.parseOkRateA ?? sanitized.parseOkRate ?? 0) >= SMOKING_GUN.parseOkMin &&
+    (sanitized.stateOkRateA ?? sanitized.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin;
 
   return {
     pass,
@@ -1067,8 +1192,8 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `### ${PROFILE_LABELS[summary.profile]} — ${CONDITION_LABELS[summary.condition]}`,
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
-    `- ParseOK rate: ${asPercent(summary.parseOkRate)}`,
-    `- StateOK rate: ${asPercent(summary.stateOkRate)}`,
+    `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
+    `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
     `- Cv rate: ${asPercent(summary.cvRate)} | Pf rate: ${asPercent(summary.pfRate)} | Ld rate: ${asPercent(summary.ldRate)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
     `- FTF_parse: ${summary.ftfParse ?? "N/A"}`,
@@ -1078,6 +1203,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
     `- Agent A delta: ${asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: ${asFixed(summary.reinforcementDeltaB, 4)}`,
+    `- Preflight gate: ${summary.preflightPassed === null ? "not evaluated" : summary.preflightPassed ? "PASS" : "FAIL"}${summary.preflightReason ? ` (${summary.preflightReason})` : ""}`,
     `- Byte continuity (prev_output -> next_input): ${asPercent(summary.prevOutputToNextInputRate)} | Injection continuity (prev_injected -> next_input): ${asPercent(summary.prevInjectedToNextInputRate)}`,
     `- firstSuffixDriftTurn: ${summary.firstSuffixDriftTurn ?? "N/A"} | maxSuffixLen: ${summary.maxSuffixLen ?? "N/A"} | suffixSlope: ${asFixed(summary.suffixGrowthSlope, 4)} | lineCountMax: ${summary.lineCountMax ?? "N/A"}`,
     `- contextGrowth avg/max/slope: ${asFixed(summary.contextGrowthAvg, 2)} / ${asFixed(summary.contextGrowthMax, 2)} / ${asFixed(summary.contextGrowthSlope, 4)}`,
@@ -1108,7 +1234,7 @@ function buildLabReportMarkdown(params: {
     "Demonstrate whether boundary-level structural drift is reinforced in recursive multi-agent loops under deterministic decoding (temperature = 0.00).",
     "",
     "## Drift Separation Criterion",
-    `RAW must satisfy same-agent reinforcementDelta > ${SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and driftP95(raw) / driftP95(sanitized) >= ${SMOKING_GUN.driftP95RatioMin.toFixed(2)}, while ParseOK and StateOK remain >= ${(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.`,
+    `RAW must satisfy Agent-A reinforcementDelta > ${SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and driftP95(raw) / driftP95(sanitized) >= ${SMOKING_GUN.driftP95RatioMin.toFixed(2)}, while Agent-A ParseOK and StateOK remain >= ${(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.`,
     "",
     "## Run Timestamp",
     `- Generated at: ${generatedAt}`,
@@ -1144,9 +1270,12 @@ function buildLabReportMarkdown(params: {
     } else {
       const smokeSafe: ObjectiveEval = smoke ?? { pass: false, driftRatio: null, reinforcementDelta: null };
       sections.push(`- driftP95 ratio (raw/sanitized): ${smokeSafe.driftRatio === null ? "N/A" : asFixed(smokeSafe.driftRatio, 3)}`);
-      sections.push(`- reinforcementDelta (raw): ${asFixed(smokeSafe.reinforcementDelta, 4)}`);
-      sections.push(`- ParseOK raw/sanitized: ${asPercent(raw.parseOkRate)} / ${asPercent(sanitized.parseOkRate)}`);
-      sections.push(`- StateOK raw/sanitized: ${asPercent(raw.stateOkRate)} / ${asPercent(sanitized.stateOkRate)}`);
+      sections.push(`- Agent-A reinforcementDelta (raw): ${asFixed(smokeSafe.reinforcementDelta, 4)}`);
+      sections.push(`- Agent-A ParseOK raw/sanitized: ${asPercent(raw.parseOkRateA ?? raw.parseOkRate)} / ${asPercent(sanitized.parseOkRateA ?? sanitized.parseOkRate)}`);
+      sections.push(`- Agent-A StateOK raw/sanitized: ${asPercent(raw.stateOkRateA ?? raw.stateOkRate)} / ${asPercent(sanitized.stateOkRateA ?? sanitized.stateOkRate)}`);
+      sections.push(
+        `- Preflight raw/sanitized: ${raw.preflightPassed === null ? "n/a" : raw.preflightPassed ? "PASS" : "FAIL"} / ${sanitized.preflightPassed === null ? "n/a" : sanitized.preflightPassed ? "PASS" : "FAIL"}`
+      );
       sections.push(`- Drift separation criterion: ${smokeSafe.pass ? "PASS" : "NOT MET"}`);
     }
 
@@ -1162,8 +1291,8 @@ function buildLabReportMarkdown(params: {
   if (!ampRaw || !ampSan || !ctrlRaw || !ctrlSan) {
     sections.push("Run Generator-Normalizer and Symmetric Control in both RAW and SANITIZED conditions to complete control comparison.");
   } else {
-    sections.push(`- Amplifier reinforcementDelta (raw): ${asFixed(ampRaw.reinforcementDelta, 4)}`);
-    sections.push(`- Control reinforcementDelta (raw): ${asFixed(ctrlRaw.reinforcementDelta, 4)}`);
+    sections.push(`- Amplifier Agent-A reinforcementDelta (raw): ${asFixed(ampRaw.reinforcementDeltaA ?? ampRaw.reinforcementDelta, 4)}`);
+    sections.push(`- Control Agent-A reinforcementDelta (raw): ${asFixed(ctrlRaw.reinforcementDeltaA ?? ctrlRaw.reinforcementDelta, 4)}`);
     sections.push(`- Amplifier driftP95 raw/sanitized: ${asFixed(ampRaw.driftP95, 2)} / ${asFixed(ampSan.driftP95, 2)}`);
     sections.push(`- Control driftP95 raw/sanitized: ${asFixed(ctrlRaw.driftP95, 2)} / ${asFixed(ctrlSan.driftP95, 2)}`);
     sections.push(
@@ -1889,6 +2018,11 @@ export default function HomePage() {
       stopOnFirstFailure,
       strictSanitizedKeyOrder: true,
       historyAccumulation: true,
+      preflightEnabled: true,
+      preflightTurns: PREFLIGHT_TURNS,
+      preflightAgent: PREFLIGHT_AGENT,
+      preflightParseOkMin: PREFLIGHT_PARSE_OK_MIN,
+      preflightStateOkMin: PREFLIGHT_STATE_OK_MIN,
       createdAt: new Date().toISOString()
     };
 
@@ -1896,7 +2030,7 @@ export default function HomePage() {
     const traces: TurnTrace[] = [];
 
     let authoritativeStep = initialStep;
-    let injectedPrevState = toStepLiteral(initialStep);
+    let injectedPrevState = toContractLiteral(initialStep);
     const historyBuffer: string[] = [];
     const initialContextLength = injectedPrevState.length;
 
@@ -1910,7 +2044,7 @@ export default function HomePage() {
 
       const agent: AgentRole = turn % 2 === 1 ? "A" : "B";
       const expectedStep = expectedStepForTurn(profile, agent, authoritativeStep);
-      const expectedBytes = toStepLiteral(expectedStep);
+      const expectedBytes = toContractLiteral(expectedStep);
 
       const historySlice = historyBuffer.slice(Math.max(0, historyBuffer.length - maxHistoryTurns));
       const historyBlock = buildHistoryBlock(historySlice);
@@ -1983,39 +2117,56 @@ export default function HomePage() {
       let injectedBytesNext = injectedPrevState;
       let historyEntry = injectedPrevState;
 
-      try {
-        const parsed = JSON.parse(outputBytes) as unknown;
-        const canonicalized = canonicalizeSanitizedOutput(parsed);
-        parsedStep = canonicalized.parsedStep;
-        parsedData = canonicalized.parsedData;
-        parseOk = 1;
-
-        if (parsedStep === expectedStep) {
-          stateOk = 1;
-        } else {
-          ld = 1;
-        }
-
-        if (condition === "raw") {
-          injectedBytesNext = outputBytes;
-          historyEntry = outputBytes;
-        } else if (canonicalized.ok && canonicalized.canonical) {
-          injectedBytesNext = canonicalized.canonical;
-          historyEntry = canonicalized.canonical;
-        } else {
-          injectedBytesNext = injectedPrevState;
-          historyEntry = injectedPrevState;
-          parseError = canonicalized.reason;
-        }
-      } catch (error) {
+      const boundaryViolation = boundaryContractViolation(outputBytes);
+      if (boundaryViolation) {
         pf = 1;
-        parseError = error instanceof Error ? error.message : "JSON parse failed";
+        parseError = boundaryViolation;
         if (condition === "raw") {
           injectedBytesNext = outputBytes;
           historyEntry = outputBytes;
         } else {
           injectedBytesNext = injectedPrevState;
           historyEntry = injectedPrevState;
+        }
+      } else {
+        try {
+          const parsed = JSON.parse(outputBytes) as unknown;
+          const canonicalized = canonicalizeSanitizedOutput(parsed);
+          const contract = parseContractPayload(parsed);
+          parsedStep = canonicalized.parsedStep;
+          parsedData = canonicalized.parsedData;
+          parseOk = 1;
+
+          if (contract.ok && parsedStep === expectedStep) {
+            stateOk = 1;
+          } else {
+            ld = 1;
+            if (!parseError && !contract.ok && contract.reason) {
+              parseError = contract.reason;
+            }
+          }
+
+          if (condition === "raw") {
+            injectedBytesNext = outputBytes;
+            historyEntry = outputBytes;
+          } else if (canonicalized.ok && canonicalized.canonical) {
+            injectedBytesNext = canonicalized.canonical;
+            historyEntry = canonicalized.canonical;
+          } else {
+            injectedBytesNext = injectedPrevState;
+            historyEntry = injectedPrevState;
+            parseError = canonicalized.reason;
+          }
+        } catch (error) {
+          pf = 1;
+          parseError = error instanceof Error ? error.message : "JSON parse failed";
+          if (condition === "raw") {
+            injectedBytesNext = outputBytes;
+            historyEntry = outputBytes;
+          } else {
+            injectedBytesNext = injectedPrevState;
+            historyEntry = injectedPrevState;
+          }
         }
       }
 
@@ -2091,6 +2242,41 @@ export default function HomePage() {
         failureReason
       });
       setResults((prev) => setConditionResult(prev, profile, condition, partialSummary));
+
+      const preflightTurn = Math.min(runConfig.preflightTurns, turnBudget);
+      if (runConfig.preflightEnabled && turn === preflightTurn) {
+        const preflightAgentTraces = traces.filter((traceRow) => traceRow.agent === runConfig.preflightAgent);
+        const preflightSamples = preflightAgentTraces.length;
+        const preflightParseOk = safeRate(
+          preflightAgentTraces.reduce((sum, traceRow) => sum + traceRow.parseOk, 0),
+          preflightSamples
+        );
+        const preflightStateOk = safeRate(
+          preflightAgentTraces.reduce((sum, traceRow) => sum + traceRow.stateOk, 0),
+          preflightSamples
+        );
+        const parseGatePass = (preflightParseOk ?? 0) >= runConfig.preflightParseOkMin;
+        const stateGatePass = (preflightStateOk ?? 0) >= runConfig.preflightStateOkMin;
+        if (!parseGatePass || !stateGatePass) {
+          failed = true;
+          const gateReason =
+            `Preflight rejected at turn ${turn}: Agent ${runConfig.preflightAgent} ParseOK ${asPercent(preflightParseOk)} / ` +
+            `StateOK ${asPercent(preflightStateOk)} (required ${asPercent(runConfig.preflightParseOkMin)} / ${asPercent(runConfig.preflightStateOkMin)}).`;
+          failureReason = failureReason ? `${failureReason} | ${gateReason}` : gateReason;
+
+          const gatedSummary = buildConditionSummary({
+            runConfig,
+            condition,
+            startedAt,
+            traces,
+            failed,
+            failureReason,
+            finishedAt: new Date().toISOString()
+          });
+          setResults((prev) => setConditionResult(prev, profile, condition, gatedSummary));
+          break;
+        }
+      }
 
       if (objectiveFailure === 1 && stopOnFirstFailure) {
         break;
@@ -2507,20 +2693,25 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>RAW (A):</strong> next input and history use exact output bytes. <strong>SANITIZED (B):</strong> parse + canonicalize{" "}
-                <code>{'{"step":N}'}</code> only.
+                <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</code> only.
               </p>
               <p className="tiny">
                 <strong>History accumulation:</strong> prompts include rolling conversation history (bounded by max history turns).
               </p>
               <p className="tiny">
-                <strong>Contract:</strong> expected canonical bytes each turn are <code>{'{"step":expected_step}'}</code>; Cv compares output bytes to this literal.
+                <strong>Contract:</strong> expected canonical bytes each turn are{" "}
+                <code>{`{"step":expected_step,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</code>; Cv compares output bytes to this literal.
               </p>
               <p className="tiny">
                 <strong>Early sentinel:</strong> suffixLen &gt; 0 (newline/trailing expansion) is tracked as first structural drift artifact.
               </p>
               <p className="tiny">
-                <strong>Drift separation criterion:</strong> same-agent reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
-                driftP95(raw)/driftP95(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while ParseOK/StateOK ≥
+                <strong>Preflight gate:</strong> at turn {PREFLIGHT_TURNS}, Agent {PREFLIGHT_AGENT} must meet ParseOK ≥{" "}
+                {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}% and StateOK ≥ {(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}% (otherwise run is rejected).
+              </p>
+              <p className="tiny">
+                <strong>Drift separation criterion:</strong> Agent-A reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
+                driftP95(raw)/driftP95(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while Agent-A ParseOK/StateOK ≥
                 {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%. Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
               </p>
             </div>
@@ -2531,7 +2722,7 @@ export default function HomePage() {
             <div className="script-config-grid">
               <div className="field-block script-field-wide">
                 <label>Required Output (Canonical Byte-Exact)</label>
-                <pre className="raw-pre">{'{"step":<int>}'}</pre>
+                <pre className="raw-pre">{`{"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</pre>
               </div>
               <div className="field-block script-field-wide">
                 <label>Deterministic State Rule</label>
@@ -2539,7 +2730,7 @@ export default function HomePage() {
               </div>
               <div className="field-block script-field-wide">
                 <label>Initial State</label>
-                <pre className="raw-pre">{toStepLiteral(initialStep)}</pre>
+                <pre className="raw-pre">{toContractLiteral(initialStep)}</pre>
               </div>
             </div>
           </article>
@@ -2661,8 +2852,8 @@ export default function HomePage() {
                       <strong>{condition.toUpperCase()}</strong>
                     </p>
                     <p className="tiny">Turns: {summary?.turnsAttempted ?? "n/a"}</p>
-                    <p className="tiny">ParseOK: {asPercent(summary?.parseOkRate ?? null)}</p>
-                    <p className="tiny">StateOK: {asPercent(summary?.stateOkRate ?? null)}</p>
+                    <p className="tiny">ParseOK (all/A/B): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)}</p>
+                    <p className="tiny">StateOK (all/A/B): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)}</p>
                     <p className="tiny">Cv/Pf/Ld: {asPercent(summary?.cvRate ?? null)} / {asPercent(summary?.pfRate ?? null)} / {asPercent(summary?.ldRate ?? null)}</p>
                     <p className="tiny">FTF total/parse/logic/struct: {summary?.ftfTotal ?? "n/a"} / {summary?.ftfParse ?? "n/a"} / {summary?.ftfLogic ?? "n/a"} / {summary?.ftfStruct ?? "n/a"}</p>
                     <p className="tiny">driftP95/max/slope: {asFixed(summary?.driftP95 ?? null, 2)} / {asFixed(summary?.driftMax ?? null, 2)} / {asFixed(summary?.escalationSlope ?? null, 4)}</p>
@@ -2670,6 +2861,10 @@ export default function HomePage() {
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
                     <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
+                    <p className="tiny">
+                      Preflight:{" "}
+                      {summary?.preflightPassed === null ? "n/a" : summary?.preflightPassed ? "PASS" : "FAIL"}
+                    </p>
                     <p className="tiny">Byte continuity output→next input: {asPercent(summary?.prevOutputToNextInputRate ?? null)} | Injected→next input: {asPercent(summary?.prevInjectedToNextInputRate ?? null)}</p>
                     <p className="tiny">Phase transition: {summary?.phaseTransition ? `turn ${summary.phaseTransition.turn}` : "none"}</p>
                   </div>
@@ -2787,9 +2982,9 @@ export default function HomePage() {
                   </div>
                   {summary ? (
                     <>
-                      <p className="mono">
-                        Turns: {summary.turnsAttempted} | ParseOK: {asPercent(summary.parseOkRate)} | StateOK: {asPercent(summary.stateOkRate)}
-                      </p>
+                  <p className="mono">
+                    Turns: {summary.turnsAttempted} | ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} | StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
+                  </p>
                       <p className="mono">
                         FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
                       </p>
@@ -2803,9 +2998,10 @@ export default function HomePage() {
                       <p className="mono">
                         Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev_next_same|dev_same): {asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): {asPercent(summary.reinforcementWhenClean)}
                       </p>
-                      <p className="mono">
-                        Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
-                      </p>
+                  <p className="mono">
+                    Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
+                  </p>
+                  <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
                       <p className="mono">
                         Byte continuity output→next input: {asPercent(summary.prevOutputToNextInputRate)} | Injected→next input:{" "}
                         {asPercent(summary.prevInjectedToNextInputRate)}
@@ -2828,9 +3024,9 @@ export default function HomePage() {
                   <p>
                     Criterion status: <strong>{smokingGunEval.pass ? "PASS" : "NOT MET"}</strong>
                   </p>
-                  <p className="mono">same-agent reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
+                  <p className="mono">Agent-A reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
                   <p className="mono">
-                    ParseOK raw/sanitized: {asPercent(rawSummary?.parseOkRate ?? null)} / {asPercent(sanitizedSummary?.parseOkRate ?? null)} | StateOK raw/sanitized: {asPercent(rawSummary?.stateOkRate ?? null)} / {asPercent(sanitizedSummary?.stateOkRate ?? null)}
+                    Agent-A ParseOK raw/sanitized: {asPercent(rawSummary?.parseOkRateA ?? rawSummary?.parseOkRate ?? null)} / {asPercent(sanitizedSummary?.parseOkRateA ?? sanitizedSummary?.parseOkRate ?? null)} | Agent-A StateOK raw/sanitized: {asPercent(rawSummary?.stateOkRateA ?? rawSummary?.stateOkRate ?? null)} / {asPercent(sanitizedSummary?.stateOkRateA ?? sanitizedSummary?.stateOkRate ?? null)}
                   </p>
                 </>
               ) : (
