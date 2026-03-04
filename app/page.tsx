@@ -54,12 +54,19 @@ const CONDITION_LABELS = {
 } as const;
 
 const PROFILE_LABELS = {
-  three_agent_drift_amplifier: "3-Agent Drift Amplifier",
+  three_agent_drift_amplifier: "Legacy Hidden Profile",
   drift_amplifying_loop: "Drift-Amplifying Agent Loop",
   generator_normalizer: "Generator-Normalizer Drift Amplifier",
   symmetric_control: "Symmetric Control",
   dialect_negotiation: "Dialect Negotiation Loop"
 } as const;
+
+const UI_PROFILE_LIST: ExperimentProfile[] = [
+  "drift_amplifying_loop",
+  "dialect_negotiation",
+  "generator_normalizer",
+  "symmetric_control"
+];
 
 const OBJECTIVE_MODE_LABELS = {
   parse_only: "Parse-only failure",
@@ -886,14 +893,16 @@ function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): st
   ].join("\n");
 }
 
-function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInput: string): string {
+function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "You are Agent A (Template-Locked Mutator).",
     "This is a byte-preserving mutation task, not semantic regeneration.",
     "Input is previous JSON state bytes (verbatim).",
+    `Authoritative target step for this turn: ${targetStep}.`,
     "Rules:",
-    '- Increment only the number in the "step" field by +1.',
+    `- Set "step" to exactly ${targetStep}.`,
+    "- Do not infer target step from possibly corrupted input.",
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     `- Keep "meta" fixed to "${CONTRACT_META_LITERAL}".`,
     '- Modify ONLY the digits for "step".',
@@ -914,7 +923,7 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
   ].join("\n");
 }
 
-function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput: string): string {
+function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput: string, lockedStep: number): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "You are Agent B (Controlled Formatting Mutator).",
@@ -925,6 +934,8 @@ function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput
     '- Last character must be "}".',
     "- No text before or after the JSON object.",
     "- Do not add prose or comments.",
+    `- Keep "step" fixed to exactly ${lockedStep}.`,
+    "- Do NOT increment or decrement step.",
     "- Do NOT change any numeric value.",
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     `- Keep "meta" fixed to "${CONTRACT_META_LITERAL}".`,
@@ -1090,7 +1101,7 @@ interface AgentPrompt {
   userPrompt: string;
 }
 
-function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyBlock: string, stateInput: string): AgentPrompt {
+function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyBlock: string, stateInput: string, expectedStep: number): AgentPrompt {
   const strictBoundarySuffix = 'Return exactly one JSON object. No markdown fences. No prose. First character must be "{" and last character must be "}".';
   if (profile === "three_agent_drift_amplifier") {
     if (agent === "A") {
@@ -1115,12 +1126,12 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
     if (agent === "A") {
       return {
         systemPrompt: `You are Agent A (Generator). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildDriftAmplifyingGeneratorUserPrompt(historyBlock, stateInput)
+        userPrompt: buildDriftAmplifyingGeneratorUserPrompt(historyBlock, stateInput, expectedStep)
       };
     }
     return {
       systemPrompt: `You are Agent B (Rewriter). Output JSON only. ${strictBoundarySuffix}`,
-      userPrompt: buildDriftAmplifyingRewriterUserPrompt(historyBlock, stateInput)
+      userPrompt: buildDriftAmplifyingRewriterUserPrompt(historyBlock, stateInput, expectedStep)
     };
   }
 
@@ -1178,7 +1189,7 @@ function profileRuleText(profile: ExperimentProfile): string {
     return `Turn A: step = prev_step + 1, preserve state="${CONTRACT_STATE_LITERAL}" and meta="${CONTRACT_META_LITERAL}"\\nTurn B: beautify formatting only (values unchanged)\\nTurn C: compress formatting only (values unchanged)`;
   }
   if (profile === "drift_amplifying_loop") {
-    return `Turn A: increment step by editing only step digits in previous bytes (template-locked mutation), preserve all other characters\\nTurn B: apply one small formatting mutation only (values and key order unchanged)`;
+    return `Turn A: set step to authoritative target by editing step digits only (template-locked mutation), preserve all other characters\\nTurn B: apply one small formatting mutation only with step value locked (no increment/decrement; key order unchanged)`;
   }
   return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`;
 }
@@ -1210,7 +1221,7 @@ function profilePressureText(profile: ExperimentProfile): string {
     return "Three-way dialect pressure: A imitates prior style while B beautifies and C compresses; recursive format negotiation amplifies drift probability.";
   }
   if (profile === "drift_amplifying_loop") {
-    return "Template-locked mutation pressure: Agent A edits only step digits while preserving the prior byte template; Agent B injects controlled formatting mutations.";
+    return "Template-locked mutation pressure: Agent A edits only step digits toward authoritative target while preserving prior byte template; Agent B injects controlled formatting mutations with step lock.";
   }
   if (profile === "dialect_negotiation") {
     return "Agent A enforces compact JSON while Agent B enforces readable JSON, both with style-imitation pressure; recursive dialect conflict drives drift dynamics.";
@@ -1223,7 +1234,7 @@ function profilePressureText(profile: ExperimentProfile): string {
 
 function profileArchitectureText(profile: ExperimentProfile): string {
   if (profile === "three_agent_drift_amplifier") {
-    return "3-agent loop with turn alternation A→B→C→A→B→C. Agent A increments step; B beautifies formatting; C compresses formatting.";
+    return "Legacy hidden profile (not exposed in UI).";
   }
   return "2-agent loop with turn alternation A→B→A→B. Both agents use the selected shared model.";
 }
@@ -1626,8 +1637,8 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
     `- Objective scope: ${summary.objectiveScopeLabel}`,
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
-    `- ParseOK rate (all/A/B/C): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)} / ${asPercent(summary.parseOkRateC)}`,
-    `- StateOK rate (all/A/B/C): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)} / ${asPercent(summary.stateOkRateC)}`,
+    `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
+    `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
     `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
     `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
@@ -1642,10 +1653,8 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- A_template_entropy: ${asFixed(summary.templateEntropyA, 4)}`,
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
-    `- Agent A/B/C delta: ${asFixed(summary.reinforcementDeltaA, 4)} / ${asFixed(summary.reinforcementDeltaB, 4)} / ${asFixed(summary.reinforcementDeltaC, 4)}`,
+    `- Agent A/B delta: ${asFixed(summary.reinforcementDeltaA, 4)} / ${asFixed(summary.reinforcementDeltaB, 4)}`,
     `- Edge A→B: P(dev_B|dev_A)=${asPercent(summary.edgeAB.pDevGivenDev)} | P(dev_B|clean_A)=${asPercent(summary.edgeAB.pDevGivenClean)} | Δ=${asFixed(summary.edgeAB.delta, 4)} | pairs=${summary.edgeAB.pairCount}`,
-    `- Edge B→C: P(dev_C|dev_B)=${asPercent(summary.edgeBC.pDevGivenDev)} | P(dev_C|clean_B)=${asPercent(summary.edgeBC.pDevGivenClean)} | Δ=${asFixed(summary.edgeBC.delta, 4)} | pairs=${summary.edgeBC.pairCount}`,
-    `- Edge C→A: P(dev_A_next|dev_C)=${asPercent(summary.edgeCA.pDevGivenDev)} | P(dev_A_next|clean_C)=${asPercent(summary.edgeCA.pDevGivenClean)} | Δ=${asFixed(summary.edgeCA.delta, 4)} | pairs=${summary.edgeCA.pairCount}`,
     `- Rolling reinforcement delta max (window ${ROLLING_REINFORCEMENT_WINDOW}): ${asFixed(summary.maxRollingReinforcementDelta, 4)} (alert threshold ${REINFORCEMENT_ALERT_DELTA.toFixed(2)})`,
     `- Persistence inflection: ${summary.persistenceInflectionTurn ?? "none"}${summary.persistenceInflectionDelta !== null ? ` (delta ${asFixed(summary.persistenceInflectionDelta, 4)})` : ""}`,
     `- Collapse lead from inflection to FTF_total: ${summary.collapseLeadTurnsFromInflection ?? "n/a"}`,
@@ -1687,7 +1696,7 @@ function buildLabReportMarkdown(params: {
     ""
   ];
 
-  for (const profile of Object.keys(PROFILE_LABELS) as ExperimentProfile[]) {
+  for (const profile of UI_PROFILE_LIST) {
     const raw = results[profile].raw;
     const sanitized = results[profile].sanitized;
     const smoke = evaluateSmokingGun(raw, sanitized);
@@ -1735,11 +1744,7 @@ function buildLabReportMarkdown(params: {
       );
       sections.push(`- Agent-A ParseOK raw/sanitized: ${asPercent(raw.parseOkRateA ?? raw.parseOkRate)} / ${asPercent(sanitized.parseOkRateA ?? sanitized.parseOkRate)}`);
       sections.push(`- Agent-A StateOK raw/sanitized: ${asPercent(raw.stateOkRateA ?? raw.stateOkRate)} / ${asPercent(sanitized.stateOkRateA ?? sanitized.stateOkRate)}`);
-      sections.push(
-        `- Edge A→B Δ raw/sanitized: ${asFixed(raw.edgeAB.delta, 4)} / ${asFixed(sanitized.edgeAB.delta, 4)} | ` +
-          `B→C Δ: ${asFixed(raw.edgeBC.delta, 4)} / ${asFixed(sanitized.edgeBC.delta, 4)} | ` +
-          `C→A Δ: ${asFixed(raw.edgeCA.delta, 4)} / ${asFixed(sanitized.edgeCA.delta, 4)}`
-      );
+      sections.push(`- Edge A→B Δ raw/sanitized: ${asFixed(raw.edgeAB.delta, 4)} / ${asFixed(sanitized.edgeAB.delta, 4)}`);
       sections.push(
         `- Rolling reinforcement delta max raw/sanitized: ${asFixed(raw.maxRollingReinforcementDelta, 4)} / ${asFixed(sanitized.maxRollingReinforcementDelta, 4)}`
       );
@@ -2481,25 +2486,22 @@ function EdgeTransferPanel({
   rawSummary: ConditionSummary | null;
   sanitizedSummary: ConditionSummary | null;
 }) {
-  type EdgeKey = "edgeAB" | "edgeBC" | "edgeCA";
-  const edges: Array<{ key: EdgeKey; label: string; devLabel: string; cleanLabel: string; onlyThreeAgent: boolean }> = [
-    { key: "edgeAB", label: "A→B", devLabel: "P(dev_B|dev_A)", cleanLabel: "P(dev_B|clean_A)", onlyThreeAgent: false },
-    { key: "edgeBC", label: "B→C", devLabel: "P(dev_C|dev_B)", cleanLabel: "P(dev_C|clean_B)", onlyThreeAgent: true },
-    { key: "edgeCA", label: "C→A", devLabel: "P(dev_A_next|dev_C)", cleanLabel: "P(dev_A_next|clean_C)", onlyThreeAgent: true }
+  void profile;
+  type EdgeKey = "edgeAB";
+  const edges: Array<{ key: EdgeKey; label: string; devLabel: string; cleanLabel: string }> = [
+    { key: "edgeAB", label: "A→B", devLabel: "P(dev_B|dev_A)", cleanLabel: "P(dev_B|clean_A)" }
   ];
-
-  const visibleEdges = edges.filter((edge) => !edge.onlyThreeAgent || profile === "three_agent_drift_amplifier");
   const hasAnyData = Boolean(rawSummary || sanitizedSummary);
 
   return (
     <section className="latest-card">
       <h4>Edge Transfer Telemetry</h4>
       <p className="muted">
-        Cross-agent propagation probabilities on adjacent transitions. Primary signals: P(dev_B|dev_A), P(dev_C|dev_B), P(dev_A_next|dev_C).
+        Cross-agent propagation probabilities on adjacent transitions. Primary signal: P(dev_B|dev_A).
       </p>
       {hasAnyData ? (
         <div className="policy-inline">
-          {visibleEdges.map((edge) => {
+          {edges.map((edge) => {
             const rawEdge = rawSummary ? rawSummary[edge.key] : null;
             const sanEdge = sanitizedSummary ? sanitizedSummary[edge.key] : null;
             return (
@@ -2730,7 +2732,7 @@ export default function HomePage() {
       const promptContextLength = historyBlock.length + injectedPrevState.length;
       const contextLengthGrowth = promptContextLength - initialContextLength;
 
-      const prompt = buildAgentPrompt(profile, agent, historyBlock, injectedPrevState);
+      const prompt = buildAgentPrompt(profile, agent, historyBlock, injectedPrevState, expectedStep);
       const agentModel = model;
 
       let outputBytes = "";
@@ -3268,9 +3270,9 @@ export default function HomePage() {
               <div className="field-block">
                 <label>Experiment Profile</label>
                 <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
-                  {Object.entries(PROFILE_LABELS).map(([value, label]) => (
+                  {UI_PROFILE_LIST.map((value) => (
                     <option key={value} value={value}>
-                      {label}
+                      {PROFILE_LABELS[value]}
                     </option>
                   ))}
                 </select>
@@ -3371,9 +3373,9 @@ export default function HomePage() {
               <div className="field-block">
                 <label>View Profile</label>
                 <select value={viewProfile} onChange={(event) => setViewProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
-                  {Object.entries(PROFILE_LABELS).map(([value, label]) => (
+                  {UI_PROFILE_LIST.map((value) => (
                     <option key={value} value={value}>
-                      {label}
+                      {PROFILE_LABELS[value]}
                     </option>
                   ))}
                 </select>
@@ -3560,8 +3562,8 @@ export default function HomePage() {
                     </p>
                     <p className="tiny">Objective scope: {summary?.objectiveScopeLabel ?? "n/a"}</p>
                     <p className="tiny">Turns: {summary?.turnsAttempted ?? "n/a"}</p>
-                    <p className="tiny">ParseOK (all/A/B/C): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)} / {asPercent(summary?.parseOkRateC ?? null)}</p>
-                    <p className="tiny">StateOK (all/A/B/C): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)} / {asPercent(summary?.stateOkRateC ?? null)}</p>
+                    <p className="tiny">ParseOK (all/A/B): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)}</p>
+                    <p className="tiny">StateOK (all/A/B): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)}</p>
                     <p className="tiny">Cv/Pf/Ld: {asPercent(summary?.cvRate ?? null)} / {asPercent(summary?.pfRate ?? null)} / {asPercent(summary?.ldRate ?? null)}</p>
                     <p className="tiny">Cv/Pf/Ld (A): {asPercent(summary?.cvRateA ?? null)} / {asPercent(summary?.pfRateA ?? null)} / {asPercent(summary?.ldRateA ?? null)}</p>
                     <p className="tiny">FTF total/parse/logic/struct: {summary?.ftfTotal ?? "n/a"} / {summary?.ftfParse ?? "n/a"} / {summary?.ftfLogic ?? "n/a"} / {summary?.ftfStruct ?? "n/a"}</p>
@@ -3574,10 +3576,8 @@ export default function HomePage() {
                     <p className="tiny">First suffix drift / max suffix / suffix slope: {summary?.firstSuffixDriftTurn ?? "n/a"} / {summary?.maxSuffixLen ?? "n/a"} / {asFixed(summary?.suffixGrowthSlope ?? null, 4)}</p>
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
-                    <p className="tiny">Agent A/B/C delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)} / {asFixed(summary?.reinforcementDeltaC ?? null, 4)}</p>
+                    <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
                     <p className="tiny">A→B P(dev_B|dev_A): {asPercent(summary?.edgeAB.pDevGivenDev ?? null)} | P(dev_B|clean_A): {asPercent(summary?.edgeAB.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeAB.delta ?? null, 4)}</p>
-                    <p className="tiny">B→C P(dev_C|dev_B): {asPercent(summary?.edgeBC.pDevGivenDev ?? null)} | P(dev_C|clean_B): {asPercent(summary?.edgeBC.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeBC.delta ?? null, 4)}</p>
-                    <p className="tiny">C→A P(dev_A_next|dev_C): {asPercent(summary?.edgeCA.pDevGivenDev ?? null)} | P(dev_A_next|clean_C): {asPercent(summary?.edgeCA.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeCA.delta ?? null, 4)}</p>
                     <p className="tiny">Rolling delta max / inflection: {asFixed(summary?.maxRollingReinforcementDelta ?? null, 4)} / {summary?.persistenceInflectionTurn ?? "none"}</p>
                     <p className="tiny">Inflection→FTF_total lead: {summary?.collapseLeadTurnsFromInflection ?? "n/a"} turns</p>
                     <p className="tiny">
@@ -3602,9 +3602,9 @@ export default function HomePage() {
               <label className="order-control">
                 <span>Profile</span>
                 <select value={viewProfile} onChange={(event) => setViewProfile(event.target.value as ExperimentProfile)}>
-                  {Object.entries(PROFILE_LABELS).map(([value, label]) => (
+                  {UI_PROFILE_LIST.map((value) => (
                     <option key={value} value={value}>
-                      {label}
+                      {PROFILE_LABELS[value]}
                     </option>
                   ))}
                 </select>
@@ -3705,7 +3705,7 @@ export default function HomePage() {
                     <>
                       <p className="mono">Objective scope: {summary.objectiveScopeLabel}</p>
                   <p className="mono">
-                    Turns: {summary.turnsAttempted} | ParseOK (all/A/B/C): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} / {asPercent(summary.parseOkRateC)} | StateOK (all/A/B/C): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)} / {asPercent(summary.stateOkRateC)}
+                    Turns: {summary.turnsAttempted} | ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} | StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
                   </p>
                       <p className="mono">
                         FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
@@ -3732,10 +3732,10 @@ export default function HomePage() {
                         Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev_next_same|dev_same): {asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): {asPercent(summary.reinforcementWhenClean)}
                       </p>
                       <p className="mono">
-                        Agent A/B/C delta: {asFixed(summary.reinforcementDeltaA, 4)} / {asFixed(summary.reinforcementDeltaB, 4)} / {asFixed(summary.reinforcementDeltaC, 4)}
+                        Agent A/B delta: {asFixed(summary.reinforcementDeltaA, 4)} / {asFixed(summary.reinforcementDeltaB, 4)}
                       </p>
                       <p className="mono">
-                        A→B/B→C/C→A deltas: {asFixed(summary.edgeAB.delta, 4)} / {asFixed(summary.edgeBC.delta, 4)} / {asFixed(summary.edgeCA.delta, 4)}
+                        A→B delta: {asFixed(summary.edgeAB.delta, 4)}
                       </p>
                       <p className="mono">
                         Rolling delta max/inflection: {asFixed(summary.maxRollingReinforcementDelta, 4)}/{summary.persistenceInflectionTurn ?? "none"} | lead to FTF_total: {summary.collapseLeadTurnsFromInflection ?? "n/a"}
