@@ -29,7 +29,7 @@ const modelOptionsByProvider: Record<Exclude<APIProvider, "auto">, Array<{ value
     { value: "gemini-1.5-pro", label: "gemini-1.5-pro" }
   ],
   mistral: [
-    { value: "mistral-small-latest", label: "mistral-small-latest (Default REP)" },
+    { value: "mistral-small-latest", label: "mistral-small-latest (Default Agent Lab)" },
     { value: "mistral-medium-latest", label: "mistral-medium-latest" },
     { value: "open-mistral-nemo", label: "open-mistral-nemo" }
   ]

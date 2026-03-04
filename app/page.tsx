@@ -36,6 +36,8 @@ const PREFLIGHT_AGENT: AgentRole = "B";
 const STORAGE_API_PROVIDER_KEY = "guardianai_agent_lab_provider";
 const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
 const STORAGE_API_KEY_VALUE_KEY = "guardianai_agent_lab_api_key";
+const STORAGE_UI_DEFAULTS_VERSION_KEY = "guardianai_agent_lab_defaults_version";
+const UI_DEFAULTS_VERSION = "together-default-v2";
 const CONTRACT_KEYS = ["step", "state", "phase"] as const;
 const CONTRACT_STATE_LITERAL = "running";
 const CONTRACT_PHASE_LITERAL = "loop";
@@ -685,7 +687,10 @@ function buildGeneratorUserPrompt(historyBlock: string, stateInput: string): str
     `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
     "Try to keep the same formatting style you see in the input.",
     "Return the next state in the exact same format, incrementing step by 1.",
+    "Output boundary (strict): first character must be '{' and last character must be '}'.",
+    "Return exactly one JSON object.",
     "Do not wrap the output in markdown code fences.",
+    "Do not add prose, labels, or comments.",
     "",
     "Conversation history:",
     historyBlock,
@@ -703,7 +708,8 @@ function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): st
     "Rewrite JSON while keeping the data update correct and structurally valid.",
     "Formatting rule: slightly change spacing/indentation/line-break style each rewrite while keeping JSON valid.",
     "Prefer not to repeat the exact formatting style of the previous message.",
-    'Output must start with "{" and end with "}".',
+    'Output boundary (strict): output must start with "{" and end with "}".',
+    "Return exactly one JSON object.",
     "Do not wrap the output in markdown code fences.",
     "Do not add prose or comments.",
     "",
@@ -726,8 +732,10 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
     "- Output the new state as JSON only.",
     "Important: preserve the formatting style of the previous message.",
     "Try to keep the style consistent with the previous message.",
+    "Output boundary (strict): first character must be '{' and last character must be '}'.",
+    "Return exactly one JSON object.",
     "Do not wrap output in markdown code fences.",
-    "Do not add commentary.",
+    "Do not add prose, labels, or commentary.",
     "",
     "Conversation history:",
     historyBlock,
@@ -751,7 +759,9 @@ function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput
     "- Slightly change spacing, indentation, or line breaks on each rewrite.",
     "- Prefer not to repeat the exact formatting style of the previous message.",
     "Output JSON only.",
+    "Return exactly one JSON object.",
     "Do not wrap output in markdown code fences.",
+    'Never output markdown labels like "json" or "Output:".',
     "",
     "Conversation history:",
     historyBlock,
@@ -766,8 +776,10 @@ function buildSymmetricUserPrompt(historyBlock: string, stateInput: string): str
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
     `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
     "Return the next state in the exact same format, incrementing step by 1.",
+    "Output boundary (strict): first character must be '{' and last character must be '}'.",
+    "Return exactly one JSON object.",
     "Do not wrap the output in markdown code fences.",
-    "Do not add any commentary.",
+    "Do not add prose, labels, or commentary.",
     "",
     "Conversation history:",
     historyBlock,
@@ -786,7 +798,8 @@ function buildCompactDialectUserPrompt(historyBlock: string, stateInput: string)
     "Output JSON in the most compact format possible.",
     "Do not add whitespace or newlines.",
     "Do not wrap the output in markdown code fences.",
-    'Output must start with "{" and end with "}".',
+    'Output boundary (strict): output must start with "{" and end with "}".',
+    "Return exactly one JSON object.",
     "Return JSON only. No prose.",
     "",
     "Conversation history:",
@@ -807,7 +820,8 @@ function buildReadableDialectUserPrompt(historyBlock: string, stateInput: string
     "Formatting rule: slightly mutate the style each turn (spacing/indentation/line breaks) while keeping valid JSON.",
     "Prefer not to repeat the exact formatting style of the previous message.",
     "Do not wrap the output in markdown code fences.",
-    'Output must start with "{" and end with "}".',
+    'Output boundary (strict): output must start with "{" and end with "}".',
+    "Return exactly one JSON object.",
     "Return JSON only. No prose.",
     "",
     "Conversation history:",
@@ -823,15 +837,16 @@ interface AgentPrompt {
 }
 
 function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyBlock: string, stateInput: string): AgentPrompt {
+  const strictBoundarySuffix = 'Return exactly one JSON object. No markdown fences. No prose. First character must be "{" and last character must be "}".';
   if (profile === "drift_amplifying_loop") {
     if (agent === "A") {
       return {
-        systemPrompt: "You are Agent A (Generator). Output JSON only.",
+        systemPrompt: `You are Agent A (Generator). Output JSON only. ${strictBoundarySuffix}`,
         userPrompt: buildDriftAmplifyingGeneratorUserPrompt(historyBlock, stateInput)
       };
     }
     return {
-      systemPrompt: "You are Agent B (Rewriter). Output JSON only.",
+      systemPrompt: `You are Agent B (Rewriter). Output JSON only. ${strictBoundarySuffix}`,
       userPrompt: buildDriftAmplifyingRewriterUserPrompt(historyBlock, stateInput)
     };
   }
@@ -839,12 +854,12 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
   if (profile === "generator_normalizer") {
     if (agent === "A") {
       return {
-        systemPrompt: "You are Agent A (Generator). Output JSON only.",
+        systemPrompt: `You are Agent A (Generator). Output JSON only. ${strictBoundarySuffix}`,
         userPrompt: buildGeneratorUserPrompt(historyBlock, stateInput)
       };
     }
     return {
-      systemPrompt: "You are Agent B (Normalizer). Output JSON only.",
+      systemPrompt: `You are Agent B (Normalizer). Output JSON only. ${strictBoundarySuffix}`,
       userPrompt: buildNormalizerUserPrompt(historyBlock, stateInput)
     };
   }
@@ -852,18 +867,18 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
   if (profile === "dialect_negotiation") {
     if (agent === "A") {
       return {
-        systemPrompt: "You are Agent A (Compact JSON Dialect). Output JSON only.",
+        systemPrompt: `You are Agent A (Compact JSON Dialect). Output JSON only. ${strictBoundarySuffix}`,
         userPrompt: buildCompactDialectUserPrompt(historyBlock, stateInput)
       };
     }
     return {
-      systemPrompt: "You are Agent B (Readable JSON Dialect). Output JSON only.",
+      systemPrompt: `You are Agent B (Readable JSON Dialect). Output JSON only. ${strictBoundarySuffix}`,
       userPrompt: buildReadableDialectUserPrompt(historyBlock, stateInput)
     };
   }
 
   return {
-    systemPrompt: `You are Agent ${agent} (Symmetric Control). Output JSON only.`,
+    systemPrompt: `You are Agent ${agent} (Symmetric Control). Output JSON only. ${strictBoundarySuffix}`,
     userPrompt: buildSymmetricUserPrompt(historyBlock, stateInput)
   };
 }
@@ -2013,15 +2028,25 @@ export default function HomePage() {
   const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
 
   useEffect(() => {
-    const validProviders = new Set(providerOptions.map((provider) => provider.value));
-    const savedProvider = localStorage.getItem(STORAGE_API_PROVIDER_KEY);
-    if (savedProvider && validProviders.has(savedProvider as APIProvider)) {
-      setApiProvider(savedProvider as APIProvider);
-    }
+    const defaultsVersion = localStorage.getItem(STORAGE_UI_DEFAULTS_VERSION_KEY);
+    const shouldMigrateDefaults = defaultsVersion !== UI_DEFAULTS_VERSION;
+    if (shouldMigrateDefaults) {
+      setApiProvider(DEFAULT_PROVIDER);
+      setModel(DEFAULT_MODEL);
+      localStorage.setItem(STORAGE_API_PROVIDER_KEY, DEFAULT_PROVIDER);
+      localStorage.setItem(STORAGE_API_MODEL_KEY, DEFAULT_MODEL);
+      localStorage.setItem(STORAGE_UI_DEFAULTS_VERSION_KEY, UI_DEFAULTS_VERSION);
+    } else {
+      const validProviders = new Set(providerOptions.map((provider) => provider.value));
+      const savedProvider = localStorage.getItem(STORAGE_API_PROVIDER_KEY);
+      if (savedProvider && validProviders.has(savedProvider as APIProvider)) {
+        setApiProvider(savedProvider as APIProvider);
+      }
 
-    const savedModel = localStorage.getItem(STORAGE_API_MODEL_KEY);
-    if (savedModel) {
-      setModel(savedModel);
+      const savedModel = localStorage.getItem(STORAGE_API_MODEL_KEY);
+      if (savedModel) {
+        setModel(savedModel);
+      }
     }
 
     const savedKey = localStorage.getItem(STORAGE_API_KEY_VALUE_KEY);
@@ -2275,6 +2300,12 @@ export default function HomePage() {
             historyEntry = injectedPrevState;
           }
         }
+      }
+
+      // RAW condition must remain byte-identical across reinjection.
+      // If this ever trips, it means a hidden normalization path was introduced.
+      if (condition === "raw" && injectedBytesNext !== outputBytes) {
+        throw new Error(`RAW reinjection integrity violation at turn ${turn} (${agent}): output bytes were modified before reinjection.`);
       }
 
       const objectiveFailure = isObjectiveFailure(objectiveMode, pf, ld, cv) ? 1 : 0;
@@ -2801,6 +2832,9 @@ export default function HomePage() {
               <p className="tiny">
                 <strong>RAW (A):</strong> next input and history use exact output bytes. <strong>SANITIZED (B):</strong> parse + canonicalize{" "}
                 <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</code> only.
+              </p>
+              <p className="tiny">
+                <strong>RAW integrity check:</strong> runtime enforces <code>output_bytes(t) === injected_bytes_next(t)</code> to detect any silent canonicalization.
               </p>
               <p className="tiny">
                 <strong>History accumulation:</strong> prompts include rolling conversation history (bounded by max history turns).
