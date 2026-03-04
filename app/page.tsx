@@ -13,6 +13,8 @@ import type { APIProvider } from "@/lib/types";
 
 const FIXED_TEMPERATURE = 0;
 const FIXED_RETRIES = 0;
+const DEFAULT_PROVIDER: APIProvider = "together";
+const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
 const DEFAULT_TURNS = 200;
 const DEFAULT_MAX_TOKENS = 96;
 const DEFAULT_INTER_TURN_DELAY_MS = 1200;
@@ -23,6 +25,9 @@ const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 3;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const DRIFT_DEV_EVENT_THRESHOLD = 3;
+const STORAGE_API_PROVIDER_KEY = "guardianai_agent_lab_provider";
+const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
+const STORAGE_API_KEY_VALUE_KEY = "guardianai_agent_lab_api_key";
 const STEP_SHAPE_REGEX = /^\{"step":-?\d+\}$/;
 
 const PHASE_PREFIX_JUMP_BYTES = 20;
@@ -1482,10 +1487,9 @@ function setConditionResult(
 }
 
 export default function HomePage() {
-  const [apiProvider, setApiProvider] = useState<APIProvider>("together");
+  const [apiProvider, setApiProvider] = useState<APIProvider>(DEFAULT_PROVIDER);
   const [apiKey, setApiKey] = useState<string>("");
-  const [modelA, setModelA] = useState<string>(defaultModelForProvider("together"));
-  const [modelB, setModelB] = useState<string>(defaultModelForProvider("together"));
+  const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
   const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("generator_normalizer");
   const [viewProfile, setViewProfile] = useState<ExperimentProfile>("generator_normalizer");
@@ -1512,8 +1516,27 @@ export default function HomePage() {
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
-  const websiteURL = process.env.NEXT_PUBLIC_GUARDIAN_WEBSITE_URL?.trim() || "";
-  const githubURL = process.env.NEXT_PUBLIC_GITHUB_REPO_URL?.trim() || "";
+  const websiteURL = process.env.NEXT_PUBLIC_GUARDIAN_WEBSITE_URL?.trim() || "https://guardianai.fr";
+  const githubURL =
+    process.env.NEXT_PUBLIC_GITHUB_REPO_URL?.trim() || "https://github.com/GuardianAI1/guardianai-agent-drift-lab3-web";
+
+  useEffect(() => {
+    const validProviders = new Set(providerOptions.map((provider) => provider.value));
+    const savedProvider = localStorage.getItem(STORAGE_API_PROVIDER_KEY);
+    if (savedProvider && validProviders.has(savedProvider as APIProvider)) {
+      setApiProvider(savedProvider as APIProvider);
+    }
+
+    const savedModel = localStorage.getItem(STORAGE_API_MODEL_KEY);
+    if (savedModel) {
+      setModel(savedModel);
+    }
+
+    const savedKey = localStorage.getItem(STORAGE_API_KEY_VALUE_KEY);
+    if (savedKey) {
+      setApiKey(normalizeApiKeyInput(savedKey));
+    }
+  }, []);
 
   const detectedKeyProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey]);
   const effectiveProvider = useMemo(() => resolveProvider(apiProvider, apiKey), [apiProvider, apiKey]);
@@ -1521,13 +1544,26 @@ export default function HomePage() {
 
   useEffect(() => {
     const allowedModels = effectiveModelOptions.map((option) => option.value);
-    if (!allowedModels.includes(modelA)) {
-      setModelA(defaultModelForProvider(effectiveProvider));
+    if (!allowedModels.includes(model)) {
+      setModel(defaultModelForProvider(effectiveProvider));
     }
-    if (!allowedModels.includes(modelB)) {
-      setModelB(defaultModelForProvider(effectiveProvider));
+  }, [effectiveModelOptions, effectiveProvider, model]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_API_PROVIDER_KEY, apiProvider);
+  }, [apiProvider]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_API_MODEL_KEY, model);
+  }, [model]);
+
+  useEffect(() => {
+    if (apiKey.trim()) {
+      localStorage.setItem(STORAGE_API_KEY_VALUE_KEY, apiKey);
+    } else {
+      localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
     }
-  }, [effectiveModelOptions, effectiveProvider, modelA, modelB]);
+  }, [apiKey]);
 
   const keyStatusLabel = !apiKey.trim()
     ? "Server Env / None"
@@ -1585,8 +1621,8 @@ export default function HomePage() {
       objectiveMode,
       providerPreference: apiProvider,
       resolvedProvider: effectiveProvider,
-      modelA,
-      modelB,
+      modelA: model,
+      modelB: model,
       temperature: FIXED_TEMPERATURE,
       retries: FIXED_RETRIES,
       horizon: turnBudget,
@@ -1626,7 +1662,7 @@ export default function HomePage() {
       const contextLengthGrowth = promptContextLength - initialContextLength;
 
       const prompt = buildAgentPrompt(profile, agent, historyBlock, injectedPrevState);
-      const agentModel = agent === "A" ? modelA : modelB;
+      const agentModel = model;
 
       let outputBytes = "";
       try {
@@ -1946,19 +1982,8 @@ export default function HomePage() {
           </div>
 
           <div className="field-block">
-            <label>Model Agent A</label>
-            <select value={modelA} onChange={(event) => setModelA(event.target.value)} disabled={isRunning}>
-              {effectiveModelOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field-block">
-            <label>Model Agent B</label>
-            <select value={modelB} onChange={(event) => setModelB(event.target.value)} disabled={isRunning}>
+            <label>Model (A & B)</label>
+            <select value={model} onChange={(event) => setModel(event.target.value)} disabled={isRunning}>
               {effectiveModelOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
@@ -2028,20 +2053,12 @@ export default function HomePage() {
           </div>
 
           <div className="row-actions">
-            {websiteURL ? (
-              <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
-                Website
-              </a>
-            ) : (
-              <button disabled>Website</button>
-            )}
-            {githubURL ? (
-              <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
-                GitHub
-              </a>
-            ) : (
-              <button disabled>GitHub</button>
-            )}
+            <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
+              Website
+            </a>
+            <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
+              GitHub
+            </a>
           </div>
         </div>
       </section>
