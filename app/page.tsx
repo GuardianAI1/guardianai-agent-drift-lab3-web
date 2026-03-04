@@ -158,6 +158,17 @@ interface PhaseTransitionCandidate {
   afterSample: string;
 }
 
+interface EdgeTransferStats {
+  from: AgentRole;
+  to: AgentRole;
+  pairCount: number;
+  devBase: number;
+  cleanBase: number;
+  pDevGivenDev: number | null;
+  pDevGivenClean: number | null;
+  delta: number | null;
+}
+
 interface ConditionSummary {
   runConfig: RunConfig;
   profile: ExperimentProfile;
@@ -201,6 +212,9 @@ interface ConditionSummary {
   reinforcementWhenDevC: number | null;
   reinforcementWhenCleanC: number | null;
   reinforcementDeltaC: number | null;
+  edgeAB: EdgeTransferStats;
+  edgeBC: EdgeTransferStats;
+  edgeCA: EdgeTransferStats;
   prevOutputToNextInputRate: number | null;
   prevInjectedToNextInputRate: number | null;
   firstSuffixDriftTurn: number | null;
@@ -475,6 +489,44 @@ function isObjectiveFailure(mode: ObjectiveMode, pf: number, ld: number, cv: num
 function firstFailureTurn(traces: TurnTrace[], metric: "pf" | "ld" | "cv" | "objectiveFailure"): number | null {
   const found = traces.find((trace) => trace[metric] === 1);
   return found ? found.turnIndex : null;
+}
+
+function edgeTransferStats(traces: TurnTrace[], from: AgentRole, to: AgentRole): EdgeTransferStats {
+  let pairCount = 0;
+  let devBase = 0;
+  let devFollow = 0;
+  let cleanBase = 0;
+  let cleanFollow = 0;
+
+  for (let index = 1; index < traces.length; index += 1) {
+    const previous = traces[index - 1];
+    const current = traces[index];
+    if (previous.agent !== from || current.agent !== to) continue;
+    pairCount += 1;
+
+    if (previous.devState === 1) {
+      devBase += 1;
+      if (current.devState === 1) devFollow += 1;
+    } else {
+      cleanBase += 1;
+      if (current.devState === 1) cleanFollow += 1;
+    }
+  }
+
+  const pDevGivenDev = safeRate(devFollow, devBase);
+  const pDevGivenClean = safeRate(cleanFollow, cleanBase);
+  const delta = pDevGivenDev !== null && pDevGivenClean !== null ? pDevGivenDev - pDevGivenClean : null;
+
+  return {
+    from,
+    to,
+    pairCount,
+    devBase,
+    cleanBase,
+    pDevGivenDev,
+    pDevGivenClean,
+    delta
+  };
 }
 
 function shortExcerpt(content: string, maxLen = 120): string {
@@ -1245,6 +1297,9 @@ function buildConditionSummary(params: {
     inflection && ftfTotal !== null && ftfTotal > inflection.turn ? ftfTotal - inflection.turn : null;
 
   const drift = driftTelemetry(traces);
+  const edgeAB = edgeTransferStats(traces, "A", "B");
+  const edgeBC = edgeTransferStats(traces, "B", "C");
+  const edgeCA = edgeTransferStats(traces, "C", "A");
   const firstSuffixDriftTurn = traces.find((trace) => trace.suffixLen > 0)?.turnIndex ?? null;
   const maxSuffixLen = traces.length > 0 ? Math.max(...traces.map((trace) => trace.suffixLen)) : null;
   const suffixGrowthSlope = metricSlope(traces, (trace) => trace.suffixLen);
@@ -1343,6 +1398,9 @@ function buildConditionSummary(params: {
     reinforcementWhenDevC: drift.reinforcementWhenDevC,
     reinforcementWhenCleanC: drift.reinforcementWhenCleanC,
     reinforcementDeltaC: drift.reinforcementDeltaC,
+    edgeAB,
+    edgeBC,
+    edgeCA,
     prevOutputToNextInputRate,
     prevInjectedToNextInputRate,
     firstSuffixDriftTurn,
@@ -1414,6 +1472,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
     `- Agent A/B/C delta: ${asFixed(summary.reinforcementDeltaA, 4)} / ${asFixed(summary.reinforcementDeltaB, 4)} / ${asFixed(summary.reinforcementDeltaC, 4)}`,
+    `- Edge A→B: P(dev_B|dev_A)=${asPercent(summary.edgeAB.pDevGivenDev)} | P(dev_B|clean_A)=${asPercent(summary.edgeAB.pDevGivenClean)} | Δ=${asFixed(summary.edgeAB.delta, 4)} | pairs=${summary.edgeAB.pairCount}`,
+    `- Edge B→C: P(dev_C|dev_B)=${asPercent(summary.edgeBC.pDevGivenDev)} | P(dev_C|clean_B)=${asPercent(summary.edgeBC.pDevGivenClean)} | Δ=${asFixed(summary.edgeBC.delta, 4)} | pairs=${summary.edgeBC.pairCount}`,
+    `- Edge C→A: P(dev_A_next|dev_C)=${asPercent(summary.edgeCA.pDevGivenDev)} | P(dev_A_next|clean_C)=${asPercent(summary.edgeCA.pDevGivenClean)} | Δ=${asFixed(summary.edgeCA.delta, 4)} | pairs=${summary.edgeCA.pairCount}`,
     `- Rolling reinforcement delta max (window ${ROLLING_REINFORCEMENT_WINDOW}): ${asFixed(summary.maxRollingReinforcementDelta, 4)} (alert threshold ${REINFORCEMENT_ALERT_DELTA.toFixed(2)})`,
     `- Persistence inflection: ${summary.persistenceInflectionTurn ?? "none"}${summary.persistenceInflectionDelta !== null ? ` (delta ${asFixed(summary.persistenceInflectionDelta, 4)})` : ""}`,
     `- Collapse lead from inflection to FTF_total: ${summary.collapseLeadTurnsFromInflection ?? "n/a"}`,
@@ -1487,6 +1548,11 @@ function buildLabReportMarkdown(params: {
       sections.push(`- Agent-A reinforcementDelta (raw): ${asFixed(smokeSafe.reinforcementDelta, 4)}`);
       sections.push(`- Agent-A ParseOK raw/sanitized: ${asPercent(raw.parseOkRateA ?? raw.parseOkRate)} / ${asPercent(sanitized.parseOkRateA ?? sanitized.parseOkRate)}`);
       sections.push(`- Agent-A StateOK raw/sanitized: ${asPercent(raw.stateOkRateA ?? raw.stateOkRate)} / ${asPercent(sanitized.stateOkRateA ?? sanitized.stateOkRate)}`);
+      sections.push(
+        `- Edge A→B Δ raw/sanitized: ${asFixed(raw.edgeAB.delta, 4)} / ${asFixed(sanitized.edgeAB.delta, 4)} | ` +
+          `B→C Δ: ${asFixed(raw.edgeBC.delta, 4)} / ${asFixed(sanitized.edgeBC.delta, 4)} | ` +
+          `C→A Δ: ${asFixed(raw.edgeCA.delta, 4)} / ${asFixed(sanitized.edgeCA.delta, 4)}`
+      );
       sections.push(
         `- Rolling reinforcement delta max raw/sanitized: ${asFixed(raw.maxRollingReinforcementDelta, 4)} / ${asFixed(sanitized.maxRollingReinforcementDelta, 4)}`
       );
@@ -2203,6 +2269,57 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
       <p className="muted">
         Regime guide: above diagonal = drift reinforcement, on diagonal = stable dialect, below diagonal = correction/damping.
       </p>
+    </section>
+  );
+}
+
+function EdgeTransferPanel({
+  profile,
+  rawSummary,
+  sanitizedSummary
+}: {
+  profile: ExperimentProfile;
+  rawSummary: ConditionSummary | null;
+  sanitizedSummary: ConditionSummary | null;
+}) {
+  type EdgeKey = "edgeAB" | "edgeBC" | "edgeCA";
+  const edges: Array<{ key: EdgeKey; label: string; devLabel: string; cleanLabel: string; onlyThreeAgent: boolean }> = [
+    { key: "edgeAB", label: "A→B", devLabel: "P(dev_B|dev_A)", cleanLabel: "P(dev_B|clean_A)", onlyThreeAgent: false },
+    { key: "edgeBC", label: "B→C", devLabel: "P(dev_C|dev_B)", cleanLabel: "P(dev_C|clean_B)", onlyThreeAgent: true },
+    { key: "edgeCA", label: "C→A", devLabel: "P(dev_A_next|dev_C)", cleanLabel: "P(dev_A_next|clean_C)", onlyThreeAgent: true }
+  ];
+
+  const visibleEdges = edges.filter((edge) => !edge.onlyThreeAgent || profile === "three_agent_drift_amplifier");
+  const hasAnyData = Boolean(rawSummary || sanitizedSummary);
+
+  return (
+    <section className="latest-card">
+      <h4>Edge Transfer Telemetry</h4>
+      <p className="muted">
+        Cross-agent propagation probabilities on adjacent transitions. Primary signals: P(dev_B|dev_A), P(dev_C|dev_B), P(dev_A_next|dev_C).
+      </p>
+      {hasAnyData ? (
+        <div className="policy-inline">
+          {visibleEdges.map((edge) => {
+            const rawEdge = rawSummary ? rawSummary[edge.key] : null;
+            const sanEdge = sanitizedSummary ? sanitizedSummary[edge.key] : null;
+            return (
+              <div key={edge.key}>
+                <p className="tiny">
+                  <strong>{edge.label}</strong> | RAW {edge.devLabel}: {asPercent(rawEdge?.pDevGivenDev ?? null)} | RAW {edge.cleanLabel}:{" "}
+                  {asPercent(rawEdge?.pDevGivenClean ?? null)} | RAW Δ: {asFixed(rawEdge?.delta ?? null, 4)} | pairs: {rawEdge?.pairCount ?? "n/a"}
+                </p>
+                <p className="tiny">
+                  <strong>{edge.label}</strong> | SAN {edge.devLabel}: {asPercent(sanEdge?.pDevGivenDev ?? null)} | SAN {edge.cleanLabel}:{" "}
+                  {asPercent(sanEdge?.pDevGivenClean ?? null)} | SAN Δ: {asFixed(sanEdge?.delta ?? null, 4)} | pairs: {sanEdge?.pairCount ?? "n/a"}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="muted">Run RAW and SANITIZED to populate edge transfer telemetry.</p>
+      )}
     </section>
   );
 }
@@ -3250,6 +3367,9 @@ export default function HomePage() {
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
                     <p className="tiny">Agent A/B/C delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)} / {asFixed(summary?.reinforcementDeltaC ?? null, 4)}</p>
+                    <p className="tiny">A→B P(dev_B|dev_A): {asPercent(summary?.edgeAB.pDevGivenDev ?? null)} | P(dev_B|clean_A): {asPercent(summary?.edgeAB.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeAB.delta ?? null, 4)}</p>
+                    <p className="tiny">B→C P(dev_C|dev_B): {asPercent(summary?.edgeBC.pDevGivenDev ?? null)} | P(dev_C|clean_B): {asPercent(summary?.edgeBC.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeBC.delta ?? null, 4)}</p>
+                    <p className="tiny">C→A P(dev_A_next|dev_C): {asPercent(summary?.edgeCA.pDevGivenDev ?? null)} | P(dev_A_next|clean_C): {asPercent(summary?.edgeCA.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeCA.delta ?? null, 4)}</p>
                     <p className="tiny">Rolling delta max / inflection: {asFixed(summary?.maxRollingReinforcementDelta ?? null, 4)} / {summary?.persistenceInflectionTurn ?? "none"}</p>
                     <p className="tiny">Inflection→FTF_total lead: {summary?.collapseLeadTurnsFromInflection ?? "n/a"} turns</p>
                     <p className="tiny">
@@ -3361,6 +3481,7 @@ export default function HomePage() {
             />
             <DriftUptimeDivergenceChart summary={results[viewProfile][traceCondition]} />
             <DriftPhasePlot rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
+            <EdgeTransferPanel profile={viewProfile} rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
 
             {(["raw", "sanitized"] as const).map((condition) => {
               const summary = results[viewProfile][condition];
@@ -3391,6 +3512,9 @@ export default function HomePage() {
                       </p>
                       <p className="mono">
                         Agent A/B/C delta: {asFixed(summary.reinforcementDeltaA, 4)} / {asFixed(summary.reinforcementDeltaB, 4)} / {asFixed(summary.reinforcementDeltaC, 4)}
+                      </p>
+                      <p className="mono">
+                        A→B/B→C/C→A deltas: {asFixed(summary.edgeAB.delta, 4)} / {asFixed(summary.edgeBC.delta, 4)} / {asFixed(summary.edgeCA.delta, 4)}
                       </p>
                       <p className="mono">
                         Rolling delta max/inflection: {asFixed(summary.maxRollingReinforcementDelta, 4)}/{summary.persistenceInflectionTurn ?? "none"} | lead to FTF_total: {summary.collapseLeadTurnsFromInflection ?? "n/a"}
