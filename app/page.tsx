@@ -177,6 +177,7 @@ interface ConditionSummary {
   condition: RepCondition;
   objectiveMode: ObjectiveMode;
   objectiveLabel: string;
+  objectiveScopeLabel: string;
   startedAt: string;
   finishedAt: string;
   turnsConfigured: number;
@@ -192,8 +193,17 @@ interface ConditionSummary {
   stateOkRateB: number | null;
   stateOkRateC: number | null;
   cvRate: number | null;
+  cvRateA: number | null;
+  cvRateB: number | null;
+  cvRateC: number | null;
   pfRate: number | null;
+  pfRateA: number | null;
+  pfRateB: number | null;
+  pfRateC: number | null;
   ldRate: number | null;
+  ldRateA: number | null;
+  ldRateB: number | null;
+  ldRateC: number | null;
   contextGrowthAvg: number | null;
   contextGrowthMax: number | null;
   contextGrowthSlope: number | null;
@@ -201,6 +211,12 @@ interface ConditionSummary {
   driftP95: number | null;
   driftMax: number | null;
   escalationSlope: number | null;
+  driftAvgA: number | null;
+  driftP95A: number | null;
+  driftMaxA: number | null;
+  escalationSlopeA: number | null;
+  artifactPersistenceA: number | null;
+  templateEntropyA: number | null;
   artifactPersistence: number | null;
   persistenceRate: number | null;
   reinforcementWhenDev: number | null;
@@ -228,6 +244,10 @@ interface ConditionSummary {
   ftfLogic: number | null;
   ftfStruct: number | null;
   ftfTotal: number | null;
+  ftfParseA: number | null;
+  ftfLogicA: number | null;
+  ftfStructA: number | null;
+  ftfTotalA: number | null;
   preflightPassed: boolean | null;
   preflightReason: string | null;
   maxRollingReinforcementDelta: number | null;
@@ -269,6 +289,12 @@ interface ObjectiveEval {
   pass: boolean;
   driftRatio: number | null;
   reinforcementDelta: number | null;
+  spi: number | null;
+  cvRateRawA: number | null;
+  cvRateSanitizedA: number | null;
+  ftfStructRawA: number | null;
+  ftfStructSanitizedA: number | null;
+  structuralGateSeparated: boolean;
 }
 
 function emptyResults(): ResultsByProfile {
@@ -351,6 +377,26 @@ function metricSlope(traces: TurnTrace[], valueFor: (trace: TurnTrace) => number
   const denominator = n * sumXX - sumX * sumX;
   if (denominator === 0) return 0;
   return (n * sumXY - sumX * sumY) / denominator;
+}
+
+function templateSignature(outputBytes: string): string {
+  // Keep structure/whitespace pattern while masking numeric evolution.
+  return outputBytes.replace(/-?\d+/g, "<int>");
+}
+
+function shannonEntropy(values: string[]): number | null {
+  if (values.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  const total = values.length;
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const p = count / total;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
 }
 
 function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
@@ -501,7 +547,19 @@ function objectiveLabel(mode: ObjectiveMode): string {
   return "Pf=1 or Ld=1";
 }
 
-function isObjectiveFailure(mode: ObjectiveMode, pf: number, ld: number, cv: number): boolean {
+function isAgentInObjectiveScope(profile: ExperimentProfile, agent: AgentRole): boolean {
+  // Drift-amplifying loop treats Agent B as controlled mutation pressure.
+  if (profile === "drift_amplifying_loop") return agent === "A";
+  return true;
+}
+
+function objectiveScopeLabel(profile: ExperimentProfile): string {
+  if (profile === "drift_amplifying_loop") return "Agent A only (Generator gate)";
+  return "All agents";
+}
+
+function isObjectiveFailure(profile: ExperimentProfile, agent: AgentRole, mode: ObjectiveMode, pf: number, ld: number, cv: number): boolean {
+  if (!isAgentInObjectiveScope(profile, agent)) return false;
   if (mode === "parse_only") return pf === 1;
   if (mode === "logic_only") return ld === 1;
   if (mode === "strict_structural") return cv === 1;
@@ -1279,6 +1337,8 @@ function traceToJsonl(summary: ConditionSummary): string {
       Cv: trace.cv,
       Ld: trace.ld,
       objective_failure: trace.objectiveFailure,
+      objective_scope: objectiveScopeLabel(summary.profile),
+      agent_in_objective_scope: isAgentInObjectiveScope(summary.profile, trace.agent) ? 1 : 0,
       uptime: trace.uptime,
       byteLength: trace.byteLength,
       lineCount: trace.lineCount,
@@ -1327,20 +1387,36 @@ function buildConditionSummary(params: {
   const stateOkCountB = tracesB.reduce((sum, trace) => sum + trace.stateOk, 0);
   const stateOkCountC = tracesC.reduce((sum, trace) => sum + trace.stateOk, 0);
   const cvCount = traces.reduce((sum, trace) => sum + trace.cv, 0);
+  const cvCountA = tracesA.reduce((sum, trace) => sum + trace.cv, 0);
+  const cvCountB = tracesB.reduce((sum, trace) => sum + trace.cv, 0);
+  const cvCountC = tracesC.reduce((sum, trace) => sum + trace.cv, 0);
   const pfCount = traces.reduce((sum, trace) => sum + trace.pf, 0);
+  const pfCountA = tracesA.reduce((sum, trace) => sum + trace.pf, 0);
+  const pfCountB = tracesB.reduce((sum, trace) => sum + trace.pf, 0);
+  const pfCountC = tracesC.reduce((sum, trace) => sum + trace.pf, 0);
   const ldCount = traces.reduce((sum, trace) => sum + trace.ld, 0);
+  const ldCountA = tracesA.reduce((sum, trace) => sum + trace.ld, 0);
+  const ldCountB = tracesB.reduce((sum, trace) => sum + trace.ld, 0);
+  const ldCountC = tracesC.reduce((sum, trace) => sum + trace.ld, 0);
 
+  const objectiveScopeTraces = runConfig.profile === "drift_amplifying_loop" ? tracesA : traces;
   const ftfParse = firstFailureTurn(traces, "pf");
   const ftfLogic = firstFailureTurn(traces, "ld");
   const ftfStruct = firstFailureTurn(traces, "cv");
-  const ftfTotal = firstFailureTurn(traces, "objectiveFailure");
-  const rollingReinf = runningReinforcementPoints(traces, ROLLING_REINFORCEMENT_WINDOW);
+  const ftfTotal = firstFailureTurn(objectiveScopeTraces, "objectiveFailure");
+  const ftfParseA = firstFailureTurn(tracesA, "pf");
+  const ftfLogicA = firstFailureTurn(tracesA, "ld");
+  const ftfStructA = firstFailureTurn(tracesA, "cv");
+  const ftfTotalA = firstFailureTurn(tracesA, "objectiveFailure");
+  const rollingReinf = runningReinforcementPoints(objectiveScopeTraces, ROLLING_REINFORCEMENT_WINDOW);
   const inflection = findPersistenceInflection(rollingReinf);
   const maxRollingReinforcementDelta = maxDelta(rollingReinf);
   const collapseLeadTurnsFromInflection =
     inflection && ftfTotal !== null && ftfTotal > inflection.turn ? ftfTotal - inflection.turn : null;
 
   const drift = driftTelemetry(traces);
+  const driftA = driftTelemetry(tracesA);
+  const templateEntropyA = shannonEntropy(tracesA.map((trace) => templateSignature(trace.outputBytes)));
   const edgeAB = edgeTransferStats(traces, "A", "B");
   const edgeBC = edgeTransferStats(traces, "B", "C");
   const edgeCA = edgeTransferStats(traces, "C", "A");
@@ -1405,6 +1481,7 @@ function buildConditionSummary(params: {
     condition,
     objectiveMode: runConfig.objectiveMode,
     objectiveLabel: objectiveLabel(runConfig.objectiveMode),
+    objectiveScopeLabel: objectiveScopeLabel(runConfig.profile),
     startedAt,
     finishedAt: finishedAt ?? new Date().toISOString(),
     turnsConfigured: runConfig.horizon,
@@ -1420,8 +1497,17 @@ function buildConditionSummary(params: {
     stateOkRateB: safeRate(stateOkCountB, tracesB.length),
     stateOkRateC: safeRate(stateOkCountC, tracesC.length),
     cvRate: safeRate(cvCount, turnsAttempted),
+    cvRateA: safeRate(cvCountA, tracesA.length),
+    cvRateB: safeRate(cvCountB, tracesB.length),
+    cvRateC: safeRate(cvCountC, tracesC.length),
     pfRate: safeRate(pfCount, turnsAttempted),
+    pfRateA: safeRate(pfCountA, tracesA.length),
+    pfRateB: safeRate(pfCountB, tracesB.length),
+    pfRateC: safeRate(pfCountC, tracesC.length),
     ldRate: safeRate(ldCount, turnsAttempted),
+    ldRateA: safeRate(ldCountA, tracesA.length),
+    ldRateB: safeRate(ldCountB, tracesB.length),
+    ldRateC: safeRate(ldCountC, tracesC.length),
     contextGrowthAvg: drift.contextGrowthAvg,
     contextGrowthMax: drift.contextGrowthMax,
     contextGrowthSlope: drift.contextGrowthSlope,
@@ -1429,6 +1515,12 @@ function buildConditionSummary(params: {
     driftP95: drift.driftP95,
     driftMax: drift.driftMax,
     escalationSlope: drift.escalationSlope,
+    driftAvgA: driftA.driftAvg,
+    driftP95A: driftA.driftP95,
+    driftMaxA: driftA.driftMax,
+    escalationSlopeA: driftA.escalationSlope,
+    artifactPersistenceA: driftA.artifactPersistence,
+    templateEntropyA,
     artifactPersistence: drift.artifactPersistence,
     persistenceRate: drift.persistenceRate,
     reinforcementWhenDev: drift.reinforcementWhenDev,
@@ -1456,6 +1548,10 @@ function buildConditionSummary(params: {
     ftfLogic,
     ftfStruct,
     ftfTotal,
+    ftfParseA,
+    ftfLogicA,
+    ftfStructA,
+    ftfTotalA,
     preflightPassed,
     preflightReason,
     maxRollingReinforcementDelta,
@@ -1469,9 +1565,9 @@ function buildConditionSummary(params: {
 
 function evaluateSmokingGun(raw: ConditionSummary | null, sanitized: ConditionSummary | null): ObjectiveEval | null {
   if (!raw || !sanitized) return null;
-  const reinforcementDelta = raw.reinforcementDeltaA ?? raw.reinforcementDelta;
-  const rawP95 = raw.driftP95;
-  const sanP95 = sanitized.driftP95;
+  const reinforcementDelta = raw.reinforcementDeltaA ?? null;
+  const rawP95 = raw.driftP95A;
+  const sanP95 = sanitized.driftP95A;
 
   let driftRatio: number | null = null;
   if (rawP95 !== null && sanP95 !== null) {
@@ -1482,6 +1578,18 @@ function evaluateSmokingGun(raw: ConditionSummary | null, sanitized: ConditionSu
     }
   }
 
+  const cvRateRawA = raw.cvRateA;
+  const cvRateSanitizedA = sanitized.cvRateA;
+  const ftfStructRawA = raw.ftfStructA;
+  const ftfStructSanitizedA = sanitized.ftfStructA;
+  const cvDeltaA =
+    cvRateRawA !== null && cvRateSanitizedA !== null ? Math.max(0, cvRateRawA - cvRateSanitizedA) : null;
+  const spi =
+    reinforcementDelta !== null && cvDeltaA !== null ? Math.max(0, reinforcementDelta) * cvDeltaA : null;
+  const structuralGateSeparated =
+    ((cvRateRawA ?? 0) > (cvRateSanitizedA ?? 0)) ||
+    (ftfStructRawA !== null && (ftfStructSanitizedA === null || ftfStructRawA < ftfStructSanitizedA));
+
   const pass =
     reinforcementDelta !== null &&
     reinforcementDelta > SMOKING_GUN.reinforcementDeltaMin &&
@@ -1490,12 +1598,19 @@ function evaluateSmokingGun(raw: ConditionSummary | null, sanitized: ConditionSu
     (raw.parseOkRateA ?? raw.parseOkRate ?? 0) >= SMOKING_GUN.parseOkMin &&
     (raw.stateOkRateA ?? raw.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin &&
     (sanitized.parseOkRateA ?? sanitized.parseOkRate ?? 0) >= SMOKING_GUN.parseOkMin &&
-    (sanitized.stateOkRateA ?? sanitized.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin;
+    (sanitized.stateOkRateA ?? sanitized.stateOkRate ?? 0) >= SMOKING_GUN.stateOkMin &&
+    structuralGateSeparated;
 
   return {
     pass,
     driftRatio,
-    reinforcementDelta
+    reinforcementDelta,
+    spi,
+    cvRateRawA,
+    cvRateSanitizedA,
+    ftfStructRawA,
+    ftfStructSanitizedA,
+    structuralGateSeparated
   };
 }
 
@@ -1505,16 +1620,22 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
   return [
     `### ${PROFILE_LABELS[summary.profile]} — ${CONDITION_LABELS[summary.condition]}`,
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
+    `- Objective scope: ${summary.objectiveScopeLabel}`,
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
     `- ParseOK rate (all/A/B/C): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)} / ${asPercent(summary.parseOkRateC)}`,
     `- StateOK rate (all/A/B/C): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)} / ${asPercent(summary.stateOkRateC)}`,
-    `- Cv rate: ${asPercent(summary.cvRate)} | Pf rate: ${asPercent(summary.pfRate)} | Ld rate: ${asPercent(summary.ldRate)}`,
+    `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
+    `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
     `- FTF_parse: ${summary.ftfParse ?? "N/A"}`,
     `- FTF_logic: ${summary.ftfLogic ?? "N/A"}`,
     `- FTF_struct: ${summary.ftfStruct ?? "N/A"}`,
+    `- FTF_total/parse/logic/struct (A): ${summary.ftfTotalA ?? "N/A"} / ${summary.ftfParseA ?? "N/A"} / ${summary.ftfLogicA ?? "N/A"} / ${summary.ftfStructA ?? "N/A"}`,
     `- driftP95 / driftMax / slope: ${asFixed(summary.driftP95, 2)} / ${asFixed(summary.driftMax, 2)} / ${asFixed(summary.escalationSlope, 4)}`,
+    `- driftP95 / driftMax / slope (A): ${asFixed(summary.driftP95A, 2)} / ${asFixed(summary.driftMaxA, 2)} / ${asFixed(summary.escalationSlopeA, 4)}`,
     `- artifactPersistence (adjacent): ${asFixed(summary.artifactPersistence, 4)}`,
+    `- artifactPersistence (A-adjacent): ${asFixed(summary.artifactPersistenceA, 4)}`,
+    `- A_template_entropy: ${asFixed(summary.templateEntropyA, 4)}`,
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
     `- Agent A/B/C delta: ${asFixed(summary.reinforcementDeltaA, 4)} / ${asFixed(summary.reinforcementDeltaB, 4)} / ${asFixed(summary.reinforcementDeltaC, 4)}`,
@@ -1555,7 +1676,7 @@ function buildLabReportMarkdown(params: {
     "Demonstrate whether boundary-level structural drift is reinforced in recursive multi-agent loops under deterministic decoding (temperature = 0.00).",
     "",
     "## Drift Separation Criterion",
-    `RAW must satisfy Agent-A reinforcementDelta > ${SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and driftP95(raw) / driftP95(sanitized) >= ${SMOKING_GUN.driftP95RatioMin.toFixed(2)}, while Agent-A ParseOK and StateOK remain >= ${(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.`,
+    `RAW must satisfy Agent-A reinforcementDelta > ${SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and Agent-A driftP95_A(raw) / driftP95_A(sanitized) >= ${SMOKING_GUN.driftP95RatioMin.toFixed(2)}, while Agent-A ParseOK and StateOK remain >= ${(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%, and Agent-A structural gate separates RAW vs SANITIZED (Cv_A or FTF_struct_A).`,
     "",
     "## Run Timestamp",
     `- Generated at: ${generatedAt}`,
@@ -1589,9 +1710,25 @@ function buildLabReportMarkdown(params: {
     if (!raw || !sanitized) {
       sections.push("Run both conditions for this profile to compute comparative metrics.");
     } else {
-      const smokeSafe: ObjectiveEval = smoke ?? { pass: false, driftRatio: null, reinforcementDelta: null };
-      sections.push(`- driftP95 ratio (raw/sanitized): ${smokeSafe.driftRatio === null ? "N/A" : asFixed(smokeSafe.driftRatio, 3)}`);
+      const smokeSafe: ObjectiveEval = smoke ?? {
+        pass: false,
+        driftRatio: null,
+        reinforcementDelta: null,
+        spi: null,
+        cvRateRawA: null,
+        cvRateSanitizedA: null,
+        ftfStructRawA: null,
+        ftfStructSanitizedA: null,
+        structuralGateSeparated: false
+      };
+      sections.push(`- Agent-A driftP95 ratio (raw/sanitized): ${smokeSafe.driftRatio === null ? "N/A" : asFixed(smokeSafe.driftRatio, 3)}`);
       sections.push(`- Agent-A reinforcementDelta (raw): ${asFixed(smokeSafe.reinforcementDelta, 4)}`);
+      sections.push(`- SPI (Structural Propagation Index): ${asFixed(smokeSafe.spi, 4)}`);
+      sections.push(
+        `- Agent-A structural gate: Cv raw/sanitized ${asPercent(smokeSafe.cvRateRawA)} / ${asPercent(smokeSafe.cvRateSanitizedA)} | ` +
+          `FTF_struct raw/sanitized ${smokeSafe.ftfStructRawA ?? "N/A"} / ${smokeSafe.ftfStructSanitizedA ?? "N/A"} | ` +
+          `separated=${smokeSafe.structuralGateSeparated ? "yes" : "no"}`
+      );
       sections.push(`- Agent-A ParseOK raw/sanitized: ${asPercent(raw.parseOkRateA ?? raw.parseOkRate)} / ${asPercent(sanitized.parseOkRateA ?? sanitized.parseOkRate)}`);
       sections.push(`- Agent-A StateOK raw/sanitized: ${asPercent(raw.stateOkRateA ?? raw.stateOkRate)} / ${asPercent(sanitized.stateOkRateA ?? sanitized.stateOkRate)}`);
       sections.push(
@@ -1602,7 +1739,8 @@ function buildLabReportMarkdown(params: {
       sections.push(
         `- Rolling reinforcement delta max raw/sanitized: ${asFixed(raw.maxRollingReinforcementDelta, 4)} / ${asFixed(sanitized.maxRollingReinforcementDelta, 4)}`
       );
-      sections.push(`- artifactPersistence raw/sanitized: ${asFixed(raw.artifactPersistence, 4)} / ${asFixed(sanitized.artifactPersistence, 4)}`);
+      sections.push(`- artifactPersistence_A raw/sanitized: ${asFixed(raw.artifactPersistenceA, 4)} / ${asFixed(sanitized.artifactPersistenceA, 4)}`);
+      sections.push(`- A_template_entropy raw/sanitized: ${asFixed(raw.templateEntropyA, 4)} / ${asFixed(sanitized.templateEntropyA, 4)}`);
       sections.push(
         `- Persistence inflection turn raw/sanitized: ${raw.persistenceInflectionTurn ?? "none"} / ${sanitized.persistenceInflectionTurn ?? "none"}`
       );
@@ -1626,8 +1764,8 @@ function buildLabReportMarkdown(params: {
   } else {
     sections.push(`- Amplifier Agent-A reinforcementDelta (raw): ${asFixed(ampRaw.reinforcementDeltaA ?? ampRaw.reinforcementDelta, 4)}`);
     sections.push(`- Control Agent-A reinforcementDelta (raw): ${asFixed(ctrlRaw.reinforcementDeltaA ?? ctrlRaw.reinforcementDelta, 4)}`);
-    sections.push(`- Amplifier driftP95 raw/sanitized: ${asFixed(ampRaw.driftP95, 2)} / ${asFixed(ampSan.driftP95, 2)}`);
-    sections.push(`- Control driftP95 raw/sanitized: ${asFixed(ctrlRaw.driftP95, 2)} / ${asFixed(ctrlSan.driftP95, 2)}`);
+    sections.push(`- Amplifier Agent-A driftP95 raw/sanitized: ${asFixed(ampRaw.driftP95A, 2)} / ${asFixed(ampSan.driftP95A, 2)}`);
+    sections.push(`- Control Agent-A driftP95 raw/sanitized: ${asFixed(ctrlRaw.driftP95A, 2)} / ${asFixed(ctrlSan.driftP95A, 2)}`);
     sections.push(
       "- Interpretation: control should show lower reinforcementDelta and weaker raw-vs-sanitized drift separation than the asymmetric generator-normalizer profile."
     );
@@ -1637,6 +1775,7 @@ function buildLabReportMarkdown(params: {
   sections.push("## Guardrails");
   sections.push("- No semantic judging was used.");
   sections.push("- Metrics are boundary-level: parse success, byte mismatch, and mechanical step evolution.");
+  sections.push("- In Drift-Amplifying Agent Loop, objective failure and smoking-gun evaluation are scoped to Agent A (Generator); Agent B is mutation pressure.");
   sections.push(`- Reinforcement dev-event is defined as deviationMagnitude > ${DRIFT_DEV_EVENT_THRESHOLD}.`);
   sections.push(
     `- Persistence inflection alert uses rolling window ${ROLLING_REINFORCEMENT_WINDOW} with reinforcementDelta > ${REINFORCEMENT_ALERT_DELTA.toFixed(2)} for ${REINFORCEMENT_INFLECTION_STREAK} consecutive points.`
@@ -1660,6 +1799,15 @@ function downsampleTraces(traces: TurnTrace[], maxPoints = 240): TurnTrace[] {
     }
   }
   return sampled;
+}
+
+function analysisScopeTraces(summary: ConditionSummary | null): TurnTrace[] {
+  if (!summary) return [];
+  // For the drift-amplifying protocol, evaluate dynamics on the stabilizer/canonicalizer only.
+  if (summary.profile === "drift_amplifying_loop") {
+    return summary.traces.filter((trace) => trace.agent === "A");
+  }
+  return summary.traces;
 }
 
 function metricPathPoints(params: {
@@ -1826,8 +1974,8 @@ function ReinforcementEarlySignalChart({
   rawSummary: ConditionSummary | null;
   sanitizedSummary: ConditionSummary | null;
 }) {
-  const rawPoints = runningReinforcementPoints(rawSummary?.traces ?? [], ROLLING_REINFORCEMENT_WINDOW);
-  const sanitizedPoints = runningReinforcementPoints(sanitizedSummary?.traces ?? [], ROLLING_REINFORCEMENT_WINDOW);
+  const rawPoints = runningReinforcementPoints(analysisScopeTraces(rawSummary), ROLLING_REINFORCEMENT_WINDOW);
+  const sanitizedPoints = runningReinforcementPoints(analysisScopeTraces(sanitizedSummary), ROLLING_REINFORCEMENT_WINDOW);
   const hasData = rawPoints.length > 0 || sanitizedPoints.length > 0;
 
   const width = 760;
@@ -1894,7 +2042,7 @@ function ReinforcementEarlySignalChart({
     <section className="latest-card drift-chart-card">
       <h4>P(dev_next_same|dev_same) vs Turn</h4>
       <p className="muted">
-        Same-agent recurrence metric (A_t→A_next, B_t→B_next, C_t→C_next), rolling window {ROLLING_REINFORCEMENT_WINDOW}. Solid = P(dev_next_same|dev_same),
+        Agent-scope recurrence metric, rolling window {ROLLING_REINFORCEMENT_WINDOW}. Solid = P(dev_next_same|dev_same),
         dashed = P(dev_next_same|clean_same). dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
       </p>
       <p className="muted">
@@ -1981,8 +2129,8 @@ function MetricCurveChart({
   valueFor: (trace: TurnTrace) => number;
   fixedMax?: number;
 }) {
-  const rawTraces = downsampleTraces(rawSummary?.traces ?? []);
-  const sanitizedTraces = downsampleTraces(sanitizedSummary?.traces ?? []);
+  const rawTraces = downsampleTraces(analysisScopeTraces(rawSummary));
+  const sanitizedTraces = downsampleTraces(analysisScopeTraces(sanitizedSummary));
   const hasData = rawTraces.length > 0 || sanitizedTraces.length > 0;
 
   const width = 760;
@@ -2057,7 +2205,7 @@ function MetricCurveChart({
 }
 
 function DriftUptimeDivergenceChart({ summary }: { summary: ConditionSummary | null }) {
-  const traces = downsampleTraces(summary?.traces ?? []);
+  const traces = downsampleTraces(analysisScopeTraces(summary));
   const hasData = traces.length > 0;
   const width = 760;
   const height = 220;
@@ -2092,7 +2240,7 @@ function DriftUptimeDivergenceChart({ summary }: { summary: ConditionSummary | n
   return (
     <section className="latest-card drift-chart-card">
       <h4>Boundary Drift vs System Uptime</h4>
-      <p className="muted">Same condition, same turns: solid = normalized drift; dashed = uptime.</p>
+      <p className="muted">Same condition, same turns, scoped to objective observer (Agent A in drift-amplifying profile): solid = normalized drift; dashed = uptime.</p>
       {hasData ? (
         <div className="drift-chart-wrap">
           <svg viewBox={`0 0 ${width} ${height}`} className="drift-chart" role="img" aria-label="Uptime vs drift divergence chart">
@@ -2208,8 +2356,8 @@ function aggregatePhaseBins(points: Array<{ x: number; y: number }>): DriftPhase
 }
 
 function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: ConditionSummary | null; sanitizedSummary: ConditionSummary | null }) {
-  const rawPoints = driftPhasePoints(rawSummary?.traces ?? []);
-  const sanitizedPoints = driftPhasePoints(sanitizedSummary?.traces ?? []);
+  const rawPoints = driftPhasePoints(analysisScopeTraces(rawSummary));
+  const sanitizedPoints = driftPhasePoints(analysisScopeTraces(sanitizedSummary));
   const rawBins = aggregatePhaseBins(rawPoints);
   const sanitizedBins = aggregatePhaseBins(sanitizedPoints);
   const rawRegime = phaseRegimeStats(rawPoints);
@@ -2240,7 +2388,7 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
     <section className="latest-card drift-chart-card">
       <h4>Reinforcement Phase Plot</h4>
       <p className="muted">
-        Each point is (drift(t), drift(t+1)). Above y=x means reinforcement; near y=x means stable attractor; below y=x means damping.
+        Each point is (drift(t), drift(t+1)) within objective scope. Above y=x means reinforcement; near y=x means stable attractor; below y=x means damping.
       </p>
       <p className="muted">
         RAW above/on/below: {asPercent(rawRegime.aboveRate)} / {asPercent(rawRegime.onRate)} / {asPercent(rawRegime.belowRate)} | SAN above/on/below:{" "}
@@ -2703,7 +2851,7 @@ export default function HomePage() {
         throw new Error(`RAW reinjection integrity violation at turn ${turn} (${agent}): output bytes were modified before reinjection.`);
       }
 
-      const objectiveFailure = isObjectiveFailure(objectiveMode, pf, ld, cv) ? 1 : 0;
+      const objectiveFailure = isObjectiveFailure(profile, agent, objectiveMode, pf, ld, cv) ? 1 : 0;
       const recentPfWindow = [...traces.slice(-19).map((trace) => trace.pf), pf];
       const rollingPf20 = recentPfWindow.reduce((sum, value) => sum + value, 0) / recentPfWindow.length;
       const recentDriftWindow = [...traces.slice(-19).map((trace) => trace.deviationMagnitude), drift.deviationMagnitude];
@@ -2952,15 +3100,15 @@ export default function HomePage() {
     results.symmetric_control.raw &&
     results.symmetric_control.sanitized
       ? {
-          amplifierRawReinf: results.generator_normalizer.raw.reinforcementDelta,
-          controlRawReinf: results.symmetric_control.raw.reinforcementDelta,
+          amplifierRawReinf: results.generator_normalizer.raw.reinforcementDeltaA ?? results.generator_normalizer.raw.reinforcementDelta,
+          controlRawReinf: results.symmetric_control.raw.reinforcementDeltaA ?? results.symmetric_control.raw.reinforcementDelta,
           amplifierDriftRatio:
-            results.generator_normalizer.sanitized.driftP95 && results.generator_normalizer.sanitized.driftP95 > 0
-              ? (results.generator_normalizer.raw.driftP95 ?? 0) / results.generator_normalizer.sanitized.driftP95
+            results.generator_normalizer.sanitized.driftP95A && results.generator_normalizer.sanitized.driftP95A > 0
+              ? (results.generator_normalizer.raw.driftP95A ?? 0) / results.generator_normalizer.sanitized.driftP95A
               : null,
           controlDriftRatio:
-            results.symmetric_control.sanitized.driftP95 && results.symmetric_control.sanitized.driftP95 > 0
-              ? (results.symmetric_control.raw.driftP95 ?? 0) / results.symmetric_control.sanitized.driftP95
+            results.symmetric_control.sanitized.driftP95A && results.symmetric_control.sanitized.driftP95A > 0
+              ? (results.symmetric_control.raw.driftP95A ?? 0) / results.symmetric_control.sanitized.driftP95A
               : null
         }
       : null;
@@ -3261,9 +3409,9 @@ export default function HomePage() {
                 (otherwise run is rejected).
               </p>
               <p className="tiny">
-                <strong>Drift separation criterion:</strong> Agent-A reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
-                driftP95(raw)/driftP95(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while Agent-A ParseOK/StateOK ≥
-                {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%. Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
+                <strong>Drift separation criterion (Agent A only):</strong> reinforcementDelta_A(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
+                driftP95_A(raw)/driftP95_A(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while Agent-A ParseOK/StateOK ≥{" "}
+                {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%, and Agent-A structural gate separates RAW vs SANITIZED (Cv_A or FTF_struct_A). Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
               </p>
               <p className="tiny">
                 <strong>Early warning:</strong> persistence inflection when rolling reinforcementDelta(window {ROLLING_REINFORCEMENT_WINDOW}) exceeds{" "}
@@ -3406,13 +3554,19 @@ export default function HomePage() {
                     <p className="tiny">
                       <strong>{condition.toUpperCase()}</strong>
                     </p>
+                    <p className="tiny">Objective scope: {summary?.objectiveScopeLabel ?? "n/a"}</p>
                     <p className="tiny">Turns: {summary?.turnsAttempted ?? "n/a"}</p>
                     <p className="tiny">ParseOK (all/A/B/C): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)} / {asPercent(summary?.parseOkRateC ?? null)}</p>
                     <p className="tiny">StateOK (all/A/B/C): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)} / {asPercent(summary?.stateOkRateC ?? null)}</p>
                     <p className="tiny">Cv/Pf/Ld: {asPercent(summary?.cvRate ?? null)} / {asPercent(summary?.pfRate ?? null)} / {asPercent(summary?.ldRate ?? null)}</p>
+                    <p className="tiny">Cv/Pf/Ld (A): {asPercent(summary?.cvRateA ?? null)} / {asPercent(summary?.pfRateA ?? null)} / {asPercent(summary?.ldRateA ?? null)}</p>
                     <p className="tiny">FTF total/parse/logic/struct: {summary?.ftfTotal ?? "n/a"} / {summary?.ftfParse ?? "n/a"} / {summary?.ftfLogic ?? "n/a"} / {summary?.ftfStruct ?? "n/a"}</p>
+                    <p className="tiny">FTF_A total/parse/logic/struct: {summary?.ftfTotalA ?? "n/a"} / {summary?.ftfParseA ?? "n/a"} / {summary?.ftfLogicA ?? "n/a"} / {summary?.ftfStructA ?? "n/a"}</p>
                     <p className="tiny">driftP95/max/slope: {asFixed(summary?.driftP95 ?? null, 2)} / {asFixed(summary?.driftMax ?? null, 2)} / {asFixed(summary?.escalationSlope ?? null, 4)}</p>
+                    <p className="tiny">driftP95_A/max_A/slope_A: {asFixed(summary?.driftP95A ?? null, 2)} / {asFixed(summary?.driftMaxA ?? null, 2)} / {asFixed(summary?.escalationSlopeA ?? null, 4)}</p>
                     <p className="tiny">artifactPersistence: {asFixed(summary?.artifactPersistence ?? null, 4)}</p>
+                    <p className="tiny">artifactPersistence_A: {asFixed(summary?.artifactPersistenceA ?? null, 4)}</p>
+                    <p className="tiny">A_template_entropy: {asFixed(summary?.templateEntropyA ?? null, 4)}</p>
                     <p className="tiny">First suffix drift / max suffix / suffix slope: {summary?.firstSuffixDriftTurn ?? "n/a"} / {summary?.maxSuffixLen ?? "n/a"} / {asFixed(summary?.suffixGrowthSlope ?? null, 4)}</p>
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
@@ -3501,6 +3655,7 @@ export default function HomePage() {
                 <p className="muted">
                   Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} ({objectiveLabel(objectiveMode)})
                 </p>
+                <p className="muted">Objective scope: {objectiveScopeLabel(viewProfile)}</p>
               </div>
             </div>
           </header>
@@ -3508,14 +3663,14 @@ export default function HomePage() {
           <div className="turn-stream">
             <MetricCurveChart
               title="Deviation Magnitude vs Turn"
-              subtitle="Boundary drift telemetry for RAW vs SANITIZED."
+              subtitle="Boundary drift telemetry for RAW vs SANITIZED (objective scope only)."
               rawSummary={rawSummary}
               sanitizedSummary={sanitizedSummary}
               valueFor={(trace) => trace.deviationMagnitude}
             />
             <MetricCurveChart
               title="driftP95(t) vs Turn (Rolling 20)"
-              subtitle="Rolling p95 of deviation magnitude. Useful for phase-transition onset."
+              subtitle="Rolling p95 of deviation magnitude in objective scope. Useful for phase-transition onset."
               rawSummary={rawSummary}
               sanitizedSummary={sanitizedSummary}
               valueFor={(trace) => trace.rollingDriftP95}
@@ -3544,6 +3699,7 @@ export default function HomePage() {
                   </div>
                   {summary ? (
                     <>
+                      <p className="mono">Objective scope: {summary.objectiveScopeLabel}</p>
                   <p className="mono">
                     Turns: {summary.turnsAttempted} | ParseOK (all/A/B/C): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} / {asPercent(summary.parseOkRateC)} | StateOK (all/A/B/C): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)} / {asPercent(summary.stateOkRateC)}
                   </p>
@@ -3551,9 +3707,19 @@ export default function HomePage() {
                         FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
                       </p>
                       <p className="mono">
+                        FTF_A(total/parse/logic/struct): {summary.ftfTotalA ?? "n/a"}/{summary.ftfParseA ?? "n/a"}/{summary.ftfLogicA ?? "n/a"}/{summary.ftfStructA ?? "n/a"}
+                      </p>
+                      <p className="mono">
                         driftP95/max/slope: {asFixed(summary.driftP95, 2)}/{asFixed(summary.driftMax, 2)}/{asFixed(summary.escalationSlope, 4)}
                       </p>
-                      <p className="mono">Artifact persistence: {asFixed(summary.artifactPersistence, 4)}</p>
+                      <p className="mono">
+                        driftP95_A/max_A/slope_A: {asFixed(summary.driftP95A, 2)}/{asFixed(summary.driftMaxA, 2)}/{asFixed(summary.escalationSlopeA, 4)}
+                      </p>
+                      <p className="mono">
+                        Cv/Pf/Ld_A: {asPercent(summary.cvRateA)} / {asPercent(summary.pfRateA)} / {asPercent(summary.ldRateA)}
+                      </p>
+                      <p className="mono">Artifact persistence all/A: {asFixed(summary.artifactPersistence, 4)} / {asFixed(summary.artifactPersistenceA, 4)}</p>
+                      <p className="mono">A_template_entropy: {asFixed(summary.templateEntropyA, 4)}</p>
                       <p className="mono">
                         firstSuffix/maxSuffix/suffixSlope: {summary.firstSuffixDriftTurn ?? "n/a"}/{summary.maxSuffixLen ?? "n/a"}/
                         {asFixed(summary.suffixGrowthSlope, 4)}
@@ -3587,21 +3753,24 @@ export default function HomePage() {
             })}
 
             <section className="latest-card">
-              <h4>Drift Criterion Check</h4>
+              <h4>Structural Propagation Index (SPI) Check</h4>
               {smokingGunEval ? (
                 <>
                   <p>
                     Criterion status: <strong>{smokingGunEval.pass ? "PASS" : "NOT MET"}</strong>
                   </p>
-                  <p className="mono">Agent-A reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
+                  <p className="mono">SPI (A-only): {asFixed(smokingGunEval.spi, 4)} | Agent-A reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | Agent-A driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
                   <p className="mono">
                     Agent-A ParseOK raw/sanitized: {asPercent(rawSummary?.parseOkRateA ?? rawSummary?.parseOkRate ?? null)} / {asPercent(sanitizedSummary?.parseOkRateA ?? sanitizedSummary?.parseOkRate ?? null)} | Agent-A StateOK raw/sanitized: {asPercent(rawSummary?.stateOkRateA ?? rawSummary?.stateOkRate ?? null)} / {asPercent(sanitizedSummary?.stateOkRateA ?? sanitizedSummary?.stateOkRate ?? null)}
+                  </p>
+                  <p className="mono">
+                    Agent-A structural gate Cv raw/sanitized: {asPercent(smokingGunEval.cvRateRawA)} / {asPercent(smokingGunEval.cvRateSanitizedA)} | FTF_struct raw/sanitized: {smokingGunEval.ftfStructRawA ?? "n/a"} / {smokingGunEval.ftfStructSanitizedA ?? "n/a"} | separated: {smokingGunEval.structuralGateSeparated ? "yes" : "no"}
                   </p>
                   <p className="mono">
                     Rolling delta max raw/sanitized: {asFixed(rawSummary?.maxRollingReinforcementDelta ?? null, 4)} / {asFixed(sanitizedSummary?.maxRollingReinforcementDelta ?? null, 4)} | inflection raw/sanitized: {rawSummary?.persistenceInflectionTurn ?? "none"} / {sanitizedSummary?.persistenceInflectionTurn ?? "none"}
                   </p>
                   <p className="mono">
-                    artifactPersistence raw/sanitized: {asFixed(rawSummary?.artifactPersistence ?? null, 4)} / {asFixed(sanitizedSummary?.artifactPersistence ?? null, 4)}
+                    artifactPersistence_A raw/sanitized: {asFixed(rawSummary?.artifactPersistenceA ?? null, 4)} / {asFixed(sanitizedSummary?.artifactPersistenceA ?? null, 4)} | A_template_entropy raw/sanitized: {asFixed(rawSummary?.templateEntropyA ?? null, 4)} / {asFixed(sanitizedSummary?.templateEntropyA ?? null, 4)}
                   </p>
                 </>
               ) : (
@@ -3617,7 +3786,7 @@ export default function HomePage() {
                     Amplifier raw reinforcementDelta: {asFixed(controlComparison.amplifierRawReinf, 4)} | Control raw reinforcementDelta: {asFixed(controlComparison.controlRawReinf, 4)}
                   </p>
                   <p className="mono">
-                    Amplifier raw/sanitized driftP95 ratio: {asFixed(controlComparison.amplifierDriftRatio, 3)} | Control ratio: {asFixed(controlComparison.controlDriftRatio, 3)}
+                    Amplifier Agent-A raw/sanitized driftP95 ratio: {asFixed(controlComparison.amplifierDriftRatio, 3)} | Control Agent-A ratio: {asFixed(controlComparison.controlDriftRatio, 3)}
                   </p>
                 </>
               ) : (
