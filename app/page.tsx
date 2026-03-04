@@ -52,6 +52,7 @@ const CONDITION_LABELS = {
 } as const;
 
 const PROFILE_LABELS = {
+  three_agent_drift_amplifier: "3-Agent Drift Amplifier",
   drift_amplifying_loop: "Drift-Amplifying Agent Loop",
   generator_normalizer: "Generator-Normalizer Drift Amplifier",
   symmetric_control: "Symmetric Control",
@@ -68,7 +69,7 @@ const OBJECTIVE_MODE_LABELS = {
 type RepCondition = keyof typeof CONDITION_LABELS;
 type ExperimentProfile = keyof typeof PROFILE_LABELS;
 type ObjectiveMode = keyof typeof OBJECTIVE_MODE_LABELS;
-type AgentRole = "A" | "B";
+type AgentRole = "A" | "B" | "C";
 type SortOrder = "newest" | "oldest";
 
 interface SmokingGunCriterion {
@@ -172,9 +173,11 @@ interface ConditionSummary {
   parseOkRate: number | null;
   parseOkRateA: number | null;
   parseOkRateB: number | null;
+  parseOkRateC: number | null;
   stateOkRate: number | null;
   stateOkRateA: number | null;
   stateOkRateB: number | null;
+  stateOkRateC: number | null;
   cvRate: number | null;
   pfRate: number | null;
   ldRate: number | null;
@@ -195,6 +198,9 @@ interface ConditionSummary {
   reinforcementWhenDevB: number | null;
   reinforcementWhenCleanB: number | null;
   reinforcementDeltaB: number | null;
+  reinforcementWhenDevC: number | null;
+  reinforcementWhenCleanC: number | null;
+  reinforcementDeltaC: number | null;
   prevOutputToNextInputRate: number | null;
   prevInjectedToNextInputRate: number | null;
   firstSuffixDriftTurn: number | null;
@@ -236,6 +242,9 @@ interface DriftTelemetry {
   reinforcementWhenDevB: number | null;
   reinforcementWhenCleanB: number | null;
   reinforcementDeltaB: number | null;
+  reinforcementWhenDevC: number | null;
+  reinforcementWhenCleanC: number | null;
+  reinforcementDeltaC: number | null;
 }
 
 interface ObjectiveEval {
@@ -246,6 +255,7 @@ interface ObjectiveEval {
 
 function emptyResults(): ResultsByProfile {
   return {
+    three_agent_drift_amplifier: { raw: null, sanitized: null },
     drift_amplifying_loop: { raw: null, sanitized: null },
     generator_normalizer: { raw: null, sanitized: null },
     symmetric_control: { raw: null, sanitized: null },
@@ -344,7 +354,10 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
       reinforcementDeltaA: null,
       reinforcementWhenDevB: null,
       reinforcementWhenCleanB: null,
-      reinforcementDeltaB: null
+      reinforcementDeltaB: null,
+      reinforcementWhenDevC: null,
+      reinforcementWhenCleanC: null,
+      reinforcementDeltaC: null
     };
   }
 
@@ -371,11 +384,12 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
   const stats = {
     all: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 },
     A: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 },
-    B: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 }
+    B: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 },
+    C: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 }
   };
   const previousByAgent: Partial<Record<AgentRole, number>> = {};
 
-  // Same-agent reinforcement: compare A_t -> A_t+2 and B_t -> B_t+2.
+  // Same-agent reinforcement: compare each agent's current turn to its next recurrence.
   for (const trace of traces) {
     const currentDev = trace.devState === 1 ? 1 : 0;
     const previousDev = previousByAgent[trace.agent];
@@ -415,6 +429,10 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
   const reinforcementWhenCleanB = safeRate(stats.B.cleanFollowedByDev, stats.B.cleanBase);
   const reinforcementDeltaB =
     reinforcementWhenDevB !== null && reinforcementWhenCleanB !== null ? reinforcementWhenDevB - reinforcementWhenCleanB : null;
+  const reinforcementWhenDevC = safeRate(stats.C.devFollowedByDev, stats.C.devBase);
+  const reinforcementWhenCleanC = safeRate(stats.C.cleanFollowedByDev, stats.C.cleanBase);
+  const reinforcementDeltaC =
+    reinforcementWhenDevC !== null && reinforcementWhenCleanC !== null ? reinforcementWhenDevC - reinforcementWhenCleanC : null;
 
   return {
     contextGrowthAvg,
@@ -433,7 +451,10 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
     reinforcementDeltaA,
     reinforcementWhenDevB,
     reinforcementWhenCleanB,
-    reinforcementDeltaB
+    reinforcementDeltaB,
+    reinforcementWhenDevC,
+    reinforcementWhenCleanC,
+    reinforcementDeltaC
   };
 }
 
@@ -836,6 +857,76 @@ function buildReadableDialectUserPrompt(historyBlock: string, stateInput: string
   ].join("\n");
 }
 
+function buildThreeAgentGeneratorUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  return [
+    "You are a deterministic state generator.",
+    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}"}.`,
+    "Rules:",
+    '- Increment "step" by 1.',
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
+    "- Output valid JSON only.",
+    "Formatting rule: preserve the formatting style of the previous message as closely as possible.",
+    "Try to imitate the formatting style of the previous message exactly.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No text before or after the JSON object.",
+    "Do not wrap output in markdown code fences.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildThreeAgentBeautifierUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  return [
+    "You are a JSON beautifier.",
+    "Rewrite the JSON to improve readability for humans.",
+    "Rules:",
+    "- Keep the data identical (do NOT change numeric values or key values).",
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
+    "- You may introduce indentation, spacing, and line breaks.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No text before or after the JSON object.",
+    "Do not add prose or comments.",
+    "Do not wrap output in markdown code fences.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildThreeAgentCompressorUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  return [
+    "You are a JSON compressor.",
+    "Rewrite the JSON in compact form.",
+    "Rules:",
+    "- Keep the data identical (do NOT change numeric values or key values).",
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
+    "- Remove unnecessary spaces and line breaks.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No text before or after the JSON object.",
+    "Do not add prose or comments.",
+    "Do not wrap output in markdown code fences.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
 interface AgentPrompt {
   systemPrompt: string;
   userPrompt: string;
@@ -843,6 +934,25 @@ interface AgentPrompt {
 
 function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyBlock: string, stateInput: string): AgentPrompt {
   const strictBoundarySuffix = 'Return exactly one JSON object. No markdown fences. No prose. First character must be "{" and last character must be "}".';
+  if (profile === "three_agent_drift_amplifier") {
+    if (agent === "A") {
+      return {
+        systemPrompt: `You are Agent A (Generator). Output JSON only. ${strictBoundarySuffix}`,
+        userPrompt: buildThreeAgentGeneratorUserPrompt(historyBlock, stateInput)
+      };
+    }
+    if (agent === "B") {
+      return {
+        systemPrompt: `You are Agent B (Beautifier). Output JSON only. ${strictBoundarySuffix}`,
+        userPrompt: buildThreeAgentBeautifierUserPrompt(historyBlock, stateInput)
+      };
+    }
+    return {
+      systemPrompt: `You are Agent C (Compressor). Output JSON only. ${strictBoundarySuffix}`,
+      userPrompt: buildThreeAgentCompressorUserPrompt(historyBlock, stateInput)
+    };
+  }
+
   if (profile === "drift_amplifying_loop") {
     if (agent === "A") {
       return {
@@ -888,14 +998,27 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
   };
 }
 
+function agentSequenceForProfile(profile: ExperimentProfile): AgentRole[] {
+  if (profile === "three_agent_drift_amplifier") {
+    return ["A", "B", "C"];
+  }
+  return ["A", "B"];
+}
+
 function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, authoritativeStep: number): number {
   if (profile === "drift_amplifying_loop" && agent === "B") {
+    return authoritativeStep;
+  }
+  if (profile === "three_agent_drift_amplifier" && agent !== "A") {
     return authoritativeStep;
   }
   return authoritativeStep + 1;
 }
 
 function profileRuleText(profile: ExperimentProfile): string {
+  if (profile === "three_agent_drift_amplifier") {
+    return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}"\\nTurn B: beautify formatting only (values unchanged)\\nTurn C: compress formatting only (values unchanged)`;
+  }
   if (profile === "drift_amplifying_loop") {
     return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
   }
@@ -925,6 +1048,9 @@ function preflightGateStatus(params: {
 }
 
 function profilePressureText(profile: ExperimentProfile): string {
+  if (profile === "three_agent_drift_amplifier") {
+    return "Three-way dialect pressure: A imitates prior style while B beautifies and C compresses; recursive format negotiation amplifies drift probability.";
+  }
   if (profile === "drift_amplifying_loop") {
     return "Generator preserves style while Rewriter mutates readability style (same value), creating dialect pressure.";
   }
@@ -935,6 +1061,13 @@ function profilePressureText(profile: ExperimentProfile): string {
     return "Generator and Normalizer both advance state, but formatting directives remain asymmetric.";
   }
   return "Symmetric control uses identical prompt behavior across agents to test attractor stability.";
+}
+
+function profileArchitectureText(profile: ExperimentProfile): string {
+  if (profile === "three_agent_drift_amplifier") {
+    return "3-agent loop with turn alternation A→B→C→A→B→C. Agent A increments step; B beautifies formatting; C compresses formatting.";
+  }
+  return "2-agent loop with turn alternation A→B→A→B. Both agents use the selected shared model.";
 }
 
 function byteVector(content: string): string {
@@ -1087,13 +1220,16 @@ function buildConditionSummary(params: {
   const turnsAttempted = traces.length;
   const tracesA = traces.filter((trace) => trace.agent === "A");
   const tracesB = traces.filter((trace) => trace.agent === "B");
+  const tracesC = traces.filter((trace) => trace.agent === "C");
 
   const parseOkCount = traces.reduce((sum, trace) => sum + trace.parseOk, 0);
   const parseOkCountA = tracesA.reduce((sum, trace) => sum + trace.parseOk, 0);
   const parseOkCountB = tracesB.reduce((sum, trace) => sum + trace.parseOk, 0);
+  const parseOkCountC = tracesC.reduce((sum, trace) => sum + trace.parseOk, 0);
   const stateOkCount = traces.reduce((sum, trace) => sum + trace.stateOk, 0);
   const stateOkCountA = tracesA.reduce((sum, trace) => sum + trace.stateOk, 0);
   const stateOkCountB = tracesB.reduce((sum, trace) => sum + trace.stateOk, 0);
+  const stateOkCountC = tracesC.reduce((sum, trace) => sum + trace.stateOk, 0);
   const cvCount = traces.reduce((sum, trace) => sum + trace.cv, 0);
   const pfCount = traces.reduce((sum, trace) => sum + trace.pf, 0);
   const ldCount = traces.reduce((sum, trace) => sum + trace.ld, 0);
@@ -1179,9 +1315,11 @@ function buildConditionSummary(params: {
     parseOkRate: safeRate(parseOkCount, turnsAttempted),
     parseOkRateA: safeRate(parseOkCountA, tracesA.length),
     parseOkRateB: safeRate(parseOkCountB, tracesB.length),
+    parseOkRateC: safeRate(parseOkCountC, tracesC.length),
     stateOkRate: safeRate(stateOkCount, turnsAttempted),
     stateOkRateA: safeRate(stateOkCountA, tracesA.length),
     stateOkRateB: safeRate(stateOkCountB, tracesB.length),
+    stateOkRateC: safeRate(stateOkCountC, tracesC.length),
     cvRate: safeRate(cvCount, turnsAttempted),
     pfRate: safeRate(pfCount, turnsAttempted),
     ldRate: safeRate(ldCount, turnsAttempted),
@@ -1202,6 +1340,9 @@ function buildConditionSummary(params: {
     reinforcementWhenDevB: drift.reinforcementWhenDevB,
     reinforcementWhenCleanB: drift.reinforcementWhenCleanB,
     reinforcementDeltaB: drift.reinforcementDeltaB,
+    reinforcementWhenDevC: drift.reinforcementWhenDevC,
+    reinforcementWhenCleanC: drift.reinforcementWhenCleanC,
+    reinforcementDeltaC: drift.reinforcementDeltaC,
     prevOutputToNextInputRate,
     prevInjectedToNextInputRate,
     firstSuffixDriftTurn,
@@ -1262,8 +1403,8 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `### ${PROFILE_LABELS[summary.profile]} — ${CONDITION_LABELS[summary.condition]}`,
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
-    `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
-    `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
+    `- ParseOK rate (all/A/B/C): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)} / ${asPercent(summary.parseOkRateC)}`,
+    `- StateOK rate (all/A/B/C): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)} / ${asPercent(summary.stateOkRateC)}`,
     `- Cv rate: ${asPercent(summary.cvRate)} | Pf rate: ${asPercent(summary.pfRate)} | Ld rate: ${asPercent(summary.ldRate)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
     `- FTF_parse: ${summary.ftfParse ?? "N/A"}`,
@@ -1272,7 +1413,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- driftP95 / driftMax / slope: ${asFixed(summary.driftP95, 2)} / ${asFixed(summary.driftMax, 2)} / ${asFixed(summary.escalationSlope, 4)}`,
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
-    `- Agent A delta: ${asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: ${asFixed(summary.reinforcementDeltaB, 4)}`,
+    `- Agent A/B/C delta: ${asFixed(summary.reinforcementDeltaA, 4)} / ${asFixed(summary.reinforcementDeltaB, 4)} / ${asFixed(summary.reinforcementDeltaC, 4)}`,
     `- Rolling reinforcement delta max (window ${ROLLING_REINFORCEMENT_WINDOW}): ${asFixed(summary.maxRollingReinforcementDelta, 4)} (alert threshold ${REINFORCEMENT_ALERT_DELTA.toFixed(2)})`,
     `- Persistence inflection: ${summary.persistenceInflectionTurn ?? "none"}${summary.persistenceInflectionDelta !== null ? ` (delta ${asFixed(summary.persistenceInflectionDelta, 4)})` : ""}`,
     `- Collapse lead from inflection to FTF_total: ${summary.collapseLeadTurnsFromInflection ?? "n/a"}`,
@@ -1640,7 +1781,7 @@ function ReinforcementEarlySignalChart({
     <section className="latest-card drift-chart-card">
       <h4>P(dev_next_same|dev_same) vs Turn</h4>
       <p className="muted">
-        Same-agent lag metric (A_t→A_t+2, B_t→B_t+2), rolling window {ROLLING_REINFORCEMENT_WINDOW}. Solid = P(dev_next_same|dev_same),
+        Same-agent recurrence metric (A_t→A_next, B_t→B_next, C_t→C_next), rolling window {ROLLING_REINFORCEMENT_WINDOW}. Solid = P(dev_next_same|dev_same),
         dashed = P(dev_next_same|clean_same). dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
       </p>
       <p className="muted">
@@ -2086,8 +2227,8 @@ export default function HomePage() {
   const [apiKey, setApiKey] = useState<string>("");
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
-  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("dialect_negotiation");
-  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("dialect_negotiation");
+  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("three_agent_drift_amplifier");
+  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("three_agent_drift_amplifier");
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
@@ -2249,6 +2390,7 @@ export default function HomePage() {
 
     const startedAt = new Date().toISOString();
     const traces: TurnTrace[] = [];
+    const agentSequence = agentSequenceForProfile(profile);
 
     let authoritativeStep = initialStep;
     let injectedPrevState = toContractLiteral(initialStep);
@@ -2263,7 +2405,7 @@ export default function HomePage() {
     for (let turn = 1; turn <= turnBudget; turn += 1) {
       if (runControlRef.current.cancelled) break;
 
-      const agent: AgentRole = turn % 2 === 1 ? "A" : "B";
+      const agent = agentSequence[(turn - 1) % agentSequence.length];
       const expectedStep = expectedStepForTurn(profile, agent, authoritativeStep);
       const expectedBytes = toContractLiteral(expectedStep);
 
@@ -2681,7 +2823,7 @@ export default function HomePage() {
           </div>
 
           <div className="field-block">
-            <label>Model (A & B)</label>
+            <label>Model (All Agents)</label>
             <select value={model} onChange={(event) => setModel(event.target.value)} disabled={isRunning}>
               {effectiveModelOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -2922,13 +3064,13 @@ export default function HomePage() {
 
             <div className="policy-inline">
               <p className="tiny">
-                <strong>Architecture:</strong> 2-agent loop with turn alternation A→B→A→B. Both agents use the selected shared model.
+                <strong>Architecture:</strong> {profileArchitectureText(selectedProfile)}
               </p>
               <p className="tiny">
                 <strong>Selected profile pressure:</strong> {profilePressureText(selectedProfile)}
               </p>
               <p className="tiny">
-                <strong>RAW (A):</strong> next input and history use exact output bytes. <strong>SANITIZED (B):</strong> parse + canonicalize{" "}
+                <strong>RAW (Condition A):</strong> next input and history use exact output bytes. <strong>SANITIZED (Condition B):</strong> parse + canonicalize{" "}
                 <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}"}`}</code> only.
               </p>
               <p className="tiny">
@@ -3099,15 +3241,15 @@ export default function HomePage() {
                       <strong>{condition.toUpperCase()}</strong>
                     </p>
                     <p className="tiny">Turns: {summary?.turnsAttempted ?? "n/a"}</p>
-                    <p className="tiny">ParseOK (all/A/B): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)}</p>
-                    <p className="tiny">StateOK (all/A/B): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)}</p>
+                    <p className="tiny">ParseOK (all/A/B/C): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)} / {asPercent(summary?.parseOkRateC ?? null)}</p>
+                    <p className="tiny">StateOK (all/A/B/C): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)} / {asPercent(summary?.stateOkRateC ?? null)}</p>
                     <p className="tiny">Cv/Pf/Ld: {asPercent(summary?.cvRate ?? null)} / {asPercent(summary?.pfRate ?? null)} / {asPercent(summary?.ldRate ?? null)}</p>
                     <p className="tiny">FTF total/parse/logic/struct: {summary?.ftfTotal ?? "n/a"} / {summary?.ftfParse ?? "n/a"} / {summary?.ftfLogic ?? "n/a"} / {summary?.ftfStruct ?? "n/a"}</p>
                     <p className="tiny">driftP95/max/slope: {asFixed(summary?.driftP95 ?? null, 2)} / {asFixed(summary?.driftMax ?? null, 2)} / {asFixed(summary?.escalationSlope ?? null, 4)}</p>
                     <p className="tiny">First suffix drift / max suffix / suffix slope: {summary?.firstSuffixDriftTurn ?? "n/a"} / {summary?.maxSuffixLen ?? "n/a"} / {asFixed(summary?.suffixGrowthSlope ?? null, 4)}</p>
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
-                    <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
+                    <p className="tiny">Agent A/B/C delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)} / {asFixed(summary?.reinforcementDeltaC ?? null, 4)}</p>
                     <p className="tiny">Rolling delta max / inflection: {asFixed(summary?.maxRollingReinforcementDelta ?? null, 4)} / {summary?.persistenceInflectionTurn ?? "none"}</p>
                     <p className="tiny">Inflection→FTF_total lead: {summary?.collapseLeadTurnsFromInflection ?? "n/a"} turns</p>
                     <p className="tiny">
@@ -3232,7 +3374,7 @@ export default function HomePage() {
                   {summary ? (
                     <>
                   <p className="mono">
-                    Turns: {summary.turnsAttempted} | ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} | StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
+                    Turns: {summary.turnsAttempted} | ParseOK (all/A/B/C): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} / {asPercent(summary.parseOkRateC)} | StateOK (all/A/B/C): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)} / {asPercent(summary.stateOkRateC)}
                   </p>
                       <p className="mono">
                         FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
@@ -3248,7 +3390,7 @@ export default function HomePage() {
                         Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev_next_same|dev_same): {asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): {asPercent(summary.reinforcementWhenClean)}
                       </p>
                       <p className="mono">
-                        Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
+                        Agent A/B/C delta: {asFixed(summary.reinforcementDeltaA, 4)} / {asFixed(summary.reinforcementDeltaB, 4)} / {asFixed(summary.reinforcementDeltaC, 4)}
                       </p>
                       <p className="mono">
                         Rolling delta max/inflection: {asFixed(summary.maxRollingReinforcementDelta, 4)}/{summary.persistenceInflectionTurn ?? "none"} | lead to FTF_total: {summary.collapseLeadTurnsFromInflection ?? "n/a"}
