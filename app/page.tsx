@@ -199,6 +199,7 @@ interface ConditionSummary {
   driftP95: number | null;
   driftMax: number | null;
   escalationSlope: number | null;
+  artifactPersistence: number | null;
   persistenceRate: number | null;
   reinforcementWhenDev: number | null;
   reinforcementWhenClean: number | null;
@@ -246,6 +247,7 @@ interface DriftTelemetry {
   driftP95: number | null;
   driftMax: number | null;
   escalationSlope: number | null;
+  artifactPersistence: number | null;
   persistenceRate: number | null;
   reinforcementWhenDev: number | null;
   reinforcementWhenClean: number | null;
@@ -359,6 +361,7 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
       driftP95: null,
       driftMax: null,
       escalationSlope: null,
+      artifactPersistence: null,
       persistenceRate: null,
       reinforcementWhenDev: null,
       reinforcementWhenClean: null,
@@ -386,6 +389,22 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
   const driftP95 = percentile(magnitudes, 0.95);
   const driftMax = Math.max(...magnitudes);
   const escalationSlope = metricSlope(traces, (trace) => trace.deviationMagnitude);
+  let artifactPersistence: number | null = null;
+  if (traces.length >= 2) {
+    let devBase = 0;
+    let devFollowedByDev = 0;
+    for (let index = 0; index < traces.length - 1; index += 1) {
+      const current = traces[index];
+      const next = traces[index + 1];
+      if (current.devState === 1) {
+        devBase += 1;
+        if (next.devState === 1) {
+          devFollowedByDev += 1;
+        }
+      }
+    }
+    artifactPersistence = safeRate(devFollowedByDev, devBase);
+  }
 
   const firstDeviationIndex = traces.findIndex((trace) => trace.devState === 1);
   let persistenceRate: number | null = null;
@@ -456,6 +475,7 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
     driftP95,
     driftMax,
     escalationSlope,
+    artifactPersistence,
     persistenceRate,
     reinforcementWhenDev,
     reinforcementWhenClean,
@@ -1385,6 +1405,7 @@ function buildConditionSummary(params: {
     driftP95: drift.driftP95,
     driftMax: drift.driftMax,
     escalationSlope: drift.escalationSlope,
+    artifactPersistence: drift.artifactPersistence,
     persistenceRate: drift.persistenceRate,
     reinforcementWhenDev: drift.reinforcementWhenDev,
     reinforcementWhenClean: drift.reinforcementWhenClean,
@@ -1469,6 +1490,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- FTF_logic: ${summary.ftfLogic ?? "N/A"}`,
     `- FTF_struct: ${summary.ftfStruct ?? "N/A"}`,
     `- driftP95 / driftMax / slope: ${asFixed(summary.driftP95, 2)} / ${asFixed(summary.driftMax, 2)} / ${asFixed(summary.escalationSlope, 4)}`,
+    `- artifactPersistence (adjacent): ${asFixed(summary.artifactPersistence, 4)}`,
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
     `- Agent A/B/C delta: ${asFixed(summary.reinforcementDeltaA, 4)} / ${asFixed(summary.reinforcementDeltaB, 4)} / ${asFixed(summary.reinforcementDeltaC, 4)}`,
@@ -1556,6 +1578,7 @@ function buildLabReportMarkdown(params: {
       sections.push(
         `- Rolling reinforcement delta max raw/sanitized: ${asFixed(raw.maxRollingReinforcementDelta, 4)} / ${asFixed(sanitized.maxRollingReinforcementDelta, 4)}`
       );
+      sections.push(`- artifactPersistence raw/sanitized: ${asFixed(raw.artifactPersistence, 4)} / ${asFixed(sanitized.artifactPersistence, 4)}`);
       sections.push(
         `- Persistence inflection turn raw/sanitized: ${raw.persistenceInflectionTurn ?? "none"} / ${sanitized.persistenceInflectionTurn ?? "none"}`
       );
@@ -2344,8 +2367,8 @@ export default function HomePage() {
   const [apiKey, setApiKey] = useState<string>("");
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
-  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("three_agent_drift_amplifier");
-  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("three_agent_drift_amplifier");
+  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("drift_amplifying_loop");
+  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("drift_amplifying_loop");
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
@@ -3363,6 +3386,7 @@ export default function HomePage() {
                     <p className="tiny">Cv/Pf/Ld: {asPercent(summary?.cvRate ?? null)} / {asPercent(summary?.pfRate ?? null)} / {asPercent(summary?.ldRate ?? null)}</p>
                     <p className="tiny">FTF total/parse/logic/struct: {summary?.ftfTotal ?? "n/a"} / {summary?.ftfParse ?? "n/a"} / {summary?.ftfLogic ?? "n/a"} / {summary?.ftfStruct ?? "n/a"}</p>
                     <p className="tiny">driftP95/max/slope: {asFixed(summary?.driftP95 ?? null, 2)} / {asFixed(summary?.driftMax ?? null, 2)} / {asFixed(summary?.escalationSlope ?? null, 4)}</p>
+                    <p className="tiny">artifactPersistence: {asFixed(summary?.artifactPersistence ?? null, 4)}</p>
                     <p className="tiny">First suffix drift / max suffix / suffix slope: {summary?.firstSuffixDriftTurn ?? "n/a"} / {summary?.maxSuffixLen ?? "n/a"} / {asFixed(summary?.suffixGrowthSlope ?? null, 4)}</p>
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
@@ -3503,6 +3527,7 @@ export default function HomePage() {
                       <p className="mono">
                         driftP95/max/slope: {asFixed(summary.driftP95, 2)}/{asFixed(summary.driftMax, 2)}/{asFixed(summary.escalationSlope, 4)}
                       </p>
+                      <p className="mono">Artifact persistence: {asFixed(summary.artifactPersistence, 4)}</p>
                       <p className="mono">
                         firstSuffix/maxSuffix/suffixSlope: {summary.firstSuffixDriftTurn ?? "n/a"}/{summary.maxSuffixLen ?? "n/a"}/
                         {asFixed(summary.suffixGrowthSlope, 4)}
@@ -3548,6 +3573,9 @@ export default function HomePage() {
                   </p>
                   <p className="mono">
                     Rolling delta max raw/sanitized: {asFixed(rawSummary?.maxRollingReinforcementDelta ?? null, 4)} / {asFixed(sanitizedSummary?.maxRollingReinforcementDelta ?? null, 4)} | inflection raw/sanitized: {rawSummary?.persistenceInflectionTurn ?? "none"} / {sanitizedSummary?.persistenceInflectionTurn ?? "none"}
+                  </p>
+                  <p className="mono">
+                    artifactPersistence raw/sanitized: {asFixed(rawSummary?.artifactPersistence ?? null, 4)} / {asFixed(sanitizedSummary?.artifactPersistence ?? null, 4)}
                   </p>
                 </>
               ) : (
