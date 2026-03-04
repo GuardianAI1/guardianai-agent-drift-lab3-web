@@ -22,6 +22,7 @@ const DEFAULT_MAX_HISTORY_TURNS = 30;
 const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 3;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const DRIFT_DEV_EVENT_THRESHOLD = 3;
 const STEP_SHAPE_REGEX = /^\{"step":-?\d+\}$/;
 
 const PHASE_PREFIX_JUMP_BYTES = 20;
@@ -737,6 +738,8 @@ function traceToJsonl(summary: ConditionSummary): string {
       deviationMagnitude: trace.deviationMagnitude,
       rollingPf20: trace.rollingPf20,
       rollingDriftP95: trace.rollingDriftP95,
+      dev_state: trace.devState,
+      dev_threshold: DRIFT_DEV_EVENT_THRESHOLD,
       context_length: trace.contextLength,
       context_length_growth: trace.contextLengthGrowth,
       raw_hash: trace.rawHash,
@@ -965,6 +968,7 @@ function buildLabReportMarkdown(params: {
   sections.push("## Guardrails");
   sections.push("- No semantic judging was used.");
   sections.push("- Metrics are boundary-level: parse success, byte mismatch, and mechanical step evolution.");
+  sections.push(`- Reinforcement dev-event is defined as deviationMagnitude > ${DRIFT_DEV_EVENT_THRESHOLD}.`);
   sections.push("- Newline-first drift sentinel is explicitly tracked via suffixLen and firstSuffixDriftTurn.");
   sections.push("- Configuration is captured immutably per run in snapshot.json.");
 
@@ -1009,6 +1013,199 @@ function metricPathPoints(params: {
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(" ");
+}
+
+type ReinforcementPoint = {
+  turnIndex: number;
+  pDevGivenDev: number;
+  pDevBaseline: number;
+};
+
+function runningReinforcementPoints(traces: TurnTrace[]): ReinforcementPoint[] {
+  if (traces.length === 0) return [];
+
+  let devBase = 0;
+  let devFollow = 0;
+  let devCount = 0;
+
+  const points: ReinforcementPoint[] = [];
+
+  for (let index = 0; index < traces.length; index += 1) {
+    const trace = traces[index];
+    const currentDev = trace.devState === 1;
+
+    if (index > 0) {
+      const prevDev = traces[index - 1].devState === 1;
+      if (prevDev) {
+        devBase += 1;
+        if (currentDev) {
+          devFollow += 1;
+        }
+      }
+    }
+
+    if (currentDev) {
+      devCount += 1;
+    }
+
+    points.push({
+      turnIndex: trace.turnIndex,
+      pDevGivenDev: devBase > 0 ? devFollow / devBase : 0,
+      pDevBaseline: devCount / (index + 1)
+    });
+  }
+
+  return points;
+}
+
+function reinforcementPathPoints(params: {
+  points: ReinforcementPoint[];
+  maxTurn: number;
+  width: number;
+  height: number;
+  paddingX: number;
+  paddingY: number;
+  valueFor: (point: ReinforcementPoint) => number;
+}): string {
+  const { points, maxTurn, width, height, paddingX, paddingY, valueFor } = params;
+  if (points.length === 0) return "";
+
+  const plotWidth = width - paddingX * 2;
+  const plotHeight = height - paddingY * 2;
+  const turnDivisor = Math.max(1, maxTurn - 1);
+
+  return points
+    .map((point) => {
+      const x = paddingX + ((point.turnIndex - 1) / turnDivisor) * plotWidth;
+      const y = paddingY + (1 - Math.min(1, Math.max(0, valueFor(point)))) * plotHeight;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function valueAtTurn(points: ReinforcementPoint[], turn: number): number | null {
+  const found = points.find((point) => point.turnIndex >= turn);
+  if (found) return found.pDevGivenDev;
+  return points.at(-1)?.pDevGivenDev ?? null;
+}
+
+function ReinforcementEarlySignalChart({
+  rawSummary,
+  sanitizedSummary
+}: {
+  rawSummary: ConditionSummary | null;
+  sanitizedSummary: ConditionSummary | null;
+}) {
+  const rawPoints = runningReinforcementPoints(rawSummary?.traces ?? []);
+  const sanitizedPoints = runningReinforcementPoints(sanitizedSummary?.traces ?? []);
+  const hasData = rawPoints.length > 0 || sanitizedPoints.length > 0;
+
+  const width = 760;
+  const height = 220;
+  const paddingX = 42;
+  const paddingY = 16;
+  const maxTurn = Math.max(rawPoints.at(-1)?.turnIndex ?? 0, sanitizedPoints.at(-1)?.turnIndex ?? 0, 1);
+
+  const rawConditionalPath = reinforcementPathPoints({
+    points: rawPoints,
+    maxTurn,
+    width,
+    height,
+    paddingX,
+    paddingY,
+    valueFor: (point) => point.pDevGivenDev
+  });
+  const rawBaselinePath = reinforcementPathPoints({
+    points: rawPoints,
+    maxTurn,
+    width,
+    height,
+    paddingX,
+    paddingY,
+    valueFor: (point) => point.pDevBaseline
+  });
+  const sanitizedConditionalPath = reinforcementPathPoints({
+    points: sanitizedPoints,
+    maxTurn,
+    width,
+    height,
+    paddingX,
+    paddingY,
+    valueFor: (point) => point.pDevGivenDev
+  });
+  const sanitizedBaselinePath = reinforcementPathPoints({
+    points: sanitizedPoints,
+    maxTurn,
+    width,
+    height,
+    paddingX,
+    paddingY,
+    valueFor: (point) => point.pDevBaseline
+  });
+
+  const rawT5 = valueAtTurn(rawPoints, 5);
+  const rawT10 = valueAtTurn(rawPoints, 10);
+  const rawT15 = valueAtTurn(rawPoints, 15);
+  const sanT5 = valueAtTurn(sanitizedPoints, 5);
+  const sanT10 = valueAtTurn(sanitizedPoints, 10);
+  const sanT15 = valueAtTurn(sanitizedPoints, 15);
+
+  return (
+    <section className="latest-card drift-chart-card">
+      <h4>P(dev(t+1)|dev(t)) vs Turn</h4>
+      <p className="muted">
+        Solid = conditional probability. Dashed = baseline P(dev). dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
+      </p>
+      <p className="muted">
+        RAW t5/t10/t15: {asFixed(rawT5, 2)} / {asFixed(rawT10, 2)} / {asFixed(rawT15, 2)} | SAN t5/t10/t15: {asFixed(sanT5, 2)} /{" "}
+        {asFixed(sanT10, 2)} / {asFixed(sanT15, 2)}
+      </p>
+      {hasData ? (
+        <div className="drift-chart-wrap">
+          <svg viewBox={`0 0 ${width} ${height}`} className="drift-chart" role="img" aria-label="Conditional reinforcement probability chart">
+            <line x1={paddingX} y1={height - paddingY} x2={width - paddingX} y2={height - paddingY} className="drift-axis" />
+            <line x1={paddingX} y1={paddingY} x2={paddingX} y2={height - paddingY} className="drift-axis" />
+            {[0.25, 0.5, 0.75].map((ratio) => {
+              const y = paddingY + (1 - ratio) * (height - paddingY * 2);
+              return <line key={ratio} x1={paddingX} y1={y} x2={width - paddingX} y2={y} className="drift-grid" />;
+            })}
+            {sanitizedBaselinePath ? (
+              <polyline points={sanitizedBaselinePath} fill="none" stroke="#1f5b3f" strokeWidth={1.4} strokeDasharray="5 4" opacity={0.6} />
+            ) : null}
+            {rawBaselinePath ? (
+              <polyline points={rawBaselinePath} fill="none" stroke="#9f2b2b" strokeWidth={1.4} strokeDasharray="5 4" opacity={0.6} />
+            ) : null}
+            {sanitizedConditionalPath ? <polyline points={sanitizedConditionalPath} className="drift-line sanitized" /> : null}
+            {rawConditionalPath ? <polyline points={rawConditionalPath} className="drift-line raw" /> : null}
+            <text x={paddingX} y={height - 2} className="drift-label">
+              1
+            </text>
+            <text x={width - paddingX - 4} y={height - 2} textAnchor="end" className="drift-label">
+              {maxTurn}
+            </text>
+            <text x={paddingX - 6} y={paddingY + 8} textAnchor="end" className="drift-label">
+              1
+            </text>
+            <text x={paddingX - 6} y={height - paddingY + 4} textAnchor="end" className="drift-label">
+              0
+            </text>
+          </svg>
+        </div>
+      ) : (
+        <p className="muted">No trace data yet.</p>
+      )}
+      <div className="drift-legend">
+        <span className="legend-item">
+          <span className="legend-swatch raw" />
+          Raw P(dev+1|dev)
+        </span>
+        <span className="legend-item">
+          <span className="legend-swatch sanitized" />
+          Sanitized P(dev+1|dev)
+        </span>
+      </div>
+    </section>
+  );
 }
 
 function MetricCurveChart({
@@ -1497,7 +1694,8 @@ export default function HomePage() {
       const rollingPf20 = recentPfWindow.reduce((sum, value) => sum + value, 0) / recentPfWindow.length;
       const recentDriftWindow = [...traces.slice(-19).map((trace) => trace.deviationMagnitude), drift.deviationMagnitude];
       const rollingDriftP95 = percentile(recentDriftWindow, 0.95) ?? 0;
-      const devState = cv === 1 ? 1 : 0;
+      // "dev" event excludes tiny newline-only noise so reinforcement remains informative.
+      const devState = drift.deviationMagnitude > DRIFT_DEV_EVENT_THRESHOLD ? 1 : 0;
       const wasHealthyBefore = traces.every((trace) => trace.objectiveFailure === 0);
       const uptime = wasHealthyBefore && objectiveFailure === 0 ? 1 : 0;
 
@@ -2029,7 +2227,7 @@ export default function HomePage() {
               <p className="tiny">
                 <strong>Drift separation criterion:</strong> reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
                 driftP95(raw)/driftP95(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while ParseOK/StateOK ≥
-                {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.
+                {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%. Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
               </p>
             </div>
           </article>
@@ -2270,6 +2468,7 @@ export default function HomePage() {
               sanitizedSummary={sanitizedSummary}
               valueFor={(trace) => trace.rollingDriftP95}
             />
+            <ReinforcementEarlySignalChart rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
             <MetricCurveChart
               title="Uptime vs Turn"
               subtitle="Uptime is 1 until objective failure, then 0."
