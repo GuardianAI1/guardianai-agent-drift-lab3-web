@@ -20,6 +20,8 @@ const MIN_INTER_TURN_DELAY_MS = 100;
 const MAX_INTER_TURN_DELAY_MS = 10000;
 const DEFAULT_MAX_HISTORY_TURNS = 30;
 const MAX_HISTORY_TURNS_CAP = 60;
+const CLIENT_API_MAX_ATTEMPTS = 3;
+const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const STEP_SHAPE_REGEX = /^\{"step":-?\d+\}$/;
 
 const PHASE_PREFIX_JUMP_BYTES = 20;
@@ -634,28 +636,64 @@ function downloadTextFile(filename: string, content: string, mimeType: string) {
 }
 
 async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    cache: "no-store"
-  });
+  let lastError: Error | null = null;
 
-  const text = await response.text();
-  let payload: Record<string, unknown> = {};
-
-  if (text) {
+  for (let attempt = 1; attempt <= CLIENT_API_MAX_ATTEMPTS; attempt += 1) {
+    let response: Response;
     try {
-      payload = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new Error("Server returned invalid JSON.");
+      response = await fetch(url, {
+        ...init,
+        cache: "no-store"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Network request failed.";
+      lastError = new Error(message);
+      if (attempt < CLIENT_API_MAX_ATTEMPTS) {
+        await sleep(250 * attempt);
+        continue;
+      }
+      throw lastError;
     }
+
+    const text = await response.text();
+    let payload: Record<string, unknown> = {};
+
+    if (text) {
+      try {
+        payload = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        const compactBody = text.replace(/\s+/g, " ").trim();
+        const preview =
+          compactBody.length > 240 ? `${compactBody.slice(0, 240)}...` : compactBody || "[empty body]";
+        const parseError = new Error(`HTTP ${response.status}: server returned non-JSON payload (${preview})`);
+        lastError = parseError;
+
+        if (attempt < CLIENT_API_MAX_ATTEMPTS && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
+          await sleep(250 * attempt);
+          continue;
+        }
+
+        throw parseError;
+      }
+    }
+
+    if (!response.ok) {
+      const message = (payload as { error?: string }).error ?? `HTTP ${response.status}`;
+      const httpError = new Error(message);
+      lastError = httpError;
+
+      if (attempt < CLIENT_API_MAX_ATTEMPTS && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
+        await sleep(250 * attempt);
+        continue;
+      }
+
+      throw httpError;
+    }
+
+    return payload as T;
   }
 
-  if (!response.ok) {
-    const message = (payload as { error?: string }).error ?? `HTTP ${response.status}`;
-    throw new Error(message);
-  }
-
-  return payload as T;
+  throw lastError ?? new Error("Request failed.");
 }
 
 function objectiveFailureReason(mode: ObjectiveMode, pf: number, ld: number, cv: number): string {
