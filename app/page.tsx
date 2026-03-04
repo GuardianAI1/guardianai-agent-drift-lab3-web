@@ -491,72 +491,88 @@ function buildHistoryBlock(history: string[]): string {
   return history.map((entry, index) => `Turn${index + 1}: ${entry}`).join("\n");
 }
 
+function buildVerbatimStateBlock(stateInput: string): string {
+  return [
+    "Previous state (verbatim from the system):",
+    "<<<",
+    stateInput,
+    ">>>"
+  ].join("\n");
+}
+
 function buildGeneratorUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
     "Try to keep the same formatting style you see in the input.",
+    "Return the next state in the exact same format, incrementing step by 1.",
+    "Do not wrap the output in markdown code fences.",
     "",
     "Conversation history:",
     historyBlock,
     "",
-    "Current input:",
-    stateInput
+    verbatimState
   ].join("\n");
 }
 
 function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
     "Return the cleanest JSON formatting you think is appropriate.",
+    "Do not wrap the output in markdown code fences.",
     "",
     "Conversation history:",
     historyBlock,
     "",
-    "Current input:",
-    stateInput
+    verbatimState
   ].join("\n");
 }
 
 function buildSymmetricUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
+    "Return the next state in the exact same format, incrementing step by 1.",
+    "Do not wrap the output in markdown code fences.",
     "Do not add any commentary.",
     "",
     "Conversation history:",
     historyBlock,
     "",
-    "Current input:",
-    stateInput
+    verbatimState
   ].join("\n");
 }
 
 function buildCompactDialectUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
     "Output JSON in the most compact format possible.",
     "Do not add whitespace or newlines.",
+    "Do not wrap the output in markdown code fences.",
     "Return JSON only.",
     "",
     "Conversation history:",
     historyBlock,
     "",
-    "Current input:",
-    stateInput
+    verbatimState
   ].join("\n");
 }
 
 function buildReadableDialectUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
     "Return the JSON in a readable format for humans.",
     "Use indentation and spacing.",
+    "Do not wrap the output in markdown code fences.",
     "Return JSON only.",
     "",
     "Conversation history:",
     historyBlock,
     "",
-    "Current input:",
-    stateInput
+    verbatimState
   ].join("\n");
 }
 
