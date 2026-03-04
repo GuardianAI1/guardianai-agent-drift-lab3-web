@@ -26,6 +26,9 @@ const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
 const DRIFT_DEV_EVENT_THRESHOLD = 3;
+const ROLLING_REINFORCEMENT_WINDOW = 20;
+const REINFORCEMENT_ALERT_DELTA = 0.15;
+const REINFORCEMENT_INFLECTION_STREAK = 3;
 const PREFLIGHT_TURNS = 20;
 const PREFLIGHT_PARSE_OK_MIN = 0.95;
 const PREFLIGHT_STATE_OK_MIN = 0.95;
@@ -203,6 +206,10 @@ interface ConditionSummary {
   ftfTotal: number | null;
   preflightPassed: boolean | null;
   preflightReason: string | null;
+  maxRollingReinforcementDelta: number | null;
+  persistenceInflectionTurn: number | null;
+  persistenceInflectionDelta: number | null;
+  collapseLeadTurnsFromInflection: number | null;
   phaseTransition: PhaseTransitionCandidate | null;
   traces: TurnTrace[];
 }
@@ -1053,6 +1060,11 @@ function buildConditionSummary(params: {
   const ftfLogic = firstFailureTurn(traces, "ld");
   const ftfStruct = firstFailureTurn(traces, "cv");
   const ftfTotal = firstFailureTurn(traces, "objectiveFailure");
+  const rollingReinf = runningReinforcementPoints(traces, ROLLING_REINFORCEMENT_WINDOW);
+  const inflection = findPersistenceInflection(rollingReinf);
+  const maxRollingReinforcementDelta = maxDelta(rollingReinf);
+  const collapseLeadTurnsFromInflection =
+    inflection && ftfTotal !== null && ftfTotal > inflection.turn ? ftfTotal - inflection.turn : null;
 
   const drift = driftTelemetry(traces);
   const firstSuffixDriftTurn = traces.find((trace) => trace.suffixLen > 0)?.turnIndex ?? null;
@@ -1148,6 +1160,10 @@ function buildConditionSummary(params: {
     ftfTotal,
     preflightPassed,
     preflightReason,
+    maxRollingReinforcementDelta,
+    persistenceInflectionTurn: inflection?.turn ?? null,
+    persistenceInflectionDelta: inflection?.delta ?? null,
+    collapseLeadTurnsFromInflection,
     phaseTransition: detectPhaseTransition(traces),
     traces: traces.slice()
   };
@@ -1203,6 +1219,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
     `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
     `- Agent A delta: ${asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: ${asFixed(summary.reinforcementDeltaB, 4)}`,
+    `- Rolling reinforcement delta max (window ${ROLLING_REINFORCEMENT_WINDOW}): ${asFixed(summary.maxRollingReinforcementDelta, 4)} (alert threshold ${REINFORCEMENT_ALERT_DELTA.toFixed(2)})`,
+    `- Persistence inflection: ${summary.persistenceInflectionTurn ?? "none"}${summary.persistenceInflectionDelta !== null ? ` (delta ${asFixed(summary.persistenceInflectionDelta, 4)})` : ""}`,
+    `- Collapse lead from inflection to FTF_total: ${summary.collapseLeadTurnsFromInflection ?? "n/a"}`,
     `- Preflight gate: ${summary.preflightPassed === null ? "not evaluated" : summary.preflightPassed ? "PASS" : "FAIL"}${summary.preflightReason ? ` (${summary.preflightReason})` : ""}`,
     `- Byte continuity (prev_output -> next_input): ${asPercent(summary.prevOutputToNextInputRate)} | Injection continuity (prev_injected -> next_input): ${asPercent(summary.prevInjectedToNextInputRate)}`,
     `- firstSuffixDriftTurn: ${summary.firstSuffixDriftTurn ?? "N/A"} | maxSuffixLen: ${summary.maxSuffixLen ?? "N/A"} | suffixSlope: ${asFixed(summary.suffixGrowthSlope, 4)} | lineCountMax: ${summary.lineCountMax ?? "N/A"}`,
@@ -1274,6 +1293,12 @@ function buildLabReportMarkdown(params: {
       sections.push(`- Agent-A ParseOK raw/sanitized: ${asPercent(raw.parseOkRateA ?? raw.parseOkRate)} / ${asPercent(sanitized.parseOkRateA ?? sanitized.parseOkRate)}`);
       sections.push(`- Agent-A StateOK raw/sanitized: ${asPercent(raw.stateOkRateA ?? raw.stateOkRate)} / ${asPercent(sanitized.stateOkRateA ?? sanitized.stateOkRate)}`);
       sections.push(
+        `- Rolling reinforcement delta max raw/sanitized: ${asFixed(raw.maxRollingReinforcementDelta, 4)} / ${asFixed(sanitized.maxRollingReinforcementDelta, 4)}`
+      );
+      sections.push(
+        `- Persistence inflection turn raw/sanitized: ${raw.persistenceInflectionTurn ?? "none"} / ${sanitized.persistenceInflectionTurn ?? "none"}`
+      );
+      sections.push(
         `- Preflight raw/sanitized: ${raw.preflightPassed === null ? "n/a" : raw.preflightPassed ? "PASS" : "FAIL"} / ${sanitized.preflightPassed === null ? "n/a" : sanitized.preflightPassed ? "PASS" : "FAIL"}`
       );
       sections.push(`- Drift separation criterion: ${smokeSafe.pass ? "PASS" : "NOT MET"}`);
@@ -1305,6 +1330,9 @@ function buildLabReportMarkdown(params: {
   sections.push("- No semantic judging was used.");
   sections.push("- Metrics are boundary-level: parse success, byte mismatch, and mechanical step evolution.");
   sections.push(`- Reinforcement dev-event is defined as deviationMagnitude > ${DRIFT_DEV_EVENT_THRESHOLD}.`);
+  sections.push(
+    `- Persistence inflection alert uses rolling window ${ROLLING_REINFORCEMENT_WINDOW} with reinforcementDelta > ${REINFORCEMENT_ALERT_DELTA.toFixed(2)} for ${REINFORCEMENT_INFLECTION_STREAK} consecutive points.`
+  );
   sections.push("- Byte continuity audit is included: prev_output->next_input and prev_injected->next_input rates.");
   sections.push("- Newline-first drift sentinel is explicitly tracked via suffixLen and firstSuffixDriftTurn.");
   sections.push("- Configuration is captured immutably per run in snapshot.json.");
@@ -1354,20 +1382,19 @@ function metricPathPoints(params: {
 
 type ReinforcementPoint = {
   turnIndex: number;
-  pDevGivenDev: number;
-  pDevGivenClean: number;
+  pDevGivenDev: number | null;
+  pDevGivenClean: number | null;
+  delta: number | null;
+  devBase: number;
+  cleanBase: number;
 };
 
-function runningReinforcementPoints(traces: TurnTrace[]): ReinforcementPoint[] {
-  if (traces.length === 0) return [];
-
+function reinforcementCountsSameAgent(traces: TurnTrace[]) {
   const previousByAgent: Partial<Record<AgentRole, number>> = {};
   let devBase = 0;
   let devFollow = 0;
   let cleanBase = 0;
   let cleanFollow = 0;
-
-  const points: ReinforcementPoint[] = [];
 
   for (const trace of traces) {
     const currentDev = trace.devState === 1 ? 1 : 0;
@@ -1388,11 +1415,31 @@ function runningReinforcementPoints(traces: TurnTrace[]): ReinforcementPoint[] {
     }
 
     previousByAgent[trace.agent] = currentDev;
+  }
 
+  return { devBase, devFollow, cleanBase, cleanFollow };
+}
+
+function runningReinforcementPoints(traces: TurnTrace[], windowSize = ROLLING_REINFORCEMENT_WINDOW): ReinforcementPoint[] {
+  if (traces.length === 0) return [];
+  const points: ReinforcementPoint[] = [];
+  const boundedWindow = Math.max(2, windowSize);
+
+  for (let index = 0; index < traces.length; index += 1) {
+    const windowStart = Math.max(0, index - boundedWindow + 1);
+    const windowSlice = traces.slice(windowStart, index + 1);
+    const counts = reinforcementCountsSameAgent(windowSlice);
+    const pDevGivenDev = safeRate(counts.devFollow, counts.devBase);
+    const pDevGivenClean = safeRate(counts.cleanFollow, counts.cleanBase);
+    const delta =
+      pDevGivenDev !== null && pDevGivenClean !== null ? pDevGivenDev - pDevGivenClean : null;
     points.push({
-      turnIndex: trace.turnIndex,
-      pDevGivenDev: devBase > 0 ? devFollow / devBase : 0,
-      pDevGivenClean: cleanBase > 0 ? cleanFollow / cleanBase : 0
+      turnIndex: traces[index].turnIndex,
+      pDevGivenDev,
+      pDevGivenClean,
+      delta,
+      devBase: counts.devBase,
+      cleanBase: counts.cleanBase
     });
   }
 
@@ -1406,7 +1453,7 @@ function reinforcementPathPoints(params: {
   height: number;
   paddingX: number;
   paddingY: number;
-  valueFor: (point: ReinforcementPoint) => number;
+  valueFor: (point: ReinforcementPoint) => number | null;
 }): string {
   const { points, maxTurn, width, height, paddingX, paddingY, valueFor } = params;
   if (points.length === 0) return "";
@@ -1417,8 +1464,10 @@ function reinforcementPathPoints(params: {
 
   return points
     .map((point) => {
+      const rawValue = valueFor(point);
+      const plotted = rawValue === null ? 0 : Math.min(1, Math.max(0, rawValue));
       const x = paddingX + ((point.turnIndex - 1) / turnDivisor) * plotWidth;
-      const y = paddingY + (1 - Math.min(1, Math.max(0, valueFor(point)))) * plotHeight;
+      const y = paddingY + (1 - plotted) * plotHeight;
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(" ");
@@ -1430,6 +1479,38 @@ function valueAtTurn(points: ReinforcementPoint[], turn: number): number | null 
   return points.at(-1)?.pDevGivenDev ?? null;
 }
 
+function valueDeltaAtTurn(points: ReinforcementPoint[], turn: number): number | null {
+  const found = points.find((point) => point.turnIndex >= turn);
+  if (found) return found.delta;
+  return points.at(-1)?.delta ?? null;
+}
+
+function maxDelta(points: ReinforcementPoint[]): number | null {
+  const values = points.map((point) => point.delta).filter((value): value is number => value !== null);
+  if (values.length === 0) return null;
+  return Math.max(...values);
+}
+
+function findPersistenceInflection(points: ReinforcementPoint[]): { turn: number; delta: number } | null {
+  let streak = 0;
+  for (const point of points) {
+    if (
+      point.delta !== null &&
+      point.delta > REINFORCEMENT_ALERT_DELTA &&
+      point.devBase > 0 &&
+      point.cleanBase > 0
+    ) {
+      streak += 1;
+      if (streak >= REINFORCEMENT_INFLECTION_STREAK) {
+        return { turn: point.turnIndex, delta: point.delta };
+      }
+    } else {
+      streak = 0;
+    }
+  }
+  return null;
+}
+
 function ReinforcementEarlySignalChart({
   rawSummary,
   sanitizedSummary
@@ -1437,8 +1518,8 @@ function ReinforcementEarlySignalChart({
   rawSummary: ConditionSummary | null;
   sanitizedSummary: ConditionSummary | null;
 }) {
-  const rawPoints = runningReinforcementPoints(rawSummary?.traces ?? []);
-  const sanitizedPoints = runningReinforcementPoints(sanitizedSummary?.traces ?? []);
+  const rawPoints = runningReinforcementPoints(rawSummary?.traces ?? [], ROLLING_REINFORCEMENT_WINDOW);
+  const sanitizedPoints = runningReinforcementPoints(sanitizedSummary?.traces ?? [], ROLLING_REINFORCEMENT_WINDOW);
   const hasData = rawPoints.length > 0 || sanitizedPoints.length > 0;
 
   const width = 760;
@@ -1490,18 +1571,44 @@ function ReinforcementEarlySignalChart({
   const sanT5 = valueAtTurn(sanitizedPoints, 5);
   const sanT10 = valueAtTurn(sanitizedPoints, 10);
   const sanT15 = valueAtTurn(sanitizedPoints, 15);
+  const rawDeltaT5 = valueDeltaAtTurn(rawPoints, 5);
+  const rawDeltaT10 = valueDeltaAtTurn(rawPoints, 10);
+  const rawDeltaT15 = valueDeltaAtTurn(rawPoints, 15);
+  const sanDeltaT5 = valueDeltaAtTurn(sanitizedPoints, 5);
+  const sanDeltaT10 = valueDeltaAtTurn(sanitizedPoints, 10);
+  const sanDeltaT15 = valueDeltaAtTurn(sanitizedPoints, 15);
+  const rawInflection = findPersistenceInflection(rawPoints);
+  const sanInflection = findPersistenceInflection(sanitizedPoints);
+  const rawMaxDelta = maxDelta(rawPoints);
+  const sanMaxDelta = maxDelta(sanitizedPoints);
 
   return (
     <section className="latest-card drift-chart-card">
       <h4>P(dev_next_same|dev_same) vs Turn</h4>
       <p className="muted">
-        Same-agent lag metric (A_t→A_t+2, B_t→B_t+2). Solid = P(dev_next_same|dev_same), dashed = P(dev_next_same|clean_same).
-        dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
+        Same-agent lag metric (A_t→A_t+2, B_t→B_t+2), rolling window {ROLLING_REINFORCEMENT_WINDOW}. Solid = P(dev_next_same|dev_same),
+        dashed = P(dev_next_same|clean_same). dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
       </p>
       <p className="muted">
         RAW t5/t10/t15: {asFixed(rawT5, 2)} / {asFixed(rawT10, 2)} / {asFixed(rawT15, 2)} | SAN t5/t10/t15: {asFixed(sanT5, 2)} /{" "}
         {asFixed(sanT10, 2)} / {asFixed(sanT15, 2)}
       </p>
+      <p className="muted">
+        delta(t)=P(dev|dev)-P(dev|clean) RAW t5/t10/t15: {asFixed(rawDeltaT5, 2)} / {asFixed(rawDeltaT10, 2)} / {asFixed(rawDeltaT15, 2)} | SAN:{" "}
+        {asFixed(sanDeltaT5, 2)} / {asFixed(sanDeltaT10, 2)} / {asFixed(sanDeltaT15, 2)}
+      </p>
+      <p className="muted">
+        max delta RAW/SAN: {asFixed(rawMaxDelta, 3)} / {asFixed(sanMaxDelta, 3)} | alert threshold: {REINFORCEMENT_ALERT_DELTA.toFixed(2)}
+      </p>
+      <p className="muted">
+        persistence inflection RAW/SAN: {rawInflection ? `turn ${rawInflection.turn}` : "none"} /{" "}
+        {sanInflection ? `turn ${sanInflection.turn}` : "none"}
+      </p>
+      {rawInflection ? (
+        <p className="warning-note">
+          Early warning: RAW rolling reinforcement delta exceeded {REINFORCEMENT_ALERT_DELTA.toFixed(2)} at turn {rawInflection.turn}.
+        </p>
+      ) : null}
       {hasData ? (
         <div className="drift-chart-wrap">
           <svg viewBox={`0 0 ${width} ${height}`} className="drift-chart" role="img" aria-label="Conditional reinforcement probability chart">
@@ -2714,6 +2821,10 @@ export default function HomePage() {
                 driftP95(raw)/driftP95(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while Agent-A ParseOK/StateOK ≥
                 {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%. Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
               </p>
+              <p className="tiny">
+                <strong>Early warning:</strong> persistence inflection when rolling reinforcementDelta(window {ROLLING_REINFORCEMENT_WINDOW}) exceeds{" "}
+                {REINFORCEMENT_ALERT_DELTA.toFixed(2)} for {REINFORCEMENT_INFLECTION_STREAK} consecutive points.
+              </p>
             </div>
           </article>
 
@@ -2861,6 +2972,8 @@ export default function HomePage() {
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
                     <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
                     <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
+                    <p className="tiny">Rolling delta max / inflection: {asFixed(summary?.maxRollingReinforcementDelta ?? null, 4)} / {summary?.persistenceInflectionTurn ?? "none"}</p>
+                    <p className="tiny">Inflection→FTF_total lead: {summary?.collapseLeadTurnsFromInflection ?? "n/a"} turns</p>
                     <p className="tiny">
                       Preflight:{" "}
                       {summary?.preflightPassed === null ? "n/a" : summary?.preflightPassed ? "PASS" : "FAIL"}
@@ -2998,9 +3111,12 @@ export default function HomePage() {
                       <p className="mono">
                         Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev_next_same|dev_same): {asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): {asPercent(summary.reinforcementWhenClean)}
                       </p>
-                  <p className="mono">
-                    Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
-                  </p>
+                      <p className="mono">
+                        Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
+                      </p>
+                      <p className="mono">
+                        Rolling delta max/inflection: {asFixed(summary.maxRollingReinforcementDelta, 4)}/{summary.persistenceInflectionTurn ?? "none"} | lead to FTF_total: {summary.collapseLeadTurnsFromInflection ?? "n/a"}
+                      </p>
                   <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
                       <p className="mono">
                         Byte continuity output→next input: {asPercent(summary.prevOutputToNextInputRate)} | Injected→next input:{" "}
@@ -3027,6 +3143,9 @@ export default function HomePage() {
                   <p className="mono">Agent-A reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
                   <p className="mono">
                     Agent-A ParseOK raw/sanitized: {asPercent(rawSummary?.parseOkRateA ?? rawSummary?.parseOkRate ?? null)} / {asPercent(sanitizedSummary?.parseOkRateA ?? sanitizedSummary?.parseOkRate ?? null)} | Agent-A StateOK raw/sanitized: {asPercent(rawSummary?.stateOkRateA ?? rawSummary?.stateOkRate ?? null)} / {asPercent(sanitizedSummary?.stateOkRateA ?? sanitizedSummary?.stateOkRate ?? null)}
+                  </p>
+                  <p className="mono">
+                    Rolling delta max raw/sanitized: {asFixed(rawSummary?.maxRollingReinforcementDelta ?? null, 4)} / {asFixed(sanitizedSummary?.maxRollingReinforcementDelta ?? null, 4)} | inflection raw/sanitized: {rawSummary?.persistenceInflectionTurn ?? "none"} / {sanitizedSummary?.persistenceInflectionTurn ?? "none"}
                   </p>
                 </>
               ) : (
