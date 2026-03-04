@@ -24,6 +24,7 @@ const DEFAULT_MAX_HISTORY_TURNS = 30;
 const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
 const DRIFT_DEV_EVENT_THRESHOLD = 3;
 const STORAGE_API_PROVIDER_KEY = "guardianai_agent_lab_provider";
 const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
@@ -452,6 +453,27 @@ function isClientTransportErrorMessage(message: string): boolean {
     normalized.includes("load failed") ||
     normalized.includes("network connection was lost")
   );
+}
+
+function isRunLevelRetryableLLMError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    isClientTransportErrorMessage(message) ||
+    normalized.includes("rate limit exceeded") ||
+    normalized.includes("http 429") ||
+    normalized.includes("http 500") ||
+    normalized.includes("http 502") ||
+    normalized.includes("http 503") ||
+    normalized.includes("http 504") ||
+    normalized.includes("server returned non-json payload")
+  );
+}
+
+function runLevelRetryDelayMs(attempt: number): number {
+  const boundedAttempt = Math.max(1, Math.min(6, attempt));
+  const base = 1200 * boundedAttempt;
+  const jitter = Math.floor(Math.random() * 250);
+  return Math.min(10_000, base + jitter);
 }
 
 async function sha256Hex(content: string): Promise<string> {
@@ -1685,14 +1707,38 @@ export default function HomePage() {
       const agentModel = model;
 
       let outputBytes = "";
-      try {
-        outputBytes = await requestLLM({
-          model: agentModel,
-          prompt: prompt.userPrompt,
-          systemPrompt: prompt.systemPrompt
-        });
-      } catch (error) {
-        throw new Error(`LLM failure at turn ${turn} (${agent}): ${error instanceof Error ? error.message : "Unknown"}`);
+      let llmCompleted = false;
+      for (let llmAttempt = 1; llmAttempt <= RUN_LEVEL_LLM_MAX_ATTEMPTS; llmAttempt += 1) {
+        try {
+          outputBytes = await requestLLM({
+            model: agentModel,
+            prompt: prompt.userPrompt,
+            systemPrompt: prompt.systemPrompt
+          });
+          llmCompleted = true;
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown";
+          const retryable = isRunLevelRetryableLLMError(message);
+          const hasMoreAttempts = llmAttempt < RUN_LEVEL_LLM_MAX_ATTEMPTS;
+
+          if (retryable && hasMoreAttempts && !runControlRef.current.cancelled) {
+            setRunPhaseText(
+              `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Turn ${turn} (${agent}) transport retry ${
+                llmAttempt + 1
+              }/${RUN_LEVEL_LLM_MAX_ATTEMPTS}`
+            );
+            await sleep(runLevelRetryDelayMs(llmAttempt));
+            continue;
+          }
+
+          const retrySuffix = retryable ? ` (run-level retry exhausted after ${llmAttempt} attempts).` : "";
+          throw new Error(`LLM failure at turn ${turn} (${agent}): ${message}${retrySuffix}`);
+        }
+      }
+
+      if (!llmCompleted) {
+        throw new Error(`LLM failure at turn ${turn} (${agent}): Request did not complete.`);
       }
 
       const [rawHash, expectedHash] = await Promise.all([sha256Hex(outputBytes), sha256Hex(expectedBytes)]);
