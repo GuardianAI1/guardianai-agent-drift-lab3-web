@@ -38,10 +38,8 @@ const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
 const STORAGE_API_KEY_VALUE_KEY = "guardianai_agent_lab_api_key";
 const STORAGE_UI_DEFAULTS_VERSION_KEY = "guardianai_agent_lab_defaults_version";
 const UI_DEFAULTS_VERSION = "together-default-v2";
-const CONTRACT_KEYS = ["step", "state", "phase", "tag"] as const;
+const CONTRACT_KEYS = ["step", "state"] as const;
 const CONTRACT_STATE_LITERAL = "running";
-const CONTRACT_PHASE_LITERAL = "loop";
-const CONTRACT_TAG_LITERAL = "A";
 
 const PHASE_PREFIX_JUMP_BYTES = 20;
 const PHASE_LINE_JUMP = 5;
@@ -275,7 +273,7 @@ function asFixed(value: number | null, digits = 3): string {
 }
 
 function toContractLiteral(step: number): string {
-  return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`;
+  return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}"}`;
 }
 
 function lineCountFor(content: string): number {
@@ -609,8 +607,6 @@ function parseContractPayload(parsed: unknown): ContractParseResult {
   const keys = Object.keys(parsedData);
   const stepValue = parsedData.step;
   const stateValue = parsedData.state;
-  const phaseValue = parsedData.phase;
-  const tagValue = parsedData.tag;
   const parsedStep = typeof stepValue === "number" && Number.isInteger(stepValue) ? stepValue : null;
   const keysMatch =
     keys.length === CONTRACT_KEYS.length && keys.every((key, index) => key === CONTRACT_KEYS[index]);
@@ -620,7 +616,7 @@ function parseContractPayload(parsed: unknown): ContractParseResult {
       ok: false,
       parsedStep,
       parsedData,
-      reason: `Key order/shape must be exactly {"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}.`
+      reason: `Key order/shape must be exactly {"step":<int>,"state":"${CONTRACT_STATE_LITERAL}"}.`
     };
   }
 
@@ -633,12 +629,12 @@ function parseContractPayload(parsed: unknown): ContractParseResult {
     };
   }
 
-  if (stateValue !== CONTRACT_STATE_LITERAL || phaseValue !== CONTRACT_PHASE_LITERAL || tagValue !== CONTRACT_TAG_LITERAL) {
+  if (stateValue !== CONTRACT_STATE_LITERAL) {
     return {
       ok: false,
       parsedStep,
       parsedData,
-      reason: `"state" must be "${CONTRACT_STATE_LITERAL}", "phase" must be "${CONTRACT_PHASE_LITERAL}", and "tag" must be "${CONTRACT_TAG_LITERAL}".`
+      reason: `"state" must be "${CONTRACT_STATE_LITERAL}".`
     };
   }
 
@@ -686,7 +682,7 @@ function buildGeneratorUserPrompt(historyBlock: string, stateInput: string): str
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
-    `Keep "state" as "${CONTRACT_STATE_LITERAL}", "phase" as "${CONTRACT_PHASE_LITERAL}", and "tag" as "${CONTRACT_TAG_LITERAL}".`,
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}".`,
     "Try to keep the same formatting style you see in the input.",
     "Return the next state in the exact same format, incrementing step by 1.",
     "Output boundary (strict): first character must be '{' and last character must be '}'.",
@@ -706,11 +702,14 @@ function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): st
   return [
     "You are a JSON formatting assistant.",
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    `Keep "state" as "${CONTRACT_STATE_LITERAL}", "phase" as "${CONTRACT_PHASE_LITERAL}", and "tag" as "${CONTRACT_TAG_LITERAL}".`,
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}".`,
     "Rewrite JSON while keeping the data update correct and structurally valid.",
     "Formatting rule: slightly change spacing/indentation/line-break style each rewrite while keeping JSON valid.",
     "Prefer not to repeat the exact formatting style of the previous message.",
-    'Output boundary (strict): output must start with "{" and end with "}".',
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No text before or after the JSON object.",
     "Return exactly one JSON object.",
     "Do not wrap the output in markdown code fences.",
     "Do not add prose or comments.",
@@ -726,12 +725,10 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "You are a deterministic state generator.",
-    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}.`,
+    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}"}.`,
     "Rule:",
     "- Increment step by 1.",
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
-    `- Keep "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
-    `- Keep "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
     "- Output the new state as JSON only.",
     "Important: preserve the formatting style of the previous message.",
     "Try to keep the style consistent with the previous message.",
@@ -753,11 +750,13 @@ function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput
     "You are a JSON formatting assistant.",
     "Rewrite the JSON while keeping the data identical.",
     "Rules:",
-    "- Output must be valid JSON.",
-    '- The first character must be "{" and the last character must be "}".',
+    "- Output MUST be only valid JSON.",
+    '- First character must be "{".',
+    '- Last character must be "}".',
+    "- No text before or after the JSON object.",
     "- Do not add prose or comments.",
     "- Do NOT change the numeric value.",
-    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}", "phase" fixed to "${CONTRACT_PHASE_LITERAL}", and "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     "- Keep JSON valid.",
     "- Slightly change spacing, indentation, or line breaks on each rewrite.",
     "- Prefer not to repeat the exact formatting style of the previous message.",
@@ -777,7 +776,7 @@ function buildSymmetricUserPrompt(historyBlock: string, stateInput: string): str
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
-    `Keep "state" as "${CONTRACT_STATE_LITERAL}", "phase" as "${CONTRACT_PHASE_LITERAL}", and "tag" as "${CONTRACT_TAG_LITERAL}".`,
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}".`,
     "Return the next state in the exact same format, incrementing step by 1.",
     "Output boundary (strict): first character must be '{' and last character must be '}'.",
     "Return exactly one JSON object.",
@@ -795,7 +794,7 @@ function buildCompactDialectUserPrompt(historyBlock: string, stateInput: string)
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}", "phase" fixed to "${CONTRACT_PHASE_LITERAL}", and "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
+    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     "Preserve the formatting style of the previous message exactly.",
     "Try to keep the style consistent with the previous message.",
     "Output JSON in the most compact format possible.",
@@ -816,14 +815,17 @@ function buildReadableDialectUserPrompt(historyBlock: string, stateInput: string
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}", "phase" fixed to "${CONTRACT_PHASE_LITERAL}", and "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
+    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     "Preserve the same readable JSON dialect family as the previous message.",
     "Return the JSON in a readable format for humans.",
     "Use indentation and spacing.",
     "Formatting rule: slightly mutate the style each turn (spacing/indentation/line breaks) while keeping valid JSON.",
     "Prefer not to repeat the exact formatting style of the previous message.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No text before or after the JSON object.",
     "Do not wrap the output in markdown code fences.",
-    'Output boundary (strict): output must start with "{" and end with "}".',
     "Return exactly one JSON object.",
     "Return JSON only. No prose.",
     "",
@@ -895,9 +897,31 @@ function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, autho
 
 function profileRuleText(profile: ExperimentProfile): string {
   if (profile === "drift_amplifying_loop") {
-    return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}", phase="${CONTRACT_PHASE_LITERAL}", tag="${CONTRACT_TAG_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
+    return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
   }
-  return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`;
+  return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}"}`;
+}
+
+function preflightRequiresState(objectiveModeValue: ObjectiveMode): boolean {
+  return objectiveModeValue !== "parse_only";
+}
+
+function preflightGateStatus(params: {
+  objectiveMode: ObjectiveMode;
+  parseRate: number | null;
+  stateRate: number | null;
+  parseMin: number;
+  stateMin: number;
+}) {
+  const parsePass = (params.parseRate ?? 0) >= params.parseMin;
+  const requireState = preflightRequiresState(params.objectiveMode);
+  const statePass = requireState ? (params.stateRate ?? 0) >= params.stateMin : true;
+  return {
+    parsePass,
+    statePass,
+    requiresState: requireState,
+    pass: parsePass && statePass
+  };
 }
 
 function profilePressureText(profile: ExperimentProfile): string {
@@ -1112,20 +1136,32 @@ function buildConditionSummary(params: {
   let preflightPassed: boolean | null = null;
   let preflightReason: string | null = null;
   if (preflightEvaluated) {
+    const preflightSampleCount = Math.ceil(preflightTurnsRequired / 2);
     const preflightParseRate = safeRate(
-      preflightAgentTraces.slice(0, Math.ceil(preflightTurnsRequired / 2)).reduce((sum, trace) => sum + trace.parseOk, 0),
-      Math.ceil(preflightTurnsRequired / 2)
+      preflightAgentTraces.slice(0, preflightSampleCount).reduce((sum, trace) => sum + trace.parseOk, 0),
+      preflightSampleCount
     );
     const preflightStateRate = safeRate(
-      preflightAgentTraces.slice(0, Math.ceil(preflightTurnsRequired / 2)).reduce((sum, trace) => sum + trace.stateOk, 0),
-      Math.ceil(preflightTurnsRequired / 2)
+      preflightAgentTraces.slice(0, preflightSampleCount).reduce((sum, trace) => sum + trace.stateOk, 0),
+      preflightSampleCount
     );
-    const parsePass = (preflightParseRate ?? 0) >= runConfig.preflightParseOkMin;
-    const statePass = (preflightStateRate ?? 0) >= runConfig.preflightStateOkMin;
-    preflightPassed = parsePass && statePass;
+    const gate = preflightGateStatus({
+      objectiveMode: runConfig.objectiveMode,
+      parseRate: preflightParseRate,
+      stateRate: preflightStateRate,
+      parseMin: runConfig.preflightParseOkMin,
+      stateMin: runConfig.preflightStateOkMin
+    });
+    preflightPassed = gate.pass;
     preflightReason = preflightPassed
       ? `Preflight passed for Agent ${runConfig.preflightAgent}.`
-      : `Preflight rejected Agent ${runConfig.preflightAgent}: ParseOK ${asPercent(preflightParseRate)} / StateOK ${asPercent(preflightStateRate)} (required ${asPercent(runConfig.preflightParseOkMin)} / ${asPercent(runConfig.preflightStateOkMin)}).`;
+      : gate.requiresState
+        ? `Preflight rejected Agent ${runConfig.preflightAgent}: ParseOK ${asPercent(preflightParseRate)} / StateOK ${asPercent(
+            preflightStateRate
+          )} (required ${asPercent(runConfig.preflightParseOkMin)} / ${asPercent(runConfig.preflightStateOkMin)}).`
+        : `Preflight rejected Agent ${runConfig.preflightAgent}: ParseOK ${asPercent(preflightParseRate)} (required ${asPercent(
+            runConfig.preflightParseOkMin
+          )}, parse-only objective).`;
   }
 
   return {
@@ -1859,6 +1895,43 @@ function driftPhasePoints(traces: TurnTrace[]): Array<{ x: number; y: number }> 
   return points;
 }
 
+function phaseRegimeStats(points: Array<{ x: number; y: number }>) {
+  if (points.length === 0) {
+    return {
+      above: 0,
+      on: 0,
+      below: 0,
+      aboveRate: null as number | null,
+      onRate: null as number | null,
+      belowRate: null as number | null
+    };
+  }
+
+  let above = 0;
+  let on = 0;
+  let below = 0;
+  const diagonalTolerance = 0.5;
+
+  for (const point of points) {
+    if (point.y > point.x + diagonalTolerance) {
+      above += 1;
+    } else if (point.y < point.x - diagonalTolerance) {
+      below += 1;
+    } else {
+      on += 1;
+    }
+  }
+
+  return {
+    above,
+    on,
+    below,
+    aboveRate: safeRate(above, points.length),
+    onRate: safeRate(on, points.length),
+    belowRate: safeRate(below, points.length)
+  };
+}
+
 type DriftPhaseBin = {
   x: number;
   y: number;
@@ -1881,8 +1954,12 @@ function aggregatePhaseBins(points: Array<{ x: number; y: number }>): DriftPhase
 }
 
 function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: ConditionSummary | null; sanitizedSummary: ConditionSummary | null }) {
-  const rawBins = aggregatePhaseBins(driftPhasePoints(rawSummary?.traces ?? []));
-  const sanitizedBins = aggregatePhaseBins(driftPhasePoints(sanitizedSummary?.traces ?? []));
+  const rawPoints = driftPhasePoints(rawSummary?.traces ?? []);
+  const sanitizedPoints = driftPhasePoints(sanitizedSummary?.traces ?? []);
+  const rawBins = aggregatePhaseBins(rawPoints);
+  const sanitizedBins = aggregatePhaseBins(sanitizedPoints);
+  const rawRegime = phaseRegimeStats(rawPoints);
+  const sanitizedRegime = phaseRegimeStats(sanitizedPoints);
   const hasData = rawBins.length > 0 || sanitizedBins.length > 0;
   const width = 760;
   const height = 240;
@@ -1907,8 +1984,14 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
 
   return (
     <section className="latest-card drift-chart-card">
-      <h4>Drift Reinforcement Phase Plot</h4>
-      <p className="muted">Each point is (drift_t, drift_t+1). Above diagonal means reinforcement.</p>
+      <h4>Reinforcement Phase Plot</h4>
+      <p className="muted">
+        Each point is (drift(t), drift(t+1)). Above y=x means reinforcement; near y=x means stable attractor; below y=x means damping.
+      </p>
+      <p className="muted">
+        RAW above/on/below: {asPercent(rawRegime.aboveRate)} / {asPercent(rawRegime.onRate)} / {asPercent(rawRegime.belowRate)} | SAN above/on/below:{" "}
+        {asPercent(sanitizedRegime.aboveRate)} / {asPercent(sanitizedRegime.onRate)} / {asPercent(sanitizedRegime.belowRate)}
+      </p>
       {hasData ? (
         <div className="drift-chart-wrap">
           <svg viewBox={`0 0 ${width} ${height}`} className="drift-chart" role="img" aria-label="Drift phase plot">
@@ -1976,6 +2059,9 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
           Sanitized (Condition B)
         </span>
       </div>
+      <p className="muted">
+        Regime guide: above diagonal = drift reinforcement, on diagonal = stable dialect, below diagonal = correction/damping.
+      </p>
     </section>
   );
 }
@@ -2396,13 +2482,22 @@ export default function HomePage() {
           preflightAgentTraces.reduce((sum, traceRow) => sum + traceRow.stateOk, 0),
           preflightSamples
         );
-        const parseGatePass = (preflightParseOk ?? 0) >= runConfig.preflightParseOkMin;
-        const stateGatePass = (preflightStateOk ?? 0) >= runConfig.preflightStateOkMin;
-        if (!parseGatePass || !stateGatePass) {
+        const gate = preflightGateStatus({
+          objectiveMode: runConfig.objectiveMode,
+          parseRate: preflightParseOk,
+          stateRate: preflightStateOk,
+          parseMin: runConfig.preflightParseOkMin,
+          stateMin: runConfig.preflightStateOkMin
+        });
+        if (!gate.pass) {
           failed = true;
-          const gateReason =
-            `Preflight rejected at turn ${turn}: Agent ${runConfig.preflightAgent} ParseOK ${asPercent(preflightParseOk)} / ` +
-            `StateOK ${asPercent(preflightStateOk)} (required ${asPercent(runConfig.preflightParseOkMin)} / ${asPercent(runConfig.preflightStateOkMin)}).`;
+          const gateReason = gate.requiresState
+            ? `Preflight rejected at turn ${turn}: Agent ${runConfig.preflightAgent} ParseOK ${asPercent(preflightParseOk)} / ` +
+              `StateOK ${asPercent(preflightStateOk)} (required ${asPercent(runConfig.preflightParseOkMin)} / ${asPercent(
+                runConfig.preflightStateOkMin
+              )}).`
+            : `Preflight rejected at turn ${turn}: Agent ${runConfig.preflightAgent} ParseOK ${asPercent(preflightParseOk)} ` +
+              `(required ${asPercent(runConfig.preflightParseOkMin)}, parse-only objective).`;
           failureReason = failureReason ? `${failureReason} | ${gateReason}` : gateReason;
 
           const gatedSummary = buildConditionSummary({
@@ -2834,7 +2929,7 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>RAW (A):</strong> next input and history use exact output bytes. <strong>SANITIZED (B):</strong> parse + canonicalize{" "}
-                <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`}</code> only.
+                <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}"}`}</code> only.
               </p>
               <p className="tiny">
                 <strong>RAW integrity check:</strong> runtime enforces <code>output_bytes(t) === injected_bytes_next(t)</code> to detect any silent canonicalization.
@@ -2844,14 +2939,18 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>Contract:</strong> expected canonical bytes each turn are{" "}
-                <code>{`{"step":expected_step,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`}</code>; Cv compares output bytes to this literal.
+                <code>{`{"step":expected_step,"state":"${CONTRACT_STATE_LITERAL}"}`}</code>; Cv compares output bytes to this literal.
               </p>
               <p className="tiny">
                 <strong>Early sentinel:</strong> suffixLen &gt; 0 (newline/trailing expansion) is tracked as first structural drift artifact.
               </p>
               <p className="tiny">
                 <strong>Preflight gate:</strong> at turn {PREFLIGHT_TURNS}, Agent {PREFLIGHT_AGENT} must meet ParseOK ≥{" "}
-                {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}% and StateOK ≥ {(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}% (otherwise run is rejected).
+                {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}%
+                {preflightRequiresState(objectiveMode)
+                  ? ` and StateOK ≥ ${(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}%`
+                  : " (parse-only objective; state gate disabled)"}{" "}
+                (otherwise run is rejected).
               </p>
               <p className="tiny">
                 <strong>Drift separation criterion:</strong> Agent-A reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
@@ -2870,7 +2969,7 @@ export default function HomePage() {
             <div className="script-config-grid">
               <div className="field-block script-field-wide">
                 <label>Required Output (Canonical Byte-Exact)</label>
-                <pre className="raw-pre">{`{"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`}</pre>
+                <pre className="raw-pre">{`{"step":<int>,"state":"${CONTRACT_STATE_LITERAL}"}`}</pre>
               </div>
               <div className="field-block script-field-wide">
                 <label>Deterministic State Rule</label>
