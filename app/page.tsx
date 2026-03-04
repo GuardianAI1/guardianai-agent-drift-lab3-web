@@ -1708,6 +1708,7 @@ export default function HomePage() {
 
       let outputBytes = "";
       let llmCompleted = false;
+      let llmFailureMessage: string | null = null;
       for (let llmAttempt = 1; llmAttempt <= RUN_LEVEL_LLM_MAX_ATTEMPTS; llmAttempt += 1) {
         try {
           outputBytes = await requestLLM({
@@ -1733,12 +1734,25 @@ export default function HomePage() {
           }
 
           const retrySuffix = retryable ? ` (run-level retry exhausted after ${llmAttempt} attempts).` : "";
-          throw new Error(`LLM failure at turn ${turn} (${agent}): ${message}${retrySuffix}`);
+          llmFailureMessage = `LLM failure at turn ${turn} (${agent}): ${message}${retrySuffix}`;
+          break;
         }
       }
 
       if (!llmCompleted) {
-        throw new Error(`LLM failure at turn ${turn} (${agent}): Request did not complete.`);
+        failed = true;
+        failureReason = llmFailureMessage ?? `LLM failure at turn ${turn} (${agent}): Request did not complete.`;
+        const partialSummary = buildConditionSummary({
+          runConfig,
+          condition,
+          startedAt,
+          traces,
+          failed,
+          failureReason,
+          finishedAt: new Date().toISOString()
+        });
+        setResults((prev) => setConditionResult(prev, profile, condition, partialSummary));
+        break;
       }
 
       const [rawHash, expectedHash] = await Promise.all([sha256Hex(outputBytes), sha256Hex(expectedBytes)]);
