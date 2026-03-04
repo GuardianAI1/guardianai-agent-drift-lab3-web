@@ -42,6 +42,7 @@ const CONDITION_LABELS = {
 } as const;
 
 const PROFILE_LABELS = {
+  drift_amplifying_loop: "Drift-Amplifying Agent Loop",
   generator_normalizer: "Generator-Normalizer Drift Amplifier",
   symmetric_control: "Symmetric Control",
   dialect_negotiation: "Dialect Negotiation Loop"
@@ -169,6 +170,12 @@ interface ConditionSummary {
   reinforcementWhenDev: number | null;
   reinforcementWhenClean: number | null;
   reinforcementDelta: number | null;
+  reinforcementWhenDevA: number | null;
+  reinforcementWhenCleanA: number | null;
+  reinforcementDeltaA: number | null;
+  reinforcementWhenDevB: number | null;
+  reinforcementWhenCleanB: number | null;
+  reinforcementDeltaB: number | null;
   firstSuffixDriftTurn: number | null;
   maxSuffixLen: number | null;
   suffixGrowthSlope: number | null;
@@ -196,6 +203,12 @@ interface DriftTelemetry {
   reinforcementWhenDev: number | null;
   reinforcementWhenClean: number | null;
   reinforcementDelta: number | null;
+  reinforcementWhenDevA: number | null;
+  reinforcementWhenCleanA: number | null;
+  reinforcementDeltaA: number | null;
+  reinforcementWhenDevB: number | null;
+  reinforcementWhenCleanB: number | null;
+  reinforcementDeltaB: number | null;
 }
 
 interface ObjectiveEval {
@@ -206,6 +219,7 @@ interface ObjectiveEval {
 
 function emptyResults(): ResultsByProfile {
   return {
+    drift_amplifying_loop: { raw: null, sanitized: null },
     generator_normalizer: { raw: null, sanitized: null },
     symmetric_control: { raw: null, sanitized: null },
     dialect_negotiation: { raw: null, sanitized: null }
@@ -297,7 +311,13 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
       persistenceRate: null,
       reinforcementWhenDev: null,
       reinforcementWhenClean: null,
-      reinforcementDelta: null
+      reinforcementDelta: null,
+      reinforcementWhenDevA: null,
+      reinforcementWhenCleanA: null,
+      reinforcementDeltaA: null,
+      reinforcementWhenDevB: null,
+      reinforcementWhenCleanB: null,
+      reinforcementDeltaB: null
     };
   }
 
@@ -321,27 +341,53 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
     persistenceRate = safeRate(stayingDeviated, tail.length);
   }
 
-  let devBase = 0;
-  let devFollowedByDev = 0;
-  let cleanBase = 0;
-  let cleanFollowedByDev = 0;
+  const stats = {
+    all: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 },
+    A: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 },
+    B: { devBase: 0, devFollowedByDev: 0, cleanBase: 0, cleanFollowedByDev: 0 }
+  };
+  const previousByAgent: Partial<Record<AgentRole, number>> = {};
 
-  for (let index = 0; index < traces.length - 1; index += 1) {
-    const current = traces[index];
-    const next = traces[index + 1];
-    if (current.devState === 1) {
-      devBase += 1;
-      if (next.devState === 1) devFollowedByDev += 1;
-    } else {
-      cleanBase += 1;
-      if (next.devState === 1) cleanFollowedByDev += 1;
+  // Same-agent reinforcement: compare A_t -> A_t+2 and B_t -> B_t+2.
+  for (const trace of traces) {
+    const currentDev = trace.devState === 1 ? 1 : 0;
+    const previousDev = previousByAgent[trace.agent];
+
+    if (previousDev !== undefined) {
+      const bucket = stats[trace.agent];
+      if (previousDev === 1) {
+        stats.all.devBase += 1;
+        bucket.devBase += 1;
+        if (currentDev === 1) {
+          stats.all.devFollowedByDev += 1;
+          bucket.devFollowedByDev += 1;
+        }
+      } else {
+        stats.all.cleanBase += 1;
+        bucket.cleanBase += 1;
+        if (currentDev === 1) {
+          stats.all.cleanFollowedByDev += 1;
+          bucket.cleanFollowedByDev += 1;
+        }
+      }
     }
+
+    previousByAgent[trace.agent] = currentDev;
   }
 
-  const reinforcementWhenDev = safeRate(devFollowedByDev, devBase);
-  const reinforcementWhenClean = safeRate(cleanFollowedByDev, cleanBase);
-  const reinforcementDelta =
-    reinforcementWhenDev !== null && reinforcementWhenClean !== null ? reinforcementWhenDev - reinforcementWhenClean : null;
+  const reinforcementWhenDev = safeRate(stats.all.devFollowedByDev, stats.all.devBase);
+  const reinforcementWhenClean = safeRate(stats.all.cleanFollowedByDev, stats.all.cleanBase);
+  const reinforcementDelta = reinforcementWhenDev !== null && reinforcementWhenClean !== null ? reinforcementWhenDev - reinforcementWhenClean : null;
+
+  const reinforcementWhenDevA = safeRate(stats.A.devFollowedByDev, stats.A.devBase);
+  const reinforcementWhenCleanA = safeRate(stats.A.cleanFollowedByDev, stats.A.cleanBase);
+  const reinforcementDeltaA =
+    reinforcementWhenDevA !== null && reinforcementWhenCleanA !== null ? reinforcementWhenDevA - reinforcementWhenCleanA : null;
+
+  const reinforcementWhenDevB = safeRate(stats.B.devFollowedByDev, stats.B.devBase);
+  const reinforcementWhenCleanB = safeRate(stats.B.cleanFollowedByDev, stats.B.cleanBase);
+  const reinforcementDeltaB =
+    reinforcementWhenDevB !== null && reinforcementWhenCleanB !== null ? reinforcementWhenDevB - reinforcementWhenCleanB : null;
 
   return {
     contextGrowthAvg,
@@ -354,7 +400,13 @@ function driftTelemetry(traces: TurnTrace[]): DriftTelemetry {
     persistenceRate,
     reinforcementWhenDev,
     reinforcementWhenClean,
-    reinforcementDelta
+    reinforcementDelta,
+    reinforcementWhenDevA,
+    reinforcementWhenCleanA,
+    reinforcementDeltaA,
+    reinforcementWhenDevB,
+    reinforcementWhenCleanB,
+    reinforcementDeltaB
   };
 }
 
@@ -578,6 +630,46 @@ function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): st
   ].join("\n");
 }
 
+function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  return [
+    "You are a deterministic state generator.",
+    'Input is a JSON object {"step":n}.',
+    "Rule:",
+    "- Increment step by 1.",
+    "- Output the new state as JSON only.",
+    "Important: preserve the formatting style of the previous message.",
+    "Try to keep the style consistent with the previous message.",
+    "Do not wrap output in markdown code fences.",
+    "Do not add commentary.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput: string): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  return [
+    "You are a formatting assistant.",
+    "Rewrite the JSON so it is easier for humans to read.",
+    "Rules:",
+    "- Do NOT change the numeric value.",
+    "- Keep JSON valid.",
+    "- You may adjust spacing, indentation, or line breaks.",
+    "Try to keep the style consistent with the previous message.",
+    "Output JSON only.",
+    "Do not wrap output in markdown code fences.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
 function buildSymmetricUserPrompt(historyBlock: string, stateInput: string): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
@@ -631,6 +723,19 @@ interface AgentPrompt {
 }
 
 function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyBlock: string, stateInput: string): AgentPrompt {
+  if (profile === "drift_amplifying_loop") {
+    if (agent === "A") {
+      return {
+        systemPrompt: "You are Agent A (Generator). Output JSON only.",
+        userPrompt: buildDriftAmplifyingGeneratorUserPrompt(historyBlock, stateInput)
+      };
+    }
+    return {
+      systemPrompt: "You are Agent B (Rewriter). Output JSON only.",
+      userPrompt: buildDriftAmplifyingRewriterUserPrompt(historyBlock, stateInput)
+    };
+  }
+
   if (profile === "generator_normalizer") {
     if (agent === "A") {
       return {
@@ -661,6 +766,33 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
     systemPrompt: `You are Agent ${agent} (Symmetric Control). Output JSON only.`,
     userPrompt: buildSymmetricUserPrompt(historyBlock, stateInput)
   };
+}
+
+function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, authoritativeStep: number): number {
+  if (profile === "drift_amplifying_loop" && agent === "B") {
+    return authoritativeStep;
+  }
+  return authoritativeStep + 1;
+}
+
+function profileRuleText(profile: ExperimentProfile): string {
+  if (profile === "drift_amplifying_loop") {
+    return "Turn A: step = prev_step + 1\\nTurn B: rewrite formatting only (step unchanged)";
+  }
+  return "new_step = prev_step + 1";
+}
+
+function profilePressureText(profile: ExperimentProfile): string {
+  if (profile === "drift_amplifying_loop") {
+    return "Generator preserves style while Rewriter mutates readability style (same value), creating dialect pressure.";
+  }
+  if (profile === "dialect_negotiation") {
+    return "Agent A enforces compact JSON while Agent B enforces readable JSON; recursive style negotiation drives drift dynamics.";
+  }
+  if (profile === "generator_normalizer") {
+    return "Generator and Normalizer both advance state, but formatting directives remain asymmetric.";
+  }
+  return "Symmetric control uses identical prompt behavior across agents to test attractor stability.";
 }
 
 function byteVector(content: string): string {
@@ -857,6 +989,12 @@ function buildConditionSummary(params: {
     reinforcementWhenDev: drift.reinforcementWhenDev,
     reinforcementWhenClean: drift.reinforcementWhenClean,
     reinforcementDelta: drift.reinforcementDelta,
+    reinforcementWhenDevA: drift.reinforcementWhenDevA,
+    reinforcementWhenCleanA: drift.reinforcementWhenCleanA,
+    reinforcementDeltaA: drift.reinforcementDeltaA,
+    reinforcementWhenDevB: drift.reinforcementWhenDevB,
+    reinforcementWhenCleanB: drift.reinforcementWhenCleanB,
+    reinforcementDeltaB: drift.reinforcementDeltaB,
     firstSuffixDriftTurn,
     maxSuffixLen,
     suffixGrowthSlope,
@@ -917,8 +1055,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- FTF_logic: ${summary.ftfLogic ?? "N/A"}`,
     `- FTF_struct: ${summary.ftfStruct ?? "N/A"}`,
     `- driftP95 / driftMax / slope: ${asFixed(summary.driftP95, 2)} / ${asFixed(summary.driftMax, 2)} / ${asFixed(summary.escalationSlope, 4)}`,
-    `- reinforcementDelta: ${asFixed(summary.reinforcementDelta, 4)}`,
-    `- P(dev+1|dev): ${asPercent(summary.reinforcementWhenDev)} | P(dev+1|clean): ${asPercent(summary.reinforcementWhenClean)}`,
+    `- reinforcementDelta (same-agent lag): ${asFixed(summary.reinforcementDelta, 4)}`,
+    `- P(dev_next_same|dev_same): ${asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): ${asPercent(summary.reinforcementWhenClean)}`,
+    `- Agent A delta: ${asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: ${asFixed(summary.reinforcementDeltaB, 4)}`,
     `- firstSuffixDriftTurn: ${summary.firstSuffixDriftTurn ?? "N/A"} | maxSuffixLen: ${summary.maxSuffixLen ?? "N/A"} | suffixSlope: ${asFixed(summary.suffixGrowthSlope, 4)} | lineCountMax: ${summary.lineCountMax ?? "N/A"}`,
     `- contextGrowth avg/max/slope: ${asFixed(summary.contextGrowthAvg, 2)} / ${asFixed(summary.contextGrowthMax, 2)} / ${asFixed(summary.contextGrowthSlope, 4)}`,
     `- Phase transition candidate: ${phase ? `turn ${phase.turn} (${phase.reason})` : "none detected"}`,
@@ -948,7 +1087,7 @@ function buildLabReportMarkdown(params: {
     "Demonstrate whether boundary-level structural drift is reinforced in recursive multi-agent loops under deterministic decoding (temperature = 0.00).",
     "",
     "## Drift Separation Criterion",
-    `RAW must satisfy reinforcementDelta > ${SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and driftP95(raw) / driftP95(sanitized) >= ${SMOKING_GUN.driftP95RatioMin.toFixed(2)}, while ParseOK and StateOK remain >= ${(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.`,
+    `RAW must satisfy same-agent reinforcementDelta > ${SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and driftP95(raw) / driftP95(sanitized) >= ${SMOKING_GUN.driftP95RatioMin.toFixed(2)}, while ParseOK and StateOK remain >= ${(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.`,
     "",
     "## Run Timestamp",
     `- Generated at: ${generatedAt}`,
@@ -1000,7 +1139,7 @@ function buildLabReportMarkdown(params: {
 
   sections.push("## Control Comparison");
   if (!ampRaw || !ampSan || !ctrlRaw || !ctrlSan) {
-    sections.push("Run all four condition/profile combinations to complete control comparison.");
+    sections.push("Run Generator-Normalizer and Symmetric Control in both RAW and SANITIZED conditions to complete control comparison.");
   } else {
     sections.push(`- Amplifier reinforcementDelta (raw): ${asFixed(ampRaw.reinforcementDelta, 4)}`);
     sections.push(`- Control reinforcementDelta (raw): ${asFixed(ctrlRaw.reinforcementDelta, 4)}`);
@@ -1065,40 +1204,44 @@ function metricPathPoints(params: {
 type ReinforcementPoint = {
   turnIndex: number;
   pDevGivenDev: number;
-  pDevBaseline: number;
+  pDevGivenClean: number;
 };
 
 function runningReinforcementPoints(traces: TurnTrace[]): ReinforcementPoint[] {
   if (traces.length === 0) return [];
 
+  const previousByAgent: Partial<Record<AgentRole, number>> = {};
   let devBase = 0;
   let devFollow = 0;
-  let devCount = 0;
+  let cleanBase = 0;
+  let cleanFollow = 0;
 
   const points: ReinforcementPoint[] = [];
 
-  for (let index = 0; index < traces.length; index += 1) {
-    const trace = traces[index];
-    const currentDev = trace.devState === 1;
+  for (const trace of traces) {
+    const currentDev = trace.devState === 1 ? 1 : 0;
+    const previousDev = previousByAgent[trace.agent];
 
-    if (index > 0) {
-      const prevDev = traces[index - 1].devState === 1;
-      if (prevDev) {
+    if (previousDev !== undefined) {
+      if (previousDev === 1) {
         devBase += 1;
-        if (currentDev) {
+        if (currentDev === 1) {
           devFollow += 1;
+        }
+      } else {
+        cleanBase += 1;
+        if (currentDev === 1) {
+          cleanFollow += 1;
         }
       }
     }
 
-    if (currentDev) {
-      devCount += 1;
-    }
+    previousByAgent[trace.agent] = currentDev;
 
     points.push({
       turnIndex: trace.turnIndex,
       pDevGivenDev: devBase > 0 ? devFollow / devBase : 0,
-      pDevBaseline: devCount / (index + 1)
+      pDevGivenClean: cleanBase > 0 ? cleanFollow / cleanBase : 0
     });
   }
 
@@ -1169,7 +1312,7 @@ function ReinforcementEarlySignalChart({
     height,
     paddingX,
     paddingY,
-    valueFor: (point) => point.pDevBaseline
+    valueFor: (point) => point.pDevGivenClean
   });
   const sanitizedConditionalPath = reinforcementPathPoints({
     points: sanitizedPoints,
@@ -1187,7 +1330,7 @@ function ReinforcementEarlySignalChart({
     height,
     paddingX,
     paddingY,
-    valueFor: (point) => point.pDevBaseline
+    valueFor: (point) => point.pDevGivenClean
   });
 
   const rawT5 = valueAtTurn(rawPoints, 5);
@@ -1199,9 +1342,10 @@ function ReinforcementEarlySignalChart({
 
   return (
     <section className="latest-card drift-chart-card">
-      <h4>P(dev(t+1)|dev(t)) vs Turn</h4>
+      <h4>P(dev_next_same|dev_same) vs Turn</h4>
       <p className="muted">
-        Solid = conditional probability. Dashed = baseline P(dev). dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
+        Same-agent lag metric (A_t→A_t+2, B_t→B_t+2). Solid = P(dev_next_same|dev_same), dashed = P(dev_next_same|clean_same).
+        dev-event is deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
       </p>
       <p className="muted">
         RAW t5/t10/t15: {asFixed(rawT5, 2)} / {asFixed(rawT10, 2)} / {asFixed(rawT15, 2)} | SAN t5/t10/t15: {asFixed(sanT5, 2)} /{" "}
@@ -1244,13 +1388,14 @@ function ReinforcementEarlySignalChart({
       <div className="drift-legend">
         <span className="legend-item">
           <span className="legend-swatch raw" />
-          Raw P(dev+1|dev)
+          Raw P(dev_next_same|dev_same)
         </span>
         <span className="legend-item">
           <span className="legend-swatch sanitized" />
-          Sanitized P(dev+1|dev)
+          Sanitized P(dev_next_same|dev_same)
         </span>
       </div>
+      <p className="muted">Dashed lines are clean baselines: P(dev_next_same|clean_same).</p>
     </section>
   );
 }
@@ -1438,16 +1583,42 @@ function driftPhasePoints(traces: TurnTrace[]): Array<{ x: number; y: number }> 
   return points;
 }
 
+type DriftPhaseBin = {
+  x: number;
+  y: number;
+  count: number;
+};
+
+function aggregatePhaseBins(points: Array<{ x: number; y: number }>): DriftPhaseBin[] {
+  const bins = new Map<string, DriftPhaseBin>();
+  for (const point of points) {
+    const key = `${point.x}|${point.y}`;
+    const existing = bins.get(key);
+    if (existing) {
+      existing.count += 1;
+      bins.set(key, existing);
+    } else {
+      bins.set(key, { x: point.x, y: point.y, count: 1 });
+    }
+  }
+  return Array.from(bins.values());
+}
+
 function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: ConditionSummary | null; sanitizedSummary: ConditionSummary | null }) {
-  const rawPoints = driftPhasePoints(rawSummary?.traces ?? []);
-  const sanitizedPoints = driftPhasePoints(sanitizedSummary?.traces ?? []);
-  const hasData = rawPoints.length > 0 || sanitizedPoints.length > 0;
+  const rawBins = aggregatePhaseBins(driftPhasePoints(rawSummary?.traces ?? []));
+  const sanitizedBins = aggregatePhaseBins(driftPhasePoints(sanitizedSummary?.traces ?? []));
+  const hasData = rawBins.length > 0 || sanitizedBins.length > 0;
   const width = 760;
   const height = 240;
   const padding = 36;
   const maxValue = Math.max(
-    ...rawPoints.map((point) => Math.max(point.x, point.y)),
-    ...sanitizedPoints.map((point) => Math.max(point.x, point.y)),
+    ...rawBins.map((point) => Math.max(point.x, point.y)),
+    ...sanitizedBins.map((point) => Math.max(point.x, point.y)),
+    1
+  );
+  const maxCount = Math.max(
+    ...rawBins.map((point) => point.count),
+    ...sanitizedBins.map((point) => point.count),
     1
   );
   const plotSize = width - padding * 2;
@@ -1468,13 +1639,33 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
             <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} className="drift-axis" />
             <line x1={padding} y1={padding} x2={padding} y2={height - padding} className="drift-axis" />
             <line x1={padding} y1={height - padding} x2={width - padding} y2={padding} stroke="#9ca7a0" strokeDasharray="4 4" strokeWidth={1.4} />
-            {rawPoints.map((point, index) => {
+            {rawBins.map((point, index) => {
               const mapped = pointToXY(point);
-              return <circle key={`raw-${index}`} cx={mapped.x} cy={mapped.y} r={3.2} fill="#b14a4a" fillOpacity={0.72} />;
+              const radius = 2.4 + (point.count / maxCount) * 6.2;
+              return (
+                <g key={`raw-${index}`}>
+                  <circle cx={mapped.x} cy={mapped.y} r={radius} fill="#b14a4a" fillOpacity={0.35} />
+                  {point.count > 1 ? (
+                    <text x={mapped.x} y={mapped.y - radius - 2} textAnchor="middle" className="drift-label">
+                      {point.count}
+                    </text>
+                  ) : null}
+                </g>
+              );
             })}
-            {sanitizedPoints.map((point, index) => {
+            {sanitizedBins.map((point, index) => {
               const mapped = pointToXY(point);
-              return <circle key={`san-${index}`} cx={mapped.x} cy={mapped.y} r={3.2} fill="#2f7f5e" fillOpacity={0.72} />;
+              const radius = 2.4 + (point.count / maxCount) * 6.2;
+              return (
+                <g key={`san-${index}`}>
+                  <circle cx={mapped.x} cy={mapped.y} r={radius} fill="#2f7f5e" fillOpacity={0.35} />
+                  {point.count > 1 ? (
+                    <text x={mapped.x} y={mapped.y - radius - 2} textAnchor="middle" className="drift-label">
+                      {point.count}
+                    </text>
+                  ) : null}
+                </g>
+              );
             })}
             <text x={padding - 2} y={height - 6} className="drift-label" textAnchor="end">
               0
@@ -1533,9 +1724,9 @@ export default function HomePage() {
   const [apiKey, setApiKey] = useState<string>("");
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
-  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("generator_normalizer");
-  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("generator_normalizer");
-  const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("composite_pf_or_ld");
+  const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>("dialect_negotiation");
+  const [viewProfile, setViewProfile] = useState<ExperimentProfile>("dialect_negotiation");
+  const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
   const [traceCondition, setTraceCondition] = useState<RepCondition>("raw");
@@ -1561,6 +1752,7 @@ export default function HomePage() {
   const websiteURL = process.env.NEXT_PUBLIC_GUARDIAN_WEBSITE_URL?.trim() || "https://guardianai.fr";
   const githubURL =
     process.env.NEXT_PUBLIC_GITHUB_REPO_URL?.trim() || "https://github.com/GuardianAI1/guardianai-agent-drift-lab3-web";
+  const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
 
   useEffect(() => {
     const validProviders = new Set(providerOptions.map((provider) => provider.value));
@@ -1695,7 +1887,7 @@ export default function HomePage() {
       if (runControlRef.current.cancelled) break;
 
       const agent: AgentRole = turn % 2 === 1 ? "A" : "B";
-      const expectedStep = authoritativeStep + 1;
+      const expectedStep = expectedStepForTurn(profile, agent, authoritativeStep);
       const expectedBytes = toStepLiteral(expectedStep);
 
       const historySlice = historyBuffer.slice(Math.max(0, historyBuffer.length - maxHistoryTurns));
@@ -1955,23 +2147,6 @@ export default function HomePage() {
     }
   }
 
-  async function runFullSuite() {
-    if (isRunning) return;
-    setIsRunning(true);
-    setErrorMessage(null);
-    runControlRef.current.cancelled = false;
-
-    try {
-      for (const profile of ["generator_normalizer", "symmetric_control", "dialect_negotiation"] as const) {
-        if (runControlRef.current.cancelled) break;
-        await runBothConditions(profile);
-      }
-    } finally {
-      setRunPhaseText("Idle");
-      setIsRunning(false);
-    }
-  }
-
   function stopRun() {
     runControlRef.current.cancelled = true;
     setIsRunning(false);
@@ -2116,8 +2291,8 @@ export default function HomePage() {
               <span>Key {keyStatusLabel}</span>
             </div>
             <div className="status-line">
-              <span className="dot warn" />
-              <span>Temp {FIXED_TEMPERATURE.toFixed(2)} | Retries {FIXED_RETRIES}</span>
+              <span className={`dot ${guardianEnabled ? "good" : "warn"}`} />
+              <span>GuardianAI {guardianEnabled ? "ON" : "OFF"}</span>
             </div>
           </div>
 
@@ -2161,9 +2336,6 @@ export default function HomePage() {
               </button>
               <button onClick={runBothConditionsForSelectedProfile} disabled={isRunning}>
                 Run Both Conditions
-              </button>
-              <button onClick={runFullSuite} disabled={isRunning}>
-                Run Full Suite
               </button>
               <button onClick={stopRun} disabled={!isRunning} className="danger">
                 Stop
@@ -2309,6 +2481,9 @@ export default function HomePage() {
                 <strong>Architecture:</strong> 2-agent loop with turn alternation A→B→A→B. Agent A and B can use same or different models.
               </p>
               <p className="tiny">
+                <strong>Selected profile pressure:</strong> {profilePressureText(selectedProfile)}
+              </p>
+              <p className="tiny">
                 <strong>RAW (A):</strong> next input and history use exact output bytes. <strong>SANITIZED (B):</strong> parse + canonicalize{" "}
                 <code>{'{"step":N}'}</code> only.
               </p>
@@ -2322,7 +2497,7 @@ export default function HomePage() {
                 <strong>Early sentinel:</strong> suffixLen &gt; 0 (newline/trailing expansion) is tracked as first structural drift artifact.
               </p>
               <p className="tiny">
-                <strong>Drift separation criterion:</strong> reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
+                <strong>Drift separation criterion:</strong> same-agent reinforcementDelta(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
                 driftP95(raw)/driftP95(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while ParseOK/StateOK ≥
                 {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%. Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
               </p>
@@ -2338,7 +2513,7 @@ export default function HomePage() {
               </div>
               <div className="field-block script-field-wide">
                 <label>Deterministic State Rule</label>
-                <pre className="raw-pre">new_step = prev_step + 1</pre>
+                <pre className="raw-pre">{profileRuleText(selectedProfile)}</pre>
               </div>
               <div className="field-block script-field-wide">
                 <label>Initial State</label>
@@ -2471,7 +2646,8 @@ export default function HomePage() {
                     <p className="tiny">driftP95/max/slope: {asFixed(summary?.driftP95 ?? null, 2)} / {asFixed(summary?.driftMax ?? null, 2)} / {asFixed(summary?.escalationSlope ?? null, 4)}</p>
                     <p className="tiny">First suffix drift / max suffix / suffix slope: {summary?.firstSuffixDriftTurn ?? "n/a"} / {summary?.maxSuffixLen ?? "n/a"} / {asFixed(summary?.suffixGrowthSlope ?? null, 4)}</p>
                     <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
-                    <p className="tiny">P(dev+1|dev): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev+1|clean): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
+                    <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
+                    <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
                     <p className="tiny">Phase transition: {summary?.phaseTransition ? `turn ${summary.phaseTransition.turn}` : "none"}</p>
                   </div>
                 );
@@ -2602,7 +2778,10 @@ export default function HomePage() {
                         {asFixed(summary.suffixGrowthSlope, 4)}
                       </p>
                       <p className="mono">
-                        Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev+1|dev): {asPercent(summary.reinforcementWhenDev)} | P(dev+1|clean): {asPercent(summary.reinforcementWhenClean)}
+                        Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev_next_same|dev_same): {asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): {asPercent(summary.reinforcementWhenClean)}
+                      </p>
+                      <p className="mono">
+                        Agent A delta: {asFixed(summary.reinforcementDeltaA, 4)} | Agent B delta: {asFixed(summary.reinforcementDeltaB, 4)}
                       </p>
                       <p className="mono">
                         Phase transition: {summary.phaseTransition ? `turn ${summary.phaseTransition.turn} (${summary.phaseTransition.reason})` : "none"}
@@ -2622,9 +2801,7 @@ export default function HomePage() {
                   <p>
                     Criterion status: <strong>{smokingGunEval.pass ? "PASS" : "NOT MET"}</strong>
                   </p>
-                  <p className="mono">
-                    reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}
-                  </p>
+                  <p className="mono">same-agent reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
                   <p className="mono">
                     ParseOK raw/sanitized: {asPercent(rawSummary?.parseOkRate ?? null)} / {asPercent(sanitizedSummary?.parseOkRate ?? null)} | StateOK raw/sanitized: {asPercent(rawSummary?.stateOkRate ?? null)} / {asPercent(sanitizedSummary?.stateOkRate ?? null)}
                   </p>
@@ -2646,7 +2823,7 @@ export default function HomePage() {
                   </p>
                 </>
               ) : (
-                <p className="muted">Run full suite (both profiles, both conditions) to populate control comparison.</p>
+                <p className="muted">Run Generator-Normalizer and Symmetric Control in RAW + SANITIZED to populate control comparison.</p>
               )}
             </section>
           </div>

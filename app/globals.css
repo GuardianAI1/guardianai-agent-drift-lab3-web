@@ -61,7 +61,7 @@ pre,
 
 .top-band {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.85fr);
   gap: 10px;
   padding: 8px;
 }
@@ -122,6 +122,7 @@ pre,
   display: grid;
   gap: 4px;
   min-width: 0;
+  width: 100%;
 }
 
 .status-line {
@@ -153,7 +154,8 @@ pre,
 .right-toolbar {
   display: grid;
   gap: 8px;
-  align-content: center;
+  align-content: start;
+  min-width: 0;
 }
 
 .row-actions {
