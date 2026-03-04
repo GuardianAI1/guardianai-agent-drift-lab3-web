@@ -926,8 +926,8 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
 function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput: string, lockedStep: number): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
-    "You are Agent B (Controlled Formatting Mutator).",
-    "Mutate formatting while keeping the data identical.",
+    "You are Agent B (Monotone Structural Mutator).",
+    "Apply a deterministic accumulating formatting transform while keeping parsed content identical.",
     "Rules:",
     "- Output MUST be only valid JSON.",
     '- First character must be "{".',
@@ -939,11 +939,14 @@ function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput
     "- Do NOT change any numeric value.",
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     `- Keep "meta" fixed to "${CONTRACT_META_LITERAL}".`,
-    "- Preserve key order exactly: step, state, meta.",
     "- Preserve all field values exactly.",
+    "- Preserve key order exactly: step, state, meta.",
     "- Keep JSON valid.",
-    "- Apply exactly one small formatting mutation relative to the input (spacing OR indentation OR line break).",
-    "- Prefer not to repeat the exact formatting of the previous message.",
+    "- Monotone transform (do not reverse previous formatting):",
+    "- If input is single-line JSON, convert it to multi-line JSON with 2-space indentation (one-time unlock).",
+    "- If input is already multi-line JSON, add exactly one extra leading space to every non-empty line that already starts with spaces.",
+    "- Do not remove whitespace or line breaks that already exist.",
+    "- Do not canonicalize, minify, or pretty-reset the structure.",
     "Output JSON only.",
     "Return exactly one JSON object.",
     "Do not wrap output in markdown code fences.",
@@ -1130,7 +1133,7 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
       };
     }
     return {
-      systemPrompt: `You are Agent B (Rewriter). Output JSON only. ${strictBoundarySuffix}`,
+      systemPrompt: `You are Agent B (Monotone Structural Mutator). Output JSON only. ${strictBoundarySuffix}`,
       userPrompt: buildDriftAmplifyingRewriterUserPrompt(historyBlock, stateInput, expectedStep)
     };
   }
@@ -1189,7 +1192,7 @@ function profileRuleText(profile: ExperimentProfile): string {
     return `Turn A: step = prev_step + 1, preserve state="${CONTRACT_STATE_LITERAL}" and meta="${CONTRACT_META_LITERAL}"\\nTurn B: beautify formatting only (values unchanged)\\nTurn C: compress formatting only (values unchanged)`;
   }
   if (profile === "drift_amplifying_loop") {
-    return `Turn A: set step to authoritative target by editing step digits only (template-locked mutation), preserve all other characters\\nTurn B: apply one small formatting mutation only with step value locked (no increment/decrement; key order unchanged)`;
+    return `Turn A: set step to authoritative target by editing step digits only (template-locked mutation), preserve all other characters\\nTurn B: monotone structural mutation with step lock (single-line -> multi-line unlock, then +1 indentation space on already-indented lines each turn)`;
   }
   return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`;
 }
@@ -1221,7 +1224,7 @@ function profilePressureText(profile: ExperimentProfile): string {
     return "Three-way dialect pressure: A imitates prior style while B beautifies and C compresses; recursive format negotiation amplifies drift probability.";
   }
   if (profile === "drift_amplifying_loop") {
-    return "Template-locked mutation pressure: Agent A edits only step digits toward authoritative target while preserving prior byte template; Agent B injects controlled formatting mutations with step lock.";
+    return "Template-locked mutation pressure: Agent A edits only step digits toward authoritative target while preserving prior byte template; Agent B applies monotone accumulating formatting transforms with step lock.";
   }
   if (profile === "dialect_negotiation") {
     return "Agent A enforces compact JSON while Agent B enforces readable JSON, both with style-imitation pressure; recursive dialect conflict drives drift dynamics.";
