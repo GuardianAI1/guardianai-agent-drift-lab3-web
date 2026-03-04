@@ -22,7 +22,7 @@ const MIN_INTER_TURN_DELAY_MS = 100;
 const MAX_INTER_TURN_DELAY_MS = 10000;
 const DEFAULT_MAX_HISTORY_TURNS = 30;
 const MAX_HISTORY_TURNS_CAP = 60;
-const CLIENT_API_MAX_ATTEMPTS = 3;
+const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const DRIFT_DEV_EVENT_THRESHOLD = 3;
 const STORAGE_API_PROVIDER_KEY = "guardianai_agent_lab_provider";
@@ -435,6 +435,25 @@ function createRunId(): string {
   return `run_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function clientRetryDelayMs(attempt: number): number {
+  const boundedAttempt = Math.max(1, Math.min(6, attempt));
+  const base = 400 * 2 ** (boundedAttempt - 1);
+  const jitter = Math.floor(Math.random() * 200);
+  return Math.min(8000, base + jitter);
+}
+
+function isClientTransportErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("failed to fetch") ||
+    normalized.includes("network request failed") ||
+    normalized.includes("networkerror") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("load failed") ||
+    normalized.includes("network connection was lost")
+  );
+}
+
 async function sha256Hex(content: string): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     return content;
@@ -653,12 +672,13 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Network request failed.";
+      const transportError = isClientTransportErrorMessage(message);
       lastError = new Error(message);
-      if (attempt < CLIENT_API_MAX_ATTEMPTS) {
-        await sleep(250 * attempt);
+      if (attempt < CLIENT_API_MAX_ATTEMPTS && transportError) {
+        await sleep(clientRetryDelayMs(attempt));
         continue;
       }
-      throw lastError;
+      throw new Error(`${message} (client transport retry exhausted after ${attempt} attempts).`);
     }
 
     const text = await response.text();
@@ -675,7 +695,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
         lastError = parseError;
 
         if (attempt < CLIENT_API_MAX_ATTEMPTS && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
-          await sleep(250 * attempt);
+          await sleep(clientRetryDelayMs(attempt));
           continue;
         }
 
@@ -689,7 +709,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
       lastError = httpError;
 
       if (attempt < CLIENT_API_MAX_ATTEMPTS && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
-        await sleep(250 * attempt);
+        await sleep(clientRetryDelayMs(attempt));
         continue;
       }
 
