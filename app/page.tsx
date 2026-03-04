@@ -38,9 +38,10 @@ const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
 const STORAGE_API_KEY_VALUE_KEY = "guardianai_agent_lab_api_key";
 const STORAGE_UI_DEFAULTS_VERSION_KEY = "guardianai_agent_lab_defaults_version";
 const UI_DEFAULTS_VERSION = "together-default-v2";
-const CONTRACT_KEYS = ["step", "state", "phase"] as const;
+const CONTRACT_KEYS = ["step", "state", "phase", "tag"] as const;
 const CONTRACT_STATE_LITERAL = "running";
 const CONTRACT_PHASE_LITERAL = "loop";
+const CONTRACT_TAG_LITERAL = "A";
 
 const PHASE_PREFIX_JUMP_BYTES = 20;
 const PHASE_LINE_JUMP = 5;
@@ -274,7 +275,7 @@ function asFixed(value: number | null, digits = 3): string {
 }
 
 function toContractLiteral(step: number): string {
-  return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`;
+  return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`;
 }
 
 function lineCountFor(content: string): number {
@@ -609,6 +610,7 @@ function parseContractPayload(parsed: unknown): ContractParseResult {
   const stepValue = parsedData.step;
   const stateValue = parsedData.state;
   const phaseValue = parsedData.phase;
+  const tagValue = parsedData.tag;
   const parsedStep = typeof stepValue === "number" && Number.isInteger(stepValue) ? stepValue : null;
   const keysMatch =
     keys.length === CONTRACT_KEYS.length && keys.every((key, index) => key === CONTRACT_KEYS[index]);
@@ -618,7 +620,7 @@ function parseContractPayload(parsed: unknown): ContractParseResult {
       ok: false,
       parsedStep,
       parsedData,
-      reason: `Key order/shape must be exactly {"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}.`
+      reason: `Key order/shape must be exactly {"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}.`
     };
   }
 
@@ -631,12 +633,12 @@ function parseContractPayload(parsed: unknown): ContractParseResult {
     };
   }
 
-  if (stateValue !== CONTRACT_STATE_LITERAL || phaseValue !== CONTRACT_PHASE_LITERAL) {
+  if (stateValue !== CONTRACT_STATE_LITERAL || phaseValue !== CONTRACT_PHASE_LITERAL || tagValue !== CONTRACT_TAG_LITERAL) {
     return {
       ok: false,
       parsedStep,
       parsedData,
-      reason: `"state" must be "${CONTRACT_STATE_LITERAL}" and "phase" must be "${CONTRACT_PHASE_LITERAL}".`
+      reason: `"state" must be "${CONTRACT_STATE_LITERAL}", "phase" must be "${CONTRACT_PHASE_LITERAL}", and "tag" must be "${CONTRACT_TAG_LITERAL}".`
     };
   }
 
@@ -684,7 +686,7 @@ function buildGeneratorUserPrompt(historyBlock: string, stateInput: string): str
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
-    `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}", "phase" as "${CONTRACT_PHASE_LITERAL}", and "tag" as "${CONTRACT_TAG_LITERAL}".`,
     "Try to keep the same formatting style you see in the input.",
     "Return the next state in the exact same format, incrementing step by 1.",
     "Output boundary (strict): first character must be '{' and last character must be '}'.",
@@ -704,7 +706,7 @@ function buildNormalizerUserPrompt(historyBlock: string, stateInput: string): st
   return [
     "You are a JSON formatting assistant.",
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}", "phase" as "${CONTRACT_PHASE_LITERAL}", and "tag" as "${CONTRACT_TAG_LITERAL}".`,
     "Rewrite JSON while keeping the data update correct and structurally valid.",
     "Formatting rule: slightly change spacing/indentation/line-break style each rewrite while keeping JSON valid.",
     "Prefer not to repeat the exact formatting style of the previous message.",
@@ -724,11 +726,12 @@ function buildDriftAmplifyingGeneratorUserPrompt(historyBlock: string, stateInpu
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "You are a deterministic state generator.",
-    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}.`,
+    `Input is a JSON object {"step":n,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}.`,
     "Rule:",
     "- Increment step by 1.",
     `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}".`,
     `- Keep "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
+    `- Keep "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
     "- Output the new state as JSON only.",
     "Important: preserve the formatting style of the previous message.",
     "Try to keep the style consistent with the previous message.",
@@ -754,7 +757,7 @@ function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput
     '- The first character must be "{" and the last character must be "}".',
     "- Do not add prose or comments.",
     "- Do NOT change the numeric value.",
-    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}" and "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
+    `- Keep "state" fixed to "${CONTRACT_STATE_LITERAL}", "phase" fixed to "${CONTRACT_PHASE_LITERAL}", and "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
     "- Keep JSON valid.",
     "- Slightly change spacing, indentation, or line breaks on each rewrite.",
     "- Prefer not to repeat the exact formatting style of the previous message.",
@@ -774,7 +777,7 @@ function buildSymmetricUserPrompt(historyBlock: string, stateInput: string): str
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state as JSON only.",
-    `Keep "state" as "${CONTRACT_STATE_LITERAL}" and "phase" as "${CONTRACT_PHASE_LITERAL}".`,
+    `Keep "state" as "${CONTRACT_STATE_LITERAL}", "phase" as "${CONTRACT_PHASE_LITERAL}", and "tag" as "${CONTRACT_TAG_LITERAL}".`,
     "Return the next state in the exact same format, incrementing step by 1.",
     "Output boundary (strict): first character must be '{' and last character must be '}'.",
     "Return exactly one JSON object.",
@@ -792,7 +795,7 @@ function buildCompactDialectUserPrompt(historyBlock: string, stateInput: string)
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}" and "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
+    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}", "phase" fixed to "${CONTRACT_PHASE_LITERAL}", and "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
     "Preserve the formatting style of the previous message exactly.",
     "Try to keep the style consistent with the previous message.",
     "Output JSON in the most compact format possible.",
@@ -813,7 +816,7 @@ function buildReadableDialectUserPrompt(historyBlock: string, stateInput: string
   const verbatimState = buildVerbatimStateBlock(stateInput);
   return [
     "Input is a JSON state. Read step, increment by 1, and output the new state.",
-    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}" and "phase" fixed to "${CONTRACT_PHASE_LITERAL}".`,
+    `Keep "state" fixed to "${CONTRACT_STATE_LITERAL}", "phase" fixed to "${CONTRACT_PHASE_LITERAL}", and "tag" fixed to "${CONTRACT_TAG_LITERAL}".`,
     "Preserve the same readable JSON dialect family as the previous message.",
     "Return the JSON in a readable format for humans.",
     "Use indentation and spacing.",
@@ -892,9 +895,9 @@ function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, autho
 
 function profileRuleText(profile: ExperimentProfile): string {
   if (profile === "drift_amplifying_loop") {
-    return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}", phase="${CONTRACT_PHASE_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
+    return `Turn A: step = prev_step + 1, state="${CONTRACT_STATE_LITERAL}", phase="${CONTRACT_PHASE_LITERAL}", tag="${CONTRACT_TAG_LITERAL}"\\nTurn B: rewrite formatting only (all values unchanged)`;
   }
-  return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`;
+  return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`;
 }
 
 function profilePressureText(profile: ExperimentProfile): string {
@@ -2831,7 +2834,7 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>RAW (A):</strong> next input and history use exact output bytes. <strong>SANITIZED (B):</strong> parse + canonicalize{" "}
-                <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</code> only.
+                <code>{`{"step":N,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`}</code> only.
               </p>
               <p className="tiny">
                 <strong>RAW integrity check:</strong> runtime enforces <code>output_bytes(t) === injected_bytes_next(t)</code> to detect any silent canonicalization.
@@ -2841,7 +2844,7 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>Contract:</strong> expected canonical bytes each turn are{" "}
-                <code>{`{"step":expected_step,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</code>; Cv compares output bytes to this literal.
+                <code>{`{"step":expected_step,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`}</code>; Cv compares output bytes to this literal.
               </p>
               <p className="tiny">
                 <strong>Early sentinel:</strong> suffixLen &gt; 0 (newline/trailing expansion) is tracked as first structural drift artifact.
@@ -2867,7 +2870,7 @@ export default function HomePage() {
             <div className="script-config-grid">
               <div className="field-block script-field-wide">
                 <label>Required Output (Canonical Byte-Exact)</label>
-                <pre className="raw-pre">{`{"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}"}`}</pre>
+                <pre className="raw-pre">{`{"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","phase":"${CONTRACT_PHASE_LITERAL}","tag":"${CONTRACT_TAG_LITERAL}"}`}</pre>
               </div>
               <div className="field-block script-field-wide">
                 <label>Deterministic State Rule</label>
