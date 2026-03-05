@@ -5093,6 +5093,9 @@ export default function HomePage() {
                   : "Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO."}
               </p>
               <p className="tiny">
+                <strong>Hard failures tracked:</strong> Pf (parse), Ld (logic/state), Cv (structural mismatch).
+              </p>
+              <p className="tiny">
                 <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
               </p>
               <p className="tiny">
@@ -5196,7 +5199,7 @@ export default function HomePage() {
                 <p className="mono">
                   Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
                 </p>
-                <p className="mono">Cv/Pf/Ld latest: {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}</p>
+                <p className="mono">Hard failures latest (Cv/Pf/Ld): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}</p>
                 <p className="mono">DAI latest: {liveDaiStatus}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
               </div>
@@ -5207,7 +5210,7 @@ export default function HomePage() {
               <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
-              <p className="mono">Cv / Pf / Ld: {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}</p>
+              <p className="mono">Hard failures (Cv/Pf/Ld): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}</p>
               <div className="trace-viewer-toolbar">
                 <button type="button" onClick={viewPreviousTrace} disabled={!canViewPrevTrace}>
                   Prev turn
@@ -5296,7 +5299,7 @@ export default function HomePage() {
                           )}
                           <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
                           {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
-                          <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
+                          <p className="mono">Hard failures rate (Cv/Pf/Ld): {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
                           <p className="mono">
                             FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
                           </p>
