@@ -4196,7 +4196,7 @@ export default function HomePage() {
         systemPrompt: params.systemPrompt,
         mistralJsonSchemaMode: false
       })
-    });
+    }, { maxAttempts: 1 });
 
     return response.content ?? "";
   }

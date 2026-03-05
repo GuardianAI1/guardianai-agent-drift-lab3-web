@@ -473,6 +473,7 @@ export async function POST(request: NextRequest) {
           " Tip: the OpenAI key entered in UI is invalid/revoked for this request context. Use a Platform key from https://platform.openai.com/api-keys or configure OPENAI_API_KEY in Vercel. If key works locally but fails on Vercel, check OpenAI project/org settings and any IP allowlist.";
       }
     }
-    return NextResponse.json({ error: message }, { status: 500 });
+    const responseStatus = error instanceof HTTPStatusError ? error.status : 500;
+    return NextResponse.json({ error: message }, { status: responseStatus });
   }
 }
