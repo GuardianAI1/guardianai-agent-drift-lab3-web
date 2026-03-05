@@ -296,7 +296,7 @@ button:disabled {
 
 .control-band {
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   align-items: stretch;
   border: none;
@@ -364,6 +364,29 @@ button:disabled {
 
 .run-config-grid .field-block.wide {
   grid-column: 1 / -1;
+}
+
+.measure-grid {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f6faf7;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+
+.measure-grid p {
+  margin: 0;
+}
+
+.measure-grid .measure-full {
+  grid-column: 1 / -1;
+}
+
+.measure-grid code {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .policy-inline {
@@ -631,7 +654,7 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
   gap: 8px;
-  height: clamp(460px, 62vh, 900px);
+  height: clamp(380px, 52vh, 760px);
   min-height: 0;
 }
 
@@ -711,7 +734,7 @@ button:disabled {
 }
 
 .results-panel .turn-stream {
-  align-content: end;
+  align-content: start;
 }
 
 .turn-card,
@@ -752,6 +775,37 @@ button:disabled {
   white-space: pre-wrap;
   font-size: 12px;
   line-height: 1.25;
+}
+
+.telemetry-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbf8;
+  overflow: auto;
+}
+
+.telemetry-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.telemetry-table th,
+.telemetry-table td {
+  border-bottom: 1px solid #e1e8e3;
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.telemetry-table thead th {
+  position: sticky;
+  top: 0;
+  background: #eef4ef;
+  z-index: 1;
+  color: #435045;
+  font-weight: 600;
 }
 
 .drift-chart-card {
@@ -1008,9 +1062,14 @@ button:disabled {
   .temp-grid,
   .script-config-grid,
   .run-config-grid,
+  .measure-grid,
   .policy-inline,
   .raw-live-grid {
     grid-template-columns: 1fr;
+  }
+
+  .measure-grid .measure-full {
+    grid-column: auto;
   }
 
   .policy-inline p:last-child {

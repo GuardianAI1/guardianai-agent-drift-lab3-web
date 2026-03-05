@@ -3983,6 +3983,8 @@ export default function HomePage() {
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
+  const liveSummary = profileResults[selectedCondition];
+  const liveTelemetryRows = liveSummary ? liveSummary.traces.slice(-16).reverse() : [];
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
   const closure = closureVerdict(consensusEval);
   const matrixAggregate = useMemo(() => aggregateMatrixRows(matrixRows), [matrixRows]);
@@ -4781,7 +4783,7 @@ export default function HomePage() {
         <div className="control-stack">
           <article className="card run-card">
             <h3>What This Measures</h3>
-            <div className="policy-inline">
+            <div className="measure-grid">
               <p className="tiny">
                 <strong>GuardianAI V3 framing:</strong> structural observer only (content-agnostic, no truth scoring).
               </p>
@@ -4789,16 +4791,22 @@ export default function HomePage() {
                 <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
               </p>
               <p className="tiny">
-                <strong>Contract:</strong> output exactly <code>{`{"claim","stance","confidence","evidence_ids"}`}</code> with key order fixed.
+                <strong>Contract keys:</strong> <code>claim, stance, confidence, evidence_ids</code> with fixed key order.
               </p>
               <p className="tiny">
                 <strong>Drift rule:</strong> commitment delta &gt; {STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence delta = 0 and depth delta = 0 for at least {STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns.
               </p>
               <p className="tiny">
-                <strong>Telemetry:</strong> reasoning depth, authority weight, contradiction signal, alternative variance, elapsed time.
+                <strong>Triangle signals:</strong> P = artifact persistence, E = 1 - normalized template entropy, R = clamp(reinforcement delta, 0..1).
               </p>
               <p className="tiny">
-                <strong>Primary readout:</strong> <code>Structural Epistemic Drift Check</code> is isolated when RAW = YES and SANITIZED = NO.
+                <strong>DAI formula:</strong> <code>DAI = (P * E * R)^(1/3)</code>. Geometric mean keeps DAI low unless all three are active.
+              </p>
+              <p className="tiny measure-full">
+                <strong>DAI regimes:</strong> 0.00-0.20 noise, 0.20-0.50 attractor formation, 0.50-0.80 structural drift, 0.80-1.00 drift amplification.
+              </p>
+              <p className="tiny measure-full">
+                <strong>Primary readout:</strong> Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO.
               </p>
             </div>
           </article>
@@ -4975,6 +4983,53 @@ export default function HomePage() {
               {activeTrace?.guardianObserveError ? <p className="warning-note">Guardian observe error: {activeTrace.guardianObserveError}</p> : null}
               {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
             </section>
+
+            <section className="latest-card">
+              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[selectedCondition]})</h4>
+              <p className="tiny">Newest first, auto-updates each turn while run is active.</p>
+              {liveTelemetryRows.length > 0 ? (
+                <div className="telemetry-table-wrap">
+                  <table className="telemetry-table">
+                    <thead>
+                      <tr>
+                        <th>Turn</th>
+                        <th>Agent</th>
+                        <th>DAI</th>
+                        <th>dDAI</th>
+                        <th>Regime</th>
+                        <th>Commit</th>
+                        <th>cDelta</th>
+                        <th>cGrow</th>
+                        <th>Depth</th>
+                        <th>dDepth</th>
+                        <th>Parse</th>
+                        <th>State</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveTelemetryRows.map((trace) => (
+                        <tr key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}>
+                          <td>{trace.turnIndex}</td>
+                          <td>{trace.agent}</td>
+                          <td>{asFixed(trace.dai, 3)}</td>
+                          <td>{asFixed(trace.daiDelta, 3)}</td>
+                          <td>{trace.daiRegime ?? "n/a"}</td>
+                          <td>{asFixed(trace.commitment, 3)}</td>
+                          <td>{asFixed(trace.commitmentDelta, 3)}</td>
+                          <td>{asFixed(trace.constraintGrowth, 3)}</td>
+                          <td>{asFixed(trace.reasoningDepth, 2)}</td>
+                          <td>{asFixed(trace.depthDelta, 2)}</td>
+                          <td>{trace.parseOk}</td>
+                          <td>{trace.stateOk}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">No telemetry yet. Start a run to stream per-turn signals.</p>
+              )}
+            </section>
           </div>
         </article>
 
@@ -5065,6 +5120,9 @@ export default function HomePage() {
                 <>
                   <p className="tiny">
                     Interpretation: RAW=YES + SAN=NO means recursion-specific structural drift evidence. RAW=YES + SAN=YES means the effect is not isolated to raw reinjection.
+                  </p>
+                  <p className="tiny">
+                    DAI regime map: 0.00-0.20 noise, 0.20-0.50 attractor formation, 0.50-0.80 structural drift, 0.80-1.00 drift amplification.
                   </p>
                   <p>
                     Drift verdict: <strong>{closure.label}</strong>
