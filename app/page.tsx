@@ -100,6 +100,9 @@ const CONSENSUS_COLLAPSE_DIVERSITY_MAX = 0.3;
 const CONSENSUS_COLLAPSE_MIN_PAIRS = 10;
 const STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN = 0.2;
 const STRUCTURAL_DRIFT_STREAK_MIN = 5;
+const HARD_FAILURE_METRIC_HELP = "Cv = contract/schema mismatch, Pf = parse failure, Ld = logic/state failure.";
+const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
+const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
 
 const OBJECTIVE_MODE_LABELS = {
   parse_only: "Parse-only failure",
@@ -5093,7 +5096,13 @@ export default function HomePage() {
                   : "Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO."}
               </p>
               <p className="tiny">
-                <strong>Hard failures tracked:</strong> Pf (parse), Ld (logic/state), Cv (structural mismatch).
+                <strong>Hard failures tracked:</strong> {HARD_FAILURE_METRIC_HELP}
+              </p>
+              <p className="tiny">
+                <strong>How to read rates:</strong> {HARD_FAILURE_RATE_HELP}
+              </p>
+              <p className="tiny">
+                <strong>FTF:</strong> {FTF_HELP}
               </p>
               <p className="tiny">
                 <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
@@ -5199,7 +5208,12 @@ export default function HomePage() {
                 <p className="mono">
                   Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
                 </p>
-                <p className="mono">Hard failures latest (Cv/Pf/Ld): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}</p>
+                <p className="mono">
+                  Hard failures latest (Cv/Pf/Ld = Contract/Parse/Logic): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}
+                </p>
+                <p className="mono">
+                  objective_failure latest (0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
+                </p>
                 <p className="mono">DAI latest: {liveDaiStatus}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
               </div>
@@ -5210,7 +5224,10 @@ export default function HomePage() {
               <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
-              <p className="mono">Hard failures (Cv/Pf/Ld): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}</p>
+              <p className="mono">
+                Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
+              </p>
+              <p className="mono">objective_failure (viewed turn 0/1): {monitorTrace ? monitorTrace.objectiveFailure : "n/a"}</p>
               <div className="trace-viewer-toolbar">
                 <button type="button" onClick={viewPreviousTrace} disabled={!canViewPrevTrace}>
                   Prev turn
@@ -5298,11 +5315,14 @@ export default function HomePage() {
                             </>
                           )}
                           <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
-                          {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
-                          <p className="mono">Hard failures rate (Cv/Pf/Ld): {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
+                          {summary.failed ? <p className="mono">Run stop reason (failureReason): {summary.failureReason ?? "n/a"}</p> : null}
+                          <p className="mono">
+                            Hard failures rate (Cv/Pf/Ld = Contract/Parse/Logic): {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}
+                          </p>
                           <p className="mono">
                             FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
                           </p>
+                          <p className="tiny">{FTF_HELP}</p>
                           {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
                             <p className="mono">
                               agreement/diversity/no-new-evidence/evidence-growth: {asPercent(summary.agreementRateAB)} / {asFixed(summary.evidenceDiversity, 3)} /{" "}
