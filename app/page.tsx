@@ -100,9 +100,10 @@ const CONSENSUS_COLLAPSE_DIVERSITY_MAX = 0.3;
 const CONSENSUS_COLLAPSE_MIN_PAIRS = 10;
 const STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN = 0.2;
 const STRUCTURAL_DRIFT_STREAK_MIN = 5;
-const HARD_FAILURE_METRIC_HELP = "Cv = contract/schema mismatch, Pf = parse failure, Ld = logic/state failure.";
+const HARD_FAILURE_METRIC_HELP = "Cv = contract byte mismatch (output != expected), Pf = parse failure, Ld = logic/state failure.";
 const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
 const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
+const OBJECTIVE_FAILURE_HELP = "objective_failure = 1 when selected objective mode fails on a turn; 0 otherwise.";
 
 const OBJECTIVE_MODE_LABELS = {
   parse_only: "Parse-only failure",
@@ -5105,6 +5106,9 @@ export default function HomePage() {
                 <strong>FTF:</strong> {FTF_HELP}
               </p>
               <p className="tiny">
+                <strong>objective_failure:</strong> {OBJECTIVE_FAILURE_HELP}
+              </p>
+              <p className="tiny">
                 <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
               </p>
               <p className="tiny">
@@ -5212,7 +5216,7 @@ export default function HomePage() {
                   Hard failures latest (Cv/Pf/Ld = Contract/Parse/Logic): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}
                 </p>
                 <p className="mono">
-                  objective_failure latest (0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
+                  objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
                 </p>
                 <p className="mono">DAI latest: {liveDaiStatus}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
