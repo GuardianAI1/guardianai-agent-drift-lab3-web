@@ -2937,6 +2937,56 @@ function closureVerdict(evalResult: ConsensusEval | null): ClosureVerdict {
   };
 }
 
+function structuralPatternInterpretation(evalResult: ConsensusEval | null): ClosureVerdict {
+  if (!evalResult) {
+    return {
+      label: "INCOMPLETE",
+      tone: "warn",
+      detail: "Run both RAW and SANITIZED to classify the run as Attractor-only, Structural drift, or Amplification with closure."
+    };
+  }
+
+  const rawDai = evalResult.rawDaiLatest ?? 0;
+  const rawRegime = (evalResult.rawDaiRegime ?? "").toLowerCase();
+  const rawAmplified = rawRegime.includes("amplification") || rawDai >= 0.8;
+
+  if (evalResult.rawSignal) {
+    if (!evalResult.sanitizedSignal && rawAmplified) {
+      return {
+        label: "Amplification with closure",
+        tone: "good",
+        detail: "RAW shows isolated closure signal with high DAI amplification; SANITIZED does not."
+      };
+    }
+    if (!evalResult.sanitizedSignal) {
+      return {
+        label: "Structural drift",
+        tone: "good",
+        detail: "RAW shows isolated structural closure signal; SANITIZED does not."
+      };
+    }
+    return {
+      label: "Structural drift",
+      tone: "bad",
+      detail: "Structural closure signal appears in both RAW and SANITIZED, so the effect is not isolated."
+    };
+  }
+
+  if (rawAmplified && !evalResult.sanitizedSignal) {
+    return {
+      label: "Attractor-only",
+      tone: "warn",
+      detail: "RAW reaches high DAI, but closure criterion is not met (amplified attractor without structural closure)."
+    };
+  }
+
+  return {
+    label: "Attractor-only",
+    tone: "warn",
+    detail: "No structural closure signal detected; behavior is consistent with attractor stabilization."
+  };
+}
+
 function average(values: number[]): number | null {
   if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -3174,6 +3224,8 @@ function buildLabReportMarkdown(params: {
       sections.push("Run both conditions for this profile to compute comparative metrics.");
     } else if (IS_PUBLIC_SIGNAL_MODE) {
       const consensus = evaluateConsensusCollapse(raw, sanitized);
+      const interpretation = structuralPatternInterpretation(consensus);
+      sections.push(`- Final interpretation: ${interpretation.label} — ${interpretation.detail}`);
       sections.push(`- Drift verdict: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
       sections.push(`- RAW signal: ${consensus?.rawSignal ? "YES" : "NO"} | SAN signal: ${consensus?.sanitizedSignal ? "YES" : "NO"}`);
       sections.push(
@@ -3188,6 +3240,8 @@ function buildLabReportMarkdown(params: {
     } else {
       if (isBeliefLoopProfile(profile)) {
         const consensus = evaluateConsensusCollapse(raw, sanitized);
+        const interpretation = structuralPatternInterpretation(consensus);
+        sections.push(`- Final interpretation: ${interpretation.label} — ${interpretation.detail}`);
         sections.push(
           `- RAW agreement/diversity/no-new-evidence/evidence-growth: ${asPercent(raw.agreementRateAB)} / ${asFixed(raw.evidenceDiversity, 3)} / ${asPercent(raw.noNewEvidenceRate)} / ${asPercent(raw.evidenceGrowthRate)}`
         );
@@ -4143,6 +4197,7 @@ export default function HomePage() {
   const sanitizedSummary = profileResults.sanitized;
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
   const closure = closureVerdict(consensusEval);
+  const structuralPattern = structuralPatternInterpretation(consensusEval);
   const matrixAggregate = useMemo(() => aggregateMatrixRows(matrixRows), [matrixRows]);
   const matrixRecentRows = useMemo(() => matrixRows.slice(-8).reverse(), [matrixRows]);
   const liveTelemetryDisplayRows = useMemo(
@@ -5401,6 +5456,12 @@ export default function HomePage() {
                   {consensusEval ? (
                     <>
                       <p className="tiny">RAW=YES and SAN=NO indicates recursion-specific structural drift evidence.</p>
+                      <p>
+                        Final interpretation: <strong>{structuralPattern.label}</strong>
+                      </p>
+                      <p className="mono">
+                        <span className={`gate-pill ${structuralPattern.tone}`}>{structuralPattern.detail}</span>
+                      </p>
                       <p>
                         Drift verdict: <strong>{closure.label}</strong>
                       </p>
