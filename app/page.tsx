@@ -5081,6 +5081,21 @@ export default function HomePage() {
                 <strong>Framing:</strong> GuardianAI observes structure, not truth content.
               </p>
               <p className="tiny">
+                <strong>Core question:</strong> Does a system become more confident or closed without its supporting constraints/evidence increasing?
+              </p>
+              <p className="tiny">
+                <strong>Commitment variable:</strong> <code>confidence</code> in the model output (tracked as commitment / commitment delta).
+              </p>
+              <p className="tiny">
+                <strong>Constraint variable:</strong> <code>evidence_ids</code> growth (tracked as new evidence / constraint growth).
+              </p>
+              <p className="tiny">
+                <strong>Claim loop:</strong> agents discuss/revise the same claim turn-by-turn; inspect revisions in Panel 1A and turn stream in Panel 1B.
+              </p>
+              <p className="tiny">
+                <strong>Time-series measurement:</strong> compare commitment change vs constraint growth over turns; rising commitment with flat constraints indicates closure pressure.
+              </p>
+              <p className="tiny">
                 <strong>Contract:</strong>{" "}
                 {IS_PUBLIC_SIGNAL_MODE ? (
                   "fixed output schema with deterministic decoding."
@@ -5212,6 +5227,9 @@ export default function HomePage() {
                 <p className="mono">
                   Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
                 </p>
+                <p className="mono">Commitment latest (confidence): {asFixed(monitorLatestTrace?.commitment ?? null, 3)}</p>
+                <p className="mono">Constraint growth latest (new evidence): {asFixed(monitorLatestTrace?.constraintGrowth ?? null, 3)}</p>
+                <p className="mono">Commitment delta latest: {asFixed(monitorLatestTrace?.commitmentDelta ?? null, 3)}</p>
                 <p className="mono">
                   Hard failures latest (Cv/Pf/Ld = Contract/Parse/Logic): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}
                 </p>
@@ -5284,6 +5302,9 @@ export default function HomePage() {
             <section className="latest-card">
               <h4>Results</h4>
               <p className="tiny">Condition cards and structural epistemic drift check.</p>
+              <p className="tiny">
+                <strong>Read this as:</strong> commitment rising faster than constraint/evidence growth over multiple turns = closure pressure.
+              </p>
               <div className="results-stack">
                 {(["raw", "sanitized"] as const).map((condition) => {
                   const summary = results[selectedProfile][condition];
