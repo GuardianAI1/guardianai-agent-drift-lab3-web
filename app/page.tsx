@@ -4050,6 +4050,8 @@ export default function HomePage() {
   const [activeTrace, setActiveTrace] = useState<TurnTrace | null>(null);
   const [liveTelemetryRows, setLiveTelemetryRows] = useState<TurnTrace[]>([]);
   const [liveTelemetryNewestFirst, setLiveTelemetryNewestFirst] = useState<boolean>(false);
+  const [traceViewerFollowLatest, setTraceViewerFollowLatest] = useState<boolean>(true);
+  const [traceViewerTurn, setTraceViewerTurn] = useState<number | null>(null);
   const [liveTraceCondition, setLiveTraceCondition] = useState<RepCondition>("raw");
   const [matrixRows, setMatrixRows] = useState<MatrixTrialRow[]>([]);
 
@@ -4140,6 +4142,17 @@ export default function HomePage() {
     () => (liveTelemetryNewestFirst ? [...liveTelemetryRows].reverse() : liveTelemetryRows),
     [liveTelemetryNewestFirst, liveTelemetryRows]
   );
+  const monitorCondition: RepCondition = isRunning ? liveTraceCondition : selectedCondition;
+  const monitorSummary = results[selectedProfile][monitorCondition];
+  const monitorTraces = useMemo(() => monitorSummary?.traces ?? [], [monitorSummary]);
+  const monitorLatestTrace = monitorTraces.length > 0 ? monitorTraces[monitorTraces.length - 1] : activeTrace;
+  const monitorViewedTrace =
+    traceViewerTurn !== null ? monitorTraces.find((trace) => trace.turnIndex === traceViewerTurn) ?? null : null;
+  const monitorTrace = monitorViewedTrace ?? monitorLatestTrace;
+  const monitorTraceIndex = monitorTrace ? monitorTraces.findIndex((trace) => trace.turnIndex === monitorTrace.turnIndex) : -1;
+  const canViewPrevTrace = monitorTraceIndex > 0;
+  const canViewNextTrace = monitorTraceIndex >= 0 && monitorTraceIndex < monitorTraces.length - 1;
+  const monitorTurnMax = monitorTraces.length > 0 ? monitorTraces[monitorTraces.length - 1].turnIndex : 0;
 
   useEffect(() => {
     const panelNode = panel1MonitorRef.current;
@@ -4162,6 +4175,31 @@ export default function HomePage() {
     observer.observe(panelNode);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (monitorTraces.length === 0) {
+      if (traceViewerTurn !== null) setTraceViewerTurn(null);
+      return;
+    }
+
+    if (traceViewerFollowLatest) {
+      const latestTurn = monitorTraces[monitorTraces.length - 1].turnIndex;
+      if (traceViewerTurn !== latestTurn) {
+        setTraceViewerTurn(latestTurn);
+      }
+      return;
+    }
+
+    if (traceViewerTurn === null) {
+      setTraceViewerTurn(monitorTraces[monitorTraces.length - 1].turnIndex);
+      return;
+    }
+
+    const exists = monitorTraces.some((trace) => trace.turnIndex === traceViewerTurn);
+    if (!exists) {
+      setTraceViewerTurn(monitorTraces[monitorTraces.length - 1].turnIndex);
+    }
+  }, [monitorTraces, traceViewerFollowLatest, traceViewerTurn]);
 
   function setNormalizedApiKey(rawValue: string) {
     setApiKey(normalizeApiKeyInput(rawValue));
@@ -4821,6 +4859,23 @@ export default function HomePage() {
     wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
   }
 
+  function selectMonitorTurn(turnIndex: number) {
+    setTraceViewerFollowLatest(false);
+    setTraceViewerTurn(turnIndex);
+  }
+
+  function viewPreviousTrace() {
+    if (!canViewPrevTrace || monitorTraceIndex < 1) return;
+    const previous = monitorTraces[monitorTraceIndex - 1];
+    selectMonitorTurn(previous.turnIndex);
+  }
+
+  function viewNextTrace() {
+    if (!canViewNextTrace || monitorTraceIndex < 0) return;
+    const next = monitorTraces[monitorTraceIndex + 1];
+    selectMonitorTurn(next.turnIndex);
+  }
+
   return (
     <main className="shell">
       <section className="top-band">
@@ -5125,8 +5180,14 @@ export default function HomePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {liveTelemetryDisplayRows.map((trace) => (
-                        <tr key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}>
+                      {liveTelemetryDisplayRows.map((trace) => {
+                        const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
+                        return (
+                        <tr
+                          key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
+                          className={isViewedTurn ? "telemetry-row-active" : undefined}
+                          onClick={() => selectMonitorTurn(trace.turnIndex)}
+                        >
                           <td>{trace.turnIndex}</td>
                           <td>{trace.agent}</td>
                           <td>{asFixed(trace.dai, 3)}</td>
@@ -5144,7 +5205,7 @@ export default function HomePage() {
                           <td>{trace.parseOk}</td>
                           <td>{trace.stateOk}</td>
                         </tr>
-                      ))}
+                      );})}
                     </tbody>
                   </table>
                 </div>
@@ -5169,60 +5230,96 @@ export default function HomePage() {
               <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
               <p className="mono">Phase: {runPhaseText}</p>
               <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
+              <p className="mono">Monitor condition: {CONDITION_LABELS[monitorCondition]}</p>
               <p className="mono">
                 Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
               </p>
-              <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
-              <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
-              <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
-              <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
+              <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
+              <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
+              <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
+              <p className="mono">Cv / Pf / Ld: {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}</p>
+              <p className="mono">Objective fail: {monitorTrace ? monitorTrace.objectiveFailure : "n/a"}</p>
               <p className="mono">Structural drift verdict: {closure.label}</p>
               <p className="mono">
                 {IS_PUBLIC_SIGNAL_MODE ? "DAI / regime: " : "DAI / ΔDAI / regime: "}
-                {activeTrace
+                {monitorTrace
                   ? IS_PUBLIC_SIGNAL_MODE
-                    ? `${asFixed(activeTrace.dai, 3)} / ${activeTrace.daiRegime ?? "n/a"}`
-                    : `${asFixed(activeTrace.dai, 3)} / ${asFixed(activeTrace.daiDelta, 4)} / ${activeTrace.daiRegime ?? "n/a"}`
+                    ? `${asFixed(monitorTrace.dai, 3)} / ${monitorTrace.daiRegime ?? "n/a"}`
+                    : `${asFixed(monitorTrace.dai, 3)} / ${asFixed(monitorTrace.daiDelta, 4)} / ${monitorTrace.daiRegime ?? "n/a"}`
                   : "n/a"}
               </p>
               {!IS_PUBLIC_SIGNAL_MODE ? (
                 <>
                   <p className="mono">
                     commitment / delta / constraint growth:{" "}
-                    {activeTrace
-                      ? `${asFixed(activeTrace.commitment, 3)} / ${asFixed(activeTrace.commitmentDelta, 3)} / ${asFixed(activeTrace.constraintGrowth, 3)}`
+                    {monitorTrace
+                      ? `${asFixed(monitorTrace.commitment, 3)} / ${asFixed(monitorTrace.commitmentDelta, 3)} / ${asFixed(monitorTrace.constraintGrowth, 3)}`
                       : "n/a"}
                   </p>
                   <p className="mono">
                     reasoning depth / depth delta / drift streak:{" "}
-                    {activeTrace
-                      ? `${asFixed(activeTrace.reasoningDepth, 3)} / ${asFixed(activeTrace.depthDelta, 3)} / ${activeTrace.driftStreak}`
+                    {monitorTrace
+                      ? `${asFixed(monitorTrace.reasoningDepth, 3)} / ${asFixed(monitorTrace.depthDelta, 3)} / ${monitorTrace.driftStreak}`
                       : "n/a"}
                   </p>
                   <p className="mono">
                     contradiction / alt variance / elapsed(ms):{" "}
-                    {activeTrace
-                      ? `${asFixed(activeTrace.contradictionSignal, 3)} / ${asFixed(activeTrace.alternativeVariance, 3)} / ${asFixed(
-                          activeTrace.elapsedTimeMs,
+                    {monitorTrace
+                      ? `${asFixed(monitorTrace.contradictionSignal, 3)} / ${asFixed(monitorTrace.alternativeVariance, 3)} / ${asFixed(
+                          monitorTrace.elapsedTimeMs,
                           1
                         )}`
                       : "n/a"}
                   </p>
                 </>
               ) : null}
+              <div className="trace-viewer-toolbar">
+                <button type="button" onClick={viewPreviousTrace} disabled={!canViewPrevTrace}>
+                  Prev turn
+                </button>
+                <button type="button" onClick={viewNextTrace} disabled={!canViewNextTrace}>
+                  Next turn
+                </button>
+                <label className="tiny trace-viewer-turn-input">
+                  Turn
+                  <input
+                    type="number"
+                    min={1}
+                    max={Math.max(1, monitorTurnMax)}
+                    value={traceViewerTurn ?? ""}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (!Number.isFinite(next)) return;
+                      const clamped = Math.max(1, Math.min(Math.max(1, monitorTurnMax), Math.floor(next)));
+                      selectMonitorTurn(clamped);
+                    }}
+                    disabled={monitorTraces.length === 0}
+                  />
+                  <span>/ {monitorTurnMax || "n/a"}</span>
+                </label>
+                <label className="tiny trace-viewer-follow-toggle">
+                  <input
+                    type="checkbox"
+                    checked={traceViewerFollowLatest}
+                    onChange={(event) => setTraceViewerFollowLatest(event.target.checked)}
+                    disabled={monitorTraces.length === 0}
+                  />{" "}
+                  Follow latest
+                </label>
+              </div>
               <p className="tiny">
-                <strong>Live LLM Output (latest turn)</strong>
+                <strong>LLM Output (viewed turn)</strong>
               </p>
               <p className="tiny">Input (injected)</p>
-              <pre className="raw-pre">{activeTrace?.inputBytes ?? "[no trace yet]"}</pre>
+              <pre className="raw-pre">{monitorTrace?.inputBytes ?? "[no trace yet]"}</pre>
               <p className="tiny">Output (model)</p>
-              <pre className="raw-pre">{activeTrace?.outputBytes ?? "[no output yet]"}</pre>
+              <pre className="raw-pre">{monitorTrace?.outputBytes ?? "[no output yet]"}</pre>
               <p className="tiny">Expected (contract)</p>
-              <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
+              <pre className="raw-pre">{monitorTrace?.expectedBytes ?? "[no expected yet]"}</pre>
               <p className="tiny">Injected next turn</p>
-              <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
-              {activeTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
-              {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
+              <pre className="raw-pre">{monitorTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
+              {monitorTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
+              {monitorTrace?.parseError ? <p className="warning-note">Latest parse error: {monitorTrace.parseError}</p> : null}
             </section>
 
             <section className="latest-card">

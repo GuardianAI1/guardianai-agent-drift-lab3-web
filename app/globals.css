@@ -866,6 +866,34 @@ button:disabled {
   gap: 10px;
 }
 
+.trace-viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-viewer-turn-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-viewer-turn-input input {
+  width: 84px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7faf8;
+  padding: 0 8px;
+}
+
+.trace-viewer-follow-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .telemetry-table {
   width: 100%;
   border-collapse: collapse;
@@ -879,6 +907,18 @@ button:disabled {
   border-bottom: 1px solid #e1e8e3;
   padding: 6px 8px;
   text-align: left;
+}
+
+.telemetry-table tbody tr {
+  cursor: pointer;
+}
+
+.telemetry-table tbody tr:hover {
+  background: #f1f7f2;
+}
+
+.telemetry-table tbody tr.telemetry-row-active {
+  background: #e7f2ea;
 }
 
 .telemetry-table thead th {
