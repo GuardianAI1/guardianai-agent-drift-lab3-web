@@ -1076,10 +1076,6 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .run-workspace {
-    grid-template-columns: 1fr;
-  }
-
   .control-stack {
     height: auto;
   }
@@ -1145,6 +1141,10 @@ button:disabled {
 }
 
 @media (max-width: 1100px) {
+  .run-workspace {
+    grid-template-columns: 1fr;
+  }
+
   .temp-grid,
   .script-config-grid,
   .run-config-grid,

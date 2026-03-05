@@ -5242,7 +5242,7 @@ export default function HomePage() {
                 {(["raw", "sanitized"] as const).map((condition) => {
                   const summary = results[selectedProfile][condition];
                   const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
-                  const panelLabel = condition === "raw" ? "Panel 2A" : "Panel 2B";
+                  const panelLabel = condition === "raw" ? "Panel 2" : "Panel 3";
                   return (
                     <section key={condition} className="decision-card">
                       <div className="decision-top">
@@ -5327,7 +5327,7 @@ export default function HomePage() {
                 })}
 
                 <section className="latest-card">
-                  <h4>Panel 3 - Structural Epistemic Drift Check</h4>
+                  <h4>Panel 4 - Structural Epistemic Drift Check</h4>
                   {consensusEval ? (
                     <>
                       <p className="tiny">RAW=YES and SAN=NO indicates recursion-specific structural drift evidence.</p>
