@@ -652,7 +652,7 @@ button:disabled {
 
 .body-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
   height: clamp(380px, 52vh, 760px);
   min-height: 0;
@@ -787,15 +787,15 @@ button:disabled {
 .telemetry-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 920px;
-  font-size: 11px;
+  min-width: 980px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
 .telemetry-table th,
 .telemetry-table td {
   border-bottom: 1px solid #e1e8e3;
-  padding: 4px 6px;
+  padding: 6px 8px;
   text-align: left;
 }
 

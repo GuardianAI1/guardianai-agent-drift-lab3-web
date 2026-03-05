@@ -19,8 +19,8 @@ const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
 const DEFAULT_PROFILE: ExperimentProfile = "epistemic_drift_protocol";
 const DEFAULT_TURNS = 400;
 const DEFAULT_MAX_TOKENS = 96;
-const DEFAULT_INTER_TURN_DELAY_MS = 2000;
-const MIN_INTER_TURN_DELAY_MS = 100;
+const DEFAULT_INTER_TURN_DELAY_MS = 300;
+const MIN_INTER_TURN_DELAY_MS = 0;
 const MAX_INTER_TURN_DELAY_MS = 10000;
 const DEFAULT_MAX_HISTORY_TURNS = 50;
 const MAX_HISTORY_TURNS_CAP = 60;
@@ -4879,6 +4879,22 @@ export default function HomePage() {
                 />
               </div>
 
+              <div className="field-block">
+                <label>Inter-turn Delay (ms)</label>
+                <input
+                  type="number"
+                  min={MIN_INTER_TURN_DELAY_MS}
+                  max={MAX_INTER_TURN_DELAY_MS}
+                  value={interTurnDelayMs}
+                  onChange={(event) =>
+                    setInterTurnDelayMs(
+                      Math.max(MIN_INTER_TURN_DELAY_MS, Math.min(MAX_INTER_TURN_DELAY_MS, Number(event.target.value) || 0))
+                    )
+                  }
+                  disabled={isRunning}
+                />
+              </div>
+
             </div>
 
             <div className="policy-inline">
@@ -4921,7 +4937,9 @@ export default function HomePage() {
               <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
               <p className="mono">Phase: {runPhaseText}</p>
               <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
-              <p className="mono">Horizon / Temperature / Max tokens: {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens}</p>
+              <p className="mono">
+                Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
+              </p>
               <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
               <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
@@ -4992,6 +5010,7 @@ export default function HomePage() {
             <section className="latest-card">
               <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
               <p className="tiny">Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active.</p>
+              <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
               {liveTelemetryRows.length > 0 ? (
                 <div className="telemetry-table-wrap">
                   <table className="telemetry-table">
