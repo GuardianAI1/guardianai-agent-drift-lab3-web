@@ -4059,6 +4059,7 @@ export default function HomePage() {
   const [results, setResults] = useState<ResultsByProfile>(emptyResults());
   const [activeTrace, setActiveTrace] = useState<TurnTrace | null>(null);
   const [liveTelemetryRows, setLiveTelemetryRows] = useState<TurnTrace[]>([]);
+  const [liveTelemetryNewestFirst, setLiveTelemetryNewestFirst] = useState<boolean>(false);
   const [liveTraceCondition, setLiveTraceCondition] = useState<RepCondition>("raw");
   const [matrixRows, setMatrixRows] = useState<MatrixTrialRow[]>([]);
 
@@ -4069,6 +4070,9 @@ export default function HomePage() {
 
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  const panel1MonitorRef = useRef<HTMLElement | null>(null);
+  const telemetryTableWrapRef = useRef<HTMLDivElement | null>(null);
+  const [panel1MonitorHeight, setPanel1MonitorHeight] = useState<number>(460);
 
   useEffect(() => {
     const defaultsVersion = localStorage.getItem(STORAGE_UI_DEFAULTS_VERSION_KEY);
@@ -4142,6 +4146,32 @@ export default function HomePage() {
   const closure = closureVerdict(consensusEval);
   const matrixAggregate = useMemo(() => aggregateMatrixRows(matrixRows), [matrixRows]);
   const matrixRecentRows = useMemo(() => matrixRows.slice(-8).reverse(), [matrixRows]);
+  const liveTelemetryDisplayRows = useMemo(
+    () => (liveTelemetryNewestFirst ? [...liveTelemetryRows].reverse() : liveTelemetryRows),
+    [liveTelemetryNewestFirst, liveTelemetryRows]
+  );
+
+  useEffect(() => {
+    const panelNode = panel1MonitorRef.current;
+    if (!panelNode) return;
+
+    const syncHeight = () => {
+      const rect = panelNode.getBoundingClientRect();
+      if (rect.height > 0) {
+        setPanel1MonitorHeight(Math.round(rect.height));
+      }
+    };
+
+    syncHeight();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", syncHeight);
+      return () => window.removeEventListener("resize", syncHeight);
+    }
+
+    const observer = new ResizeObserver(() => syncHeight());
+    observer.observe(panelNode);
+    return () => observer.disconnect();
+  }, []);
 
   function setNormalizedApiKey(rawValue: string) {
     setApiKey(normalizeApiKeyInput(rawValue));
@@ -4791,6 +4821,16 @@ export default function HomePage() {
     downloadTextFile("lab_report.md", markdown, "text/markdown");
   }
 
+  function jumpToNewestTelemetryRow() {
+    const wrap = telemetryTableWrapRef.current;
+    if (!wrap) return;
+    if (liveTelemetryNewestFirst) {
+      wrap.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
+  }
+
   return (
     <main className="shell">
       <section className="top-band">
@@ -5049,10 +5089,30 @@ export default function HomePage() {
 
             <section className="latest-card live-stream-card">
               <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
-              <p className="tiny">Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active.</p>
-              <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
+              <p className="tiny">
+                {liveTelemetryNewestFirst
+                  ? "Newest first (turn N -&gt; 1), auto-updates each completed turn while run is active."
+                  : "Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active."}
+              </p>
+              <div className="telemetry-toolbar">
+                <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
+                <div className="telemetry-actions">
+                  <label className="tiny telemetry-toggle">
+                    <input
+                      type="checkbox"
+                      checked={liveTelemetryNewestFirst}
+                      onChange={(event) => setLiveTelemetryNewestFirst(event.target.checked)}
+                      disabled={isRunning && liveTelemetryRows.length === 0}
+                    />{" "}
+                    Newest first
+                  </label>
+                  <button type="button" onClick={jumpToNewestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
+                    Jump to newest
+                  </button>
+                </div>
+              </div>
               {liveTelemetryRows.length > 0 ? (
-                <div className="telemetry-table-wrap">
+                <div className="telemetry-table-wrap live-telemetry-wrap" ref={telemetryTableWrapRef} style={{ maxHeight: `${panel1MonitorHeight}px` }}>
                   <table className="telemetry-table">
                     <thead>
                       <tr>
@@ -5075,7 +5135,7 @@ export default function HomePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {liveTelemetryRows.map((trace) => (
+                      {liveTelemetryDisplayRows.map((trace) => (
                         <tr key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}>
                           <td>{trace.turnIndex}</td>
                           <td>{trace.agent}</td>
@@ -5114,7 +5174,7 @@ export default function HomePage() {
               Quality gate: an early checkpoint may pause long runs when the stream is not meeting baseline contract reliability.
             </p>
 
-            <section className="latest-card">
+            <section className="latest-card" ref={panel1MonitorRef}>
               <h4>Panel 1 - Run Monitor</h4>
               <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
               <p className="mono">Phase: {runPhaseText}</p>

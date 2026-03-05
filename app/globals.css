@@ -835,6 +835,32 @@ button:disabled {
   overflow: auto;
 }
 
+.live-telemetry-wrap {
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+.telemetry-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.telemetry-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.telemetry-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .telemetry-table {
   width: 100%;
   border-collapse: collapse;
