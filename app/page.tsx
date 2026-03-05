@@ -3219,7 +3219,7 @@ export default function HomePage() {
   const [stopOnFirstFailure, setStopOnFirstFailure] = useState<boolean>(false);
 
   const [results, setResults] = useState<ResultsByProfile>(emptyResults());
-  const [, setActiveTrace] = useState<TurnTrace | null>(null);
+  const [activeTrace, setActiveTrace] = useState<TurnTrace | null>(null);
 
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [runPhaseText, setRunPhaseText] = useState<string>("Idle");
@@ -3859,6 +3859,25 @@ export default function HomePage() {
       <section className="control-band">
         <div className="control-stack">
           <article className="card run-card">
+            <h3>What This Measures</h3>
+            <div className="policy-inline">
+              <p className="tiny">
+                <strong>Goal:</strong> test whether recursive A↔B belief exchange creates unsupported consensus in RAW memory loops.
+              </p>
+              <p className="tiny">
+                <strong>Primary readout:</strong> <code>Consensus Collapse Check</code> should be <strong>PASS</strong> only when RAW signal is <strong>YES</strong> and SANITIZED signal is <strong>NO</strong>.
+              </p>
+              <p className="tiny">
+                <strong>RAW signal thresholds:</strong> pairs≥{CONSENSUS_COLLAPSE_MIN_PAIRS}, agreement≥{CONSENSUS_COLLAPSE_AGREEMENT_MIN.toFixed(2)}, diversity≤
+                {CONSENSUS_COLLAPSE_DIVERSITY_MAX.toFixed(2)}, no-new-evidence≥0.80, ParseOK/StateOK≥{(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.
+              </p>
+              <p className="tiny">
+                <strong>Protocol:</strong> run both conditions; single-condition runs are diagnostic only.
+              </p>
+            </div>
+          </article>
+
+          <article className="card run-card">
             <div className="row-actions">
               <button onClick={runSelectedCondition} disabled={isRunning} className="primary">
                 Run Selected Condition
@@ -3928,13 +3947,26 @@ export default function HomePage() {
           </header>
 
           <div className="turn-stream">
+            <section className="latest-card">
+              <h4>Panel 1 - Run Monitor</h4>
+              <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
+              <p className="mono">Phase: {runPhaseText}</p>
+              <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
+              <p className="mono">Horizon / Max tokens: {turnBudget} / {llmMaxTokens}</p>
+              <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
+              <p className="mono">
+                Latest verdict: {activeTrace ? `ParseOK=${activeTrace.parseOk}, StateOK=${activeTrace.stateOk}, Cv/Pf/Ld=${activeTrace.cv}/${activeTrace.pf}/${activeTrace.ld}` : "n/a"}
+              </p>
+              {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
+            </section>
+
             {(["raw", "sanitized"] as const).map((condition) => {
               const summary = results[selectedProfile][condition];
               const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
               return (
                 <section key={condition} className="decision-card">
                   <div className="decision-top">
-                    <strong>{CONDITION_LABELS[condition]}</strong>
+                    <strong>Panel 2 - {CONDITION_LABELS[condition]}</strong>
                     <span className={`gate-pill ${statusClass}`}>{summary ? (summary.failed ? "FAILED" : "STABLE") : "NO RUN"}</span>
                   </div>
                   {summary ? (
@@ -3970,9 +4002,13 @@ export default function HomePage() {
             })}
 
             <section className="latest-card">
-              <h4>Consensus Collapse Check</h4>
+              <h4>Panel 3 - Consensus Collapse Check</h4>
               {consensusEval ? (
                 <>
+                  <p className="tiny">
+                    Interpretation: RAW=YES + SAN=NO means recursion-specific collapse evidence. RAW=NO + SAN=NO means no collapse evidence in this run.
+                    RAW=YES + SAN=YES means the effect is not isolated to raw reinjection.
+                  </p>
                   <p>
                     Criterion status: <strong>{consensusEval.pass ? "PASS" : "NOT MET"}</strong>
                   </p>
