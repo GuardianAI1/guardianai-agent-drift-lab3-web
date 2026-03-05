@@ -171,6 +171,14 @@ interface TurnTrace {
   contextLength: number;
   contextLengthGrowth: number;
   devState: number;
+  guardianGateState: "CONTINUE" | "PAUSE" | "YIELD" | null;
+  guardianStructuralRecommendation: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER" | null;
+  guardianReasonCodes: string[];
+  guardianAuthorityTrend: number | null;
+  guardianRevisionMode: string | null;
+  guardianTrajectoryState: string | null;
+  guardianTemporalResistanceDetected: number | null;
+  guardianObserveError: string | null;
   parseError?: string;
   parsedData?: Record<string, unknown>;
 }
@@ -296,8 +304,28 @@ interface ConditionSummary {
   persistenceInflectionTurn: number | null;
   persistenceInflectionDelta: number | null;
   collapseLeadTurnsFromInflection: number | null;
+  guardianObserveCoverage: number | null;
+  guardianPauseRate: number | null;
+  guardianYieldRate: number | null;
+  guardianContinueRate: number | null;
+  guardianReopenRate: number | null;
+  guardianSlowRate: number | null;
+  guardianDeferRate: number | null;
+  guardianObserveErrorRate: number | null;
   phaseTransition: PhaseTransitionCandidate | null;
   traces: TurnTrace[];
+}
+
+interface GuardianObserveResponse {
+  gateState?: "CONTINUE" | "PAUSE" | "YIELD";
+  telemetry?: {
+    authority_trend?: string | number;
+    revision_mode?: string;
+    trajectory_state?: string;
+    temporal_resistance_detected?: boolean;
+  };
+  structuralRecommendation?: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER";
+  reasonCodes?: string[];
 }
 
 type ConditionResults = Record<RepCondition, ConditionSummary | null>;
@@ -1950,6 +1978,14 @@ function traceToJsonl(summary: ConditionSummary): string {
       rollingDriftP95: trace.rollingDriftP95,
       dev_state: trace.devState,
       dev_threshold: DRIFT_DEV_EVENT_THRESHOLD,
+      guardian_gate_state: trace.guardianGateState,
+      guardian_structural_recommendation: trace.guardianStructuralRecommendation,
+      guardian_reason_codes: trace.guardianReasonCodes,
+      guardian_authority_trend: trace.guardianAuthorityTrend,
+      guardian_revision_mode: trace.guardianRevisionMode,
+      guardian_trajectory_state: trace.guardianTrajectoryState,
+      guardian_temporal_resistance_detected: trace.guardianTemporalResistanceDetected,
+      guardian_observe_error: trace.guardianObserveError,
       context_length: trace.contextLength,
       context_length_growth: trace.contextLengthGrowth,
       raw_hash: trace.rawHash,
@@ -2079,6 +2115,25 @@ function buildConditionSummary(params: {
           )}, parse-only objective).`;
   }
 
+  const guardianObservedCount = traces.filter(
+    (trace) =>
+      trace.guardianGateState !== null ||
+      trace.guardianStructuralRecommendation !== null ||
+      trace.guardianReasonCodes.length > 0 ||
+      trace.guardianAuthorityTrend !== null ||
+      trace.guardianRevisionMode !== null ||
+      trace.guardianTrajectoryState !== null ||
+      trace.guardianTemporalResistanceDetected !== null
+  ).length;
+  const guardianPauseCount = traces.filter((trace) => trace.guardianGateState === "PAUSE").length;
+  const guardianYieldCount = traces.filter((trace) => trace.guardianGateState === "YIELD").length;
+  const guardianContinueCount = traces.filter((trace) => trace.guardianGateState === "CONTINUE").length;
+  const guardianReopenCount = traces.filter((trace) => trace.guardianStructuralRecommendation === "REOPEN").length;
+  const guardianSlowCount = traces.filter((trace) => trace.guardianStructuralRecommendation === "SLOW").length;
+  const guardianDeferCount = traces.filter((trace) => trace.guardianStructuralRecommendation === "DEFER").length;
+  const guardianObserveErrorCount = traces.filter((trace) => trace.guardianObserveError !== null).length;
+  const guardianObservationBase = turnsAttempted;
+
   return {
     runConfig,
     profile: runConfig.profile,
@@ -2182,6 +2237,14 @@ function buildConditionSummary(params: {
     persistenceInflectionTurn: inflection?.turn ?? null,
     persistenceInflectionDelta: inflection?.delta ?? null,
     collapseLeadTurnsFromInflection,
+    guardianObserveCoverage: safeRate(guardianObservedCount, guardianObservationBase),
+    guardianPauseRate: safeRate(guardianPauseCount, guardianObservationBase),
+    guardianYieldRate: safeRate(guardianYieldCount, guardianObservationBase),
+    guardianContinueRate: safeRate(guardianContinueCount, guardianObservationBase),
+    guardianReopenRate: safeRate(guardianReopenCount, guardianObservationBase),
+    guardianSlowRate: safeRate(guardianSlowCount, guardianObservationBase),
+    guardianDeferRate: safeRate(guardianDeferCount, guardianObservationBase),
+    guardianObserveErrorRate: safeRate(guardianObserveErrorCount, guardianObservationBase),
     phaseTransition: detectPhaseTransition(traces),
     traces: traces.slice()
   };
@@ -2322,6 +2385,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
     `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
     `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
+    `- Guardian observe coverage/error: ${asPercent(summary.guardianObserveCoverage)} / ${asPercent(summary.guardianObserveErrorRate)}`,
+    `- Guardian gate rates CONTINUE/PAUSE/YIELD: ${asPercent(summary.guardianContinueRate)} / ${asPercent(summary.guardianPauseRate)} / ${asPercent(summary.guardianYieldRate)}`,
+    `- Guardian recommendation rates REOPEN/SLOW/DEFER: ${asPercent(summary.guardianReopenRate)} / ${asPercent(summary.guardianSlowRate)} / ${asPercent(summary.guardianDeferRate)}`,
     summary.profile === "consensus_collapse_loop"
       ? `- Agreement A↔B: ${asPercent(summary.agreementRateAB)} (pairs=${summary.consensusPairs})`
       : "",
@@ -3364,6 +3430,31 @@ export default function HomePage() {
     return response.content ?? "";
   }
 
+  function normalizeFiniteNumber(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  async function requestGuardianObservation(params: {
+    turnId: number;
+    output: string;
+    deterministicConstraint: string;
+  }): Promise<GuardianObserveResponse> {
+    return requestJSON<GuardianObserveResponse>("/api/guardian/observe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        turnId: params.turnId,
+        output: params.output,
+        deterministicConstraint: params.deterministicConstraint
+      })
+    });
+  }
+
   async function runCondition(profile: ExperimentProfile, condition: RepCondition): Promise<ConditionSummary> {
     const runConfig: RunConfig = {
       runId: createRunId(),
@@ -3469,6 +3560,54 @@ export default function HomePage() {
         });
         setResults((prev) => setConditionResult(prev, profile, condition, partialSummary));
         break;
+      }
+
+      let guardianGateState: "CONTINUE" | "PAUSE" | "YIELD" | null = null;
+      let guardianStructuralRecommendation: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER" | null = null;
+      let guardianReasonCodes: string[] = [];
+      let guardianAuthorityTrend: number | null = null;
+      let guardianRevisionMode: string | null = null;
+      let guardianTrajectoryState: string | null = null;
+      let guardianTemporalResistanceDetected: number | null = null;
+      let guardianObserveError: string | null = null;
+
+      if (guardianEnabled) {
+        try {
+          const guardianResponse = await requestGuardianObservation({
+            turnId: turn,
+            output: outputBytes,
+            deterministicConstraint: expectedBytes
+          });
+
+          const gateCandidate = guardianResponse.gateState;
+          guardianGateState =
+            gateCandidate === "CONTINUE" || gateCandidate === "PAUSE" || gateCandidate === "YIELD" ? gateCandidate : null;
+
+          const recommendationCandidate = guardianResponse.structuralRecommendation;
+          guardianStructuralRecommendation =
+            recommendationCandidate === "CONTINUE" ||
+            recommendationCandidate === "SLOW" ||
+            recommendationCandidate === "REOPEN" ||
+            recommendationCandidate === "DEFER"
+              ? recommendationCandidate
+              : null;
+
+          guardianReasonCodes = Array.isArray(guardianResponse.reasonCodes)
+            ? guardianResponse.reasonCodes.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+            : [];
+
+          guardianAuthorityTrend = normalizeFiniteNumber(guardianResponse.telemetry?.authority_trend);
+          guardianRevisionMode = typeof guardianResponse.telemetry?.revision_mode === "string" ? guardianResponse.telemetry.revision_mode : null;
+          guardianTrajectoryState = typeof guardianResponse.telemetry?.trajectory_state === "string" ? guardianResponse.telemetry.trajectory_state : null;
+          guardianTemporalResistanceDetected =
+            typeof guardianResponse.telemetry?.temporal_resistance_detected === "boolean"
+              ? guardianResponse.telemetry.temporal_resistance_detected
+                ? 1
+                : 0
+              : null;
+        } catch (error) {
+          guardianObserveError = error instanceof Error ? error.message : "Guardian observe request failed.";
+        }
       }
 
       const [rawHash, expectedHash] = await Promise.all([sha256Hex(outputBytes), sha256Hex(expectedBytes)]);
@@ -3603,6 +3742,14 @@ export default function HomePage() {
         contextLength: promptContextLength,
         contextLengthGrowth,
         devState,
+        guardianGateState,
+        guardianStructuralRecommendation,
+        guardianReasonCodes,
+        guardianAuthorityTrend,
+        guardianRevisionMode,
+        guardianTrajectoryState,
+        guardianTemporalResistanceDetected,
+        guardianObserveError,
         parseError,
         parsedData
       };
@@ -4057,6 +4204,28 @@ export default function HomePage() {
               <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
               <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
               <p className="mono">Premature closure verdict: {closure.label}</p>
+              <p className="mono">
+                Guardian gate / recommendation:{" "}
+                {activeTrace
+                  ? `${activeTrace.guardianGateState ?? "n/a"} / ${activeTrace.guardianStructuralRecommendation ?? "n/a"}`
+                  : "n/a"}
+              </p>
+              <p className="mono">
+                Guardian reasons:{" "}
+                {activeTrace ? (activeTrace.guardianReasonCodes.length ? activeTrace.guardianReasonCodes.join(", ") : "n/a") : "n/a"}
+              </p>
+              <p className="mono">
+                Guardian authority / trajectory / temporal-resistance:{" "}
+                {activeTrace
+                  ? `${asFixed(activeTrace.guardianAuthorityTrend, 3)} / ${activeTrace.guardianTrajectoryState ?? "n/a"} / ${
+                      activeTrace.guardianTemporalResistanceDetected === null
+                        ? "n/a"
+                        : activeTrace.guardianTemporalResistanceDetected === 1
+                          ? "yes"
+                          : "no"
+                    }`
+                  : "n/a"}
+              </p>
               <p className="tiny">
                 <strong>Live LLM Output (latest turn)</strong>
               </p>
@@ -4068,6 +4237,7 @@ export default function HomePage() {
               <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
               <p className="tiny">Injected next turn</p>
               <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
+              {activeTrace?.guardianObserveError ? <p className="warning-note">Guardian observe error: {activeTrace.guardianObserveError}</p> : null}
               {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
             </section>
           </div>
@@ -4101,6 +4271,9 @@ export default function HomePage() {
                       </p>
                       <p className="mono">ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}</p>
                       <p className="mono">StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}</p>
+                      <p className="mono">Guardian observe coverage/error: {asPercent(summary.guardianObserveCoverage)} / {asPercent(summary.guardianObserveErrorRate)}</p>
+                      <p className="mono">Guardian gate CONTINUE/PAUSE/YIELD: {asPercent(summary.guardianContinueRate)} / {asPercent(summary.guardianPauseRate)} / {asPercent(summary.guardianYieldRate)}</p>
+                      <p className="mono">Guardian recommendation REOPEN/SLOW/DEFER: {asPercent(summary.guardianReopenRate)} / {asPercent(summary.guardianSlowRate)} / {asPercent(summary.guardianDeferRate)}</p>
                       <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
                       {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
                       <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>

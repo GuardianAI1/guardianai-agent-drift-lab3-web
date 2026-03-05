@@ -118,7 +118,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       gateState: mapFinalGateDecision(gateResponse.final_gate_decision),
-      telemetry
+      telemetry,
+      structuralRecommendation: observeResponse.structural_recommendation,
+      reasonCodes: observeResponse.reason_codes ?? []
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
