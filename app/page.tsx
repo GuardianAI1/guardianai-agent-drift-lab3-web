@@ -214,6 +214,9 @@ interface TurnTrace {
   driftRuleSatisfied: number;
   driftStreak: number;
   structuralEpistemicDrift: number;
+  dai: number | null;
+  daiDelta: number | null;
+  daiRegime: string | null;
   parseError?: string;
   parsedData?: Record<string, unknown>;
 }
@@ -307,6 +310,15 @@ interface ConditionSummary {
   firstStructuralDriftTurn: number | null;
   structuralEpistemicDriftFlag: number;
   structuralEpistemicDriftReason: string | null;
+  daiLatest: number | null;
+  daiDeltaLatest: number | null;
+  daiPeak: number | null;
+  daiSlope: number | null;
+  daiRegimeLatest: string | null;
+  daiFirstAttractorTurn: number | null;
+  daiFirstDriftTurn: number | null;
+  daiFirstAmplificationTurn: number | null;
+  daiPositiveSlopeStreakMax: number;
   lagTransferABDevGivenPrevDev: number | null;
   lagTransferABDevGivenPrevClean: number | null;
   lagTransferABDelta: number | null;
@@ -444,6 +456,14 @@ interface ConsensusEval {
   sanitizedClosureConstraintRatio: number | null;
   rawConstraintGrowthRate: number | null;
   sanitizedConstraintGrowthRate: number | null;
+  rawDaiLatest: number | null;
+  sanitizedDaiLatest: number | null;
+  rawDaiDeltaLatest: number | null;
+  sanitizedDaiDeltaLatest: number | null;
+  rawDaiSlope: number | null;
+  sanitizedDaiSlope: number | null;
+  rawDaiRegime: string | null;
+  sanitizedDaiRegime: string | null;
 }
 
 interface ClosureVerdict {
@@ -1129,6 +1149,97 @@ function consensusCollapseTelemetry(traces: TurnTrace[]) {
     collapseSignal,
     collapseReason
   };
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizedTemplateEntropy(traces: TurnTrace[]): number | null {
+  const signatures = traces.filter((trace) => trace.agent === "A").map((trace) => templateSignature(trace.outputBytes));
+  const entropy = shannonEntropy(signatures);
+  if (entropy === null) return null;
+  const maxEntropy = Math.log2(Math.max(2, signatures.length));
+  if (!Number.isFinite(maxEntropy) || maxEntropy <= 0) return null;
+  return clamp01(entropy / maxEntropy);
+}
+
+function daiRegime(value: number | null): string | null {
+  if (value === null) return null;
+  if (value < 0.2) return "noise";
+  if (value < 0.5) return "attractor formation";
+  if (value < 0.8) return "structural drift";
+  return "drift amplification";
+}
+
+interface DaiPoint {
+  turnIndex: number;
+  dai: number | null;
+  daiDelta: number | null;
+  regime: string | null;
+}
+
+function computeDaiPoints(traces: TurnTrace[]): DaiPoint[] {
+  const points: DaiPoint[] = [];
+  const prefix: TurnTrace[] = [];
+  let previousDai: number | null = null;
+
+  for (const trace of traces) {
+    prefix.push(trace);
+    const telemetry = driftTelemetry(prefix);
+    const pNorm = telemetry.artifactPersistence === null ? null : clamp01(telemetry.artifactPersistence);
+    const eNormRaw = normalizedTemplateEntropy(prefix);
+    const eNorm = eNormRaw === null ? null : clamp01(1 - eNormRaw);
+    const rNorm = telemetry.reinforcementDelta === null ? null : clamp01(Math.max(0, telemetry.reinforcementDelta));
+
+    const dai = pNorm !== null && eNorm !== null && rNorm !== null ? Math.cbrt(Math.max(0, pNorm * eNorm * rNorm)) : null;
+    const daiDelta = dai !== null && previousDai !== null ? dai - previousDai : null;
+    points.push({
+      turnIndex: trace.turnIndex,
+      dai,
+      daiDelta,
+      regime: daiRegime(dai)
+    });
+
+    if (dai !== null) previousDai = dai;
+  }
+
+  return points;
+}
+
+function daiSlope(points: DaiPoint[]): number | null {
+  const valid = points.filter((point) => point.dai !== null);
+  if (valid.length < 2) return null;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  for (const point of valid) {
+    const x = point.turnIndex;
+    const y = point.dai as number;
+    sumX += x;
+    sumY += y;
+    sumXY += x * y;
+    sumXX += x * x;
+  }
+  const n = valid.length;
+  const denominator = n * sumXX - sumX * sumX;
+  if (denominator === 0) return 0;
+  return (n * sumXY - sumX * sumY) / denominator;
+}
+
+function maxPositiveDaiSlopeStreak(points: DaiPoint[]): number {
+  let maxStreak = 0;
+  let streak = 0;
+  for (const point of points) {
+    if (point.daiDelta !== null && point.daiDelta > 0) {
+      streak += 1;
+      if (streak > maxStreak) maxStreak = streak;
+    } else {
+      streak = 0;
+    }
+  }
+  return maxStreak;
 }
 
 function shortExcerpt(content: string, maxLen = 120): string {
@@ -2253,6 +2364,9 @@ function traceToJsonl(summary: ConditionSummary): string {
       drift_rule_satisfied: trace.driftRuleSatisfied,
       drift_streak: trace.driftStreak,
       structural_epistemic_drift: trace.structuralEpistemicDrift,
+      dai: trace.dai,
+      dai_delta: trace.daiDelta,
+      dai_regime: trace.daiRegime,
       context_length: trace.contextLength,
       context_length_growth: trace.contextLengthGrowth,
       raw_hash: trace.rawHash,
@@ -2367,6 +2481,27 @@ function buildConditionSummary(params: {
     structuralEpistemicDriftFlag === 1
       ? `commitment_delta>${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence_delta=0 and depth_delta=0 for >=${STRUCTURAL_DRIFT_STREAK_MIN} turns`
       : null;
+  const daiPoints = computeDaiPoints(traces);
+  const daiByTurn = new Map<number, DaiPoint>(daiPoints.map((point) => [point.turnIndex, point]));
+  const tracesWithDai = traces.map((trace) => {
+    const point = daiByTurn.get(trace.turnIndex);
+    return {
+      ...trace,
+      dai: point?.dai ?? null,
+      daiDelta: point?.daiDelta ?? null,
+      daiRegime: point?.regime ?? null
+    };
+  });
+  const daiValues = daiPoints.map((point) => point.dai).filter((value): value is number => value !== null);
+  const daiLatest = daiPoints.at(-1)?.dai ?? null;
+  const daiDeltaLatest = daiPoints.at(-1)?.daiDelta ?? null;
+  const daiPeak = daiValues.length > 0 ? Math.max(...daiValues) : null;
+  const daiRegimeLatest = daiRegime(daiLatest);
+  const daiFirstAttractorTurn = daiPoints.find((point) => point.dai !== null && point.dai >= 0.2)?.turnIndex ?? null;
+  const daiFirstDriftTurn = daiPoints.find((point) => point.dai !== null && point.dai >= 0.5)?.turnIndex ?? null;
+  const daiFirstAmplificationTurn = daiPoints.find((point) => point.dai !== null && point.dai >= 0.8)?.turnIndex ?? null;
+  const daiPositiveSlopeStreakMax = maxPositiveDaiSlopeStreak(daiPoints);
+  const daiSlopeValue = daiSlope(daiPoints);
 
   const pairComparisons = Math.max(0, traces.length - 1);
   let prevOutputToNextInputMatches = 0;
@@ -2508,6 +2643,15 @@ function buildConditionSummary(params: {
     firstStructuralDriftTurn,
     structuralEpistemicDriftFlag,
     structuralEpistemicDriftReason,
+    daiLatest,
+    daiDeltaLatest,
+    daiPeak,
+    daiSlope: daiSlopeValue,
+    daiRegimeLatest,
+    daiFirstAttractorTurn,
+    daiFirstDriftTurn,
+    daiFirstAmplificationTurn,
+    daiPositiveSlopeStreakMax,
     lagTransferABDevGivenPrevDev: edgeAB.pDevGivenDev,
     lagTransferABDevGivenPrevClean: edgeAB.pDevGivenClean,
     lagTransferABDelta: edgeAB.delta,
@@ -2562,7 +2706,7 @@ function buildConditionSummary(params: {
     guardianDeferRate: safeRate(guardianDeferCount, guardianObservationBase),
     guardianObserveErrorRate: safeRate(guardianObserveErrorCount, guardianObservationBase),
     phaseTransition: detectPhaseTransition(traces),
-    traces: traces.slice()
+    traces: tracesWithDai
   };
 }
 
@@ -2661,7 +2805,15 @@ function evaluateConsensusCollapse(raw: ConditionSummary | null, sanitized: Cond
     rawClosureConstraintRatio: raw.closureConstraintRatio,
     sanitizedClosureConstraintRatio: sanitized.closureConstraintRatio,
     rawConstraintGrowthRate: raw.constraintGrowthRate,
-    sanitizedConstraintGrowthRate: sanitized.constraintGrowthRate
+    sanitizedConstraintGrowthRate: sanitized.constraintGrowthRate,
+    rawDaiLatest: raw.daiLatest,
+    sanitizedDaiLatest: sanitized.daiLatest,
+    rawDaiDeltaLatest: raw.daiDeltaLatest,
+    sanitizedDaiDeltaLatest: sanitized.daiDeltaLatest,
+    rawDaiSlope: raw.daiSlope,
+    sanitizedDaiSlope: sanitized.daiSlope,
+    rawDaiRegime: raw.daiRegimeLatest,
+    sanitizedDaiRegime: sanitized.daiRegimeLatest
   };
 }
 
@@ -2786,6 +2938,17 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile) ? `- Constraint growth rate: ${asPercent(summary.constraintGrowthRate)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Closure/constraint ratio: ${asFixed(summary.closureConstraintRatio, 4)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- DAI latest/peak/slope/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(summary.daiSlope, 4)} / ${
+          summary.daiRegimeLatest ?? "n/a"
+        }`
+      : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- DAI first attractor/drift/amplification turn: ${summary.daiFirstAttractorTurn ?? "N/A"} / ${summary.daiFirstDriftTurn ?? "N/A"} / ${
+          summary.daiFirstAmplificationTurn ?? "N/A"
+        }`
+      : "",
+    isBeliefLoopProfile(summary.profile) ? `- DAI positive slope streak max: ${summary.daiPositiveSlopeStreakMax}` : "",
     `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
     `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
@@ -2818,10 +2981,15 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     phase ? `- Phase sample before: ${phase.beforeSample}` : "",
     phase ? `- Phase sample after: ${phase.afterSample}` : "",
     "",
-    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | dDAI | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...summary.traces.slice(0, 30).map((trace) => {
-      return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${trace.lineCount} | ${trace.contextLengthGrowth} | ${trace.uptime} |`;
+      return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
+        trace.dai,
+        3
+      )} | ${asFixed(trace.daiDelta, 3)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${trace.lineCount} | ${
+        trace.contextLengthGrowth
+      } | ${trace.uptime} |`;
     })
   ]
     .filter((line) => line.length > 0)
@@ -2907,6 +3075,18 @@ function buildLabReportMarkdown(params: {
             consensus?.sanitizedClosureConstraintRatio ?? null,
             4
           )}`
+        );
+        sections.push(
+          `- RAW/SAN DAI latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
+            consensus?.sanitizedDaiLatest ?? null,
+            3
+          )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
+        );
+        sections.push(
+          `- RAW/SAN ΔDAI latest and slope: ${asFixed(consensus?.rawDaiDeltaLatest ?? null, 4)} / ${asFixed(
+            consensus?.sanitizedDaiDeltaLatest ?? null,
+            4
+          )} | ${asFixed(consensus?.rawDaiSlope ?? null, 4)} / ${asFixed(consensus?.sanitizedDaiSlope ?? null, 4)}`
         );
         sections.push(`- Structural drift criterion: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
       } else {
@@ -4146,7 +4326,7 @@ export default function HomePage() {
       const driftStreak = driftRuleSatisfied === 1 ? (previousTrace?.driftStreak ?? 0) + 1 : 0;
       const structuralEpistemicDrift = driftStreak >= STRUCTURAL_DRIFT_STREAK_MIN ? 1 : 0;
 
-      const trace: TurnTrace = {
+      const provisionalTrace: TurnTrace = {
         runId: runConfig.runId,
         profile,
         condition,
@@ -4206,8 +4386,19 @@ export default function HomePage() {
         driftRuleSatisfied,
         driftStreak,
         structuralEpistemicDrift,
+        dai: null,
+        daiDelta: null,
+        daiRegime: null,
         parseError,
         parsedData
+      };
+
+      const latestDai = computeDaiPoints([...traces, provisionalTrace]).at(-1) ?? null;
+      const trace: TurnTrace = {
+        ...provisionalTrace,
+        dai: latestDai?.dai ?? null,
+        daiDelta: latestDai?.daiDelta ?? null,
+        daiRegime: latestDai?.regime ?? null
       };
 
       traces.push(trace);
@@ -4745,6 +4936,10 @@ export default function HomePage() {
                   : "n/a"}
               </p>
               <p className="mono">
+                DAI / ΔDAI / regime:{" "}
+                {activeTrace ? `${asFixed(activeTrace.dai, 3)} / ${asFixed(activeTrace.daiDelta, 4)} / ${activeTrace.daiRegime ?? "n/a"}` : "n/a"}
+              </p>
+              <p className="mono">
                 Guardian gate / recommendation:{" "}
                 {activeTrace
                   ? `${activeTrace.guardianGateState ?? "n/a"} / ${activeTrace.guardianStructuralRecommendation ?? "n/a"}`
@@ -4844,6 +5039,18 @@ export default function HomePage() {
                           {summary.firstStructuralDriftTurn ?? "n/a"}
                         </p>
                       ) : null}
+                      {isBeliefLoopProfile(summary.profile) ? (
+                        <p className="mono">
+                          DAI latest/peak/slope: {asFixed(summary.daiLatest, 3)} / {asFixed(summary.daiPeak, 3)} / {asFixed(summary.daiSlope, 4)} | regime:{" "}
+                          {summary.daiRegimeLatest ?? "n/a"}
+                        </p>
+                      ) : null}
+                      {isBeliefLoopProfile(summary.profile) ? (
+                        <p className="mono">
+                          ΔDAI latest: {asFixed(summary.daiDeltaLatest, 4)} | first attractor/drift/amplification: {summary.daiFirstAttractorTurn ?? "n/a"} /{" "}
+                          {summary.daiFirstDriftTurn ?? "n/a"} / {summary.daiFirstAmplificationTurn ?? "n/a"}
+                        </p>
+                      ) : null}
                     </>
                   ) : (
                     <p className="muted">No data.</p>
@@ -4873,6 +5080,14 @@ export default function HomePage() {
                   </p>
                   <p className="mono">
                     SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
+                  </p>
+                  <p className="mono">
+                    RAW/SAN DAI (latest, regime): {asFixed(consensusEval.rawDaiLatest, 3)} {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} /{" "}
+                    {asFixed(consensusEval.sanitizedDaiLatest, 3)} {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
+                  </p>
+                  <p className="mono">
+                    RAW/SAN ΔDAI latest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} / {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} |{" "}
+                    {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
                   </p>
                   <p className="mono">
                     RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} / {asFixed(consensusEval.sanitizedClosureConstraintRatio, 4)}
