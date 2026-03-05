@@ -530,6 +530,12 @@ function asFixed(value: number | null, digits = 3): string {
   return value.toFixed(digits);
 }
 
+function previewText(value: string | null | undefined, maxChars = 120): string {
+  if (!value) return "";
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}...`;
+}
+
 function toContractLiteral(step: number): string {
   return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`;
 }
@@ -4285,6 +4291,7 @@ export default function HomePage() {
   const [activeTrace, setActiveTrace] = useState<TurnTrace | null>(null);
   const [liveTelemetryRows, setLiveTelemetryRows] = useState<TurnTrace[]>([]);
   const [liveTelemetryNewestFirst, setLiveTelemetryNewestFirst] = useState<boolean>(false);
+  const [outputTurnNewestFirst, setOutputTurnNewestFirst] = useState<boolean>(true);
   const [traceViewerFollowLatest, setTraceViewerFollowLatest] = useState<boolean>(true);
   const [traceViewerTurn, setTraceViewerTurn] = useState<number | null>(null);
   const [liveTraceCondition, setLiveTraceCondition] = useState<RepCondition>("raw");
@@ -4299,6 +4306,7 @@ export default function HomePage() {
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const panel1MonitorRef = useRef<HTMLElement | null>(null);
   const telemetryTableWrapRef = useRef<HTMLDivElement | null>(null);
+  const outputTurnTableWrapRef = useRef<HTMLDivElement | null>(null);
   const [panel1MonitorHeight, setPanel1MonitorHeight] = useState<number>(460);
 
   useEffect(() => {
@@ -4389,6 +4397,10 @@ export default function HomePage() {
   const canViewPrevTrace = monitorTraceIndex > 0;
   const canViewNextTrace = monitorTraceIndex >= 0 && monitorTraceIndex < monitorTraces.length - 1;
   const monitorTurnMax = monitorTraces.length > 0 ? monitorTraces[monitorTraces.length - 1].turnIndex : 0;
+  const outputTurnDisplayRows = useMemo(
+    () => (outputTurnNewestFirst ? [...monitorTraces].reverse() : monitorTraces),
+    [monitorTraces, outputTurnNewestFirst]
+  );
   const liveTurnProgressPct = turnBudget > 0 ? Math.min(100, (monitorTurnMax / turnBudget) * 100) : 0;
   const liveDaiStatus =
     monitorLatestTrace?.dai !== null && monitorLatestTrace?.dai !== undefined
@@ -4441,6 +4453,17 @@ export default function HomePage() {
       setTraceViewerTurn(monitorTraces[monitorTraces.length - 1].turnIndex);
     }
   }, [monitorTraces, traceViewerFollowLatest, traceViewerTurn]);
+
+  useEffect(() => {
+    if (!traceViewerFollowLatest) return;
+    const wrap = outputTurnTableWrapRef.current;
+    if (!wrap) return;
+    if (outputTurnNewestFirst) {
+      wrap.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
+  }, [monitorTurnMax, outputTurnNewestFirst, traceViewerFollowLatest]);
 
   function setNormalizedApiKey(rawValue: string) {
     setApiKey(normalizeApiKeyInput(rawValue));
@@ -5100,6 +5123,16 @@ export default function HomePage() {
     wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
   }
 
+  function jumpToNewestOutputTurnRow() {
+    const wrap = outputTurnTableWrapRef.current;
+    if (!wrap) return;
+    if (outputTurnNewestFirst) {
+      wrap.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
+  }
+
   function selectMonitorTurn(turnIndex: number) {
     setTraceViewerFollowLatest(false);
     setTraceViewerTurn(turnIndex);
@@ -5519,6 +5552,58 @@ export default function HomePage() {
                   Follow latest
                 </label>
               </div>
+              <div className="telemetry-toolbar">
+                <p className="tiny">Turns available: {monitorTraces.length}</p>
+                <div className="telemetry-actions">
+                  <label className="tiny telemetry-toggle">
+                    <input
+                      type="checkbox"
+                      checked={outputTurnNewestFirst}
+                      onChange={(event) => setOutputTurnNewestFirst(event.target.checked)}
+                      disabled={monitorTraces.length === 0}
+                    />{" "}
+                    Newest first
+                  </label>
+                  <button type="button" onClick={jumpToNewestOutputTurnRow} disabled={monitorTraces.length === 0}>
+                    Jump to newest
+                  </button>
+                </div>
+              </div>
+              {monitorTraces.length > 0 ? (
+                <div className="telemetry-table-wrap trace-turn-list-wrap" ref={outputTurnTableWrapRef}>
+                  <table className="telemetry-table llm-turn-table">
+                    <thead>
+                      <tr>
+                        <th>Turn</th>
+                        <th>Agent</th>
+                        <th>Parse</th>
+                        <th>State</th>
+                        <th>Output preview</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {outputTurnDisplayRows.map((trace) => {
+                        const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
+                        return (
+                          <tr
+                            key={`viewer_${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
+                            className={isViewedTurn ? "telemetry-row-active" : undefined}
+                            onClick={() => selectMonitorTurn(trace.turnIndex)}
+                          >
+                            <td>{trace.turnIndex}</td>
+                            <td>{trace.agent}</td>
+                            <td>{trace.parseOk}</td>
+                            <td>{trace.stateOk}</td>
+                            <td className="output-preview-cell">{previewText(trace.outputBytes, 140)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No turns yet."}</p>
+              )}
               <p className="tiny">
                 <strong>LLM Output (viewed turn)</strong>
               </p>

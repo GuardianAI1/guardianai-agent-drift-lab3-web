@@ -853,6 +853,12 @@ button:disabled {
   overflow-x: auto;
 }
 
+.trace-turn-list-wrap {
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
 .telemetry-toolbar {
   display: flex;
   justify-content: space-between;
@@ -928,6 +934,16 @@ button:disabled {
   min-width: 980px;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.llm-turn-table {
+  min-width: 620px;
+}
+
+.output-preview-cell {
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .telemetry-table th,
