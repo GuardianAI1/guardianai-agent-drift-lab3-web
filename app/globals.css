@@ -61,7 +61,7 @@ pre,
 
 .top-band {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.85fr);
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px) minmax(360px, 0.85fr);
   gap: 10px;
   padding: 8px;
 }
@@ -154,6 +154,12 @@ pre,
 .right-toolbar {
   display: grid;
   gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+
+.middle-toolbar {
+  display: grid;
   align-content: start;
   min-width: 0;
 }
@@ -660,6 +666,10 @@ button:disabled {
   align-content: start;
   grid-auto-rows: max-content;
   min-height: 0;
+}
+
+.results-panel .turn-stream {
+  align-content: end;
 }
 
 .turn-card,

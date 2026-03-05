@@ -3227,6 +3227,7 @@ export default function HomePage() {
 
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
 
   useEffect(() => {
     const defaultsVersion = localStorage.getItem(STORAGE_UI_DEFAULTS_VERSION_KEY);
@@ -3817,7 +3818,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="right-toolbar">
+        <div className="middle-toolbar">
           <div className="status-box">
             <div className="status-line">
               <span className={`dot ${isRunning ? "good" : "warn"}`} />
@@ -3831,8 +3832,14 @@ export default function HomePage() {
               <span className={`dot ${apiKey.trim() ? "good" : "warn"}`} />
               <span>Key {keyStatusLabel}</span>
             </div>
+            <div className="status-line">
+              <span className={`dot ${guardianEnabled ? "good" : "warn"}`} />
+              <span>GuardianAI {guardianEnabled ? "ON" : "OFF"}</span>
+            </div>
           </div>
+        </div>
 
+        <div className="right-toolbar">
           <div className="row-actions">
             <button onClick={exportSnapshotJSON}>Export JSON</button>
             <button onClick={() => downloadTrace("raw")} disabled={!rawSummary}>
@@ -3893,6 +3900,17 @@ export default function HomePage() {
 
             <div className="run-config-grid">
               <div className="field-block">
+                <label>Script</label>
+                <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
+                  {UI_PROFILE_LIST.map((value) => (
+                    <option key={value} value={value}>
+                      {PROFILE_LABELS[value]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field-block">
                 <label>Turns (Horizon)</label>
                 <input
                   type="number"
@@ -3939,9 +3957,15 @@ export default function HomePage() {
               <div>
                 <h3>Summary</h3>
                 <p className="muted">
-                  Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} ({objectiveLabel(objectiveMode)})
+                  This experiment tests whether recursive belief exchange creates unsupported consensus in RAW memory loops.
                 </p>
-                <p className="muted">Objective scope: {objectiveScopeLabel(selectedProfile)}</p>
+                <p className="muted">
+                  RAW = exact reinjection of model output. SANITIZED = canonicalized reinjection. PASS means RAW collapse signal appears while SANITIZED does not.
+                </p>
+                <p className="muted">
+                  Quality gate: preflight at turn {PREFLIGHT_TURNS} (Agent {PREFLIGHT_AGENT} ParseOK ≥ {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}
+                  {preflightRequiresState(objectiveMode) ? `%, StateOK ≥ ${(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}%` : "%"}).
+                </p>
               </div>
             </div>
           </header>
@@ -3957,9 +3981,33 @@ export default function HomePage() {
               <p className="mono">
                 Latest verdict: {activeTrace ? `ParseOK=${activeTrace.parseOk}, StateOK=${activeTrace.stateOk}, Cv/Pf/Ld=${activeTrace.cv}/${activeTrace.pf}/${activeTrace.ld}` : "n/a"}
               </p>
+              <p className="tiny">
+                <strong>Live LLM Output (latest turn)</strong>
+              </p>
+              <p className="tiny">Input (injected)</p>
+              <pre className="raw-pre">{activeTrace?.inputBytes ?? "[no trace yet]"}</pre>
+              <p className="tiny">Output (model)</p>
+              <pre className="raw-pre">{activeTrace?.outputBytes ?? "[no output yet]"}</pre>
+              <p className="tiny">Expected (contract)</p>
+              <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
+              <p className="tiny">Injected next turn</p>
+              <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
               {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
             </section>
+          </div>
+        </article>
 
+        <article className="panel results-panel">
+          <header className="monitor-header">
+            <div className="monitor-title-row">
+              <div>
+                <h3>Results</h3>
+                <p className="muted">Condition cards and collapse check.</p>
+              </div>
+            </div>
+          </header>
+
+          <div className="turn-stream">
             {(["raw", "sanitized"] as const).map((condition) => {
               const summary = results[selectedProfile][condition];
               const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
@@ -4026,7 +4074,6 @@ export default function HomePage() {
                 <p className="muted">Run both RAW and SANITIZED for the current profile to evaluate the criterion.</p>
               )}
             </section>
-
           </div>
         </article>
       </section>
