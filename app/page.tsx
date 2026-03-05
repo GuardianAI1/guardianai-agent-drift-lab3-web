@@ -1185,21 +1185,24 @@ function computeDaiPoints(traces: TurnTrace[]): DaiPoint[] {
   for (const trace of traces) {
     prefix.push(trace);
     const telemetry = driftTelemetry(prefix);
-    const pNorm = telemetry.artifactPersistence === null ? null : clamp01(telemetry.artifactPersistence);
+    const pNorm = telemetry.artifactPersistence === null ? 0 : clamp01(telemetry.artifactPersistence);
     const eNormRaw = normalizedTemplateEntropy(prefix);
-    const eNorm = eNormRaw === null ? null : clamp01(1 - eNormRaw);
-    const rNorm = telemetry.reinforcementDelta === null ? null : clamp01(Math.max(0, telemetry.reinforcementDelta));
+    const eNorm = eNormRaw === null ? 0 : clamp01(1 - eNormRaw);
+    const reinforcementMissing = telemetry.reinforcementDelta === null;
+    const reinforcementDelta = telemetry.reinforcementDelta ?? 0;
+    const rNorm = reinforcementMissing ? 0 : clamp01(Math.max(0, reinforcementDelta));
 
-    const dai = pNorm !== null && eNorm !== null && rNorm !== null ? Math.cbrt(Math.max(0, pNorm * eNorm * rNorm)) : null;
-    const daiDelta = dai !== null && previousDai !== null ? dai - previousDai : null;
+    const dai = Math.cbrt(Math.max(0, pNorm * eNorm * rNorm));
+    const daiDelta = previousDai !== null ? dai - previousDai : null;
+    const regime = reinforcementMissing ? "noise (baseline-limited)" : daiRegime(dai);
     points.push({
       turnIndex: trace.turnIndex,
       dai,
       daiDelta,
-      regime: daiRegime(dai)
+      regime
     });
 
-    if (dai !== null) previousDai = dai;
+    previousDai = dai;
   }
 
   return points;
