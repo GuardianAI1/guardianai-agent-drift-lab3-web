@@ -15,8 +15,8 @@ type RequestBody = {
 };
 
 const FETCH_TIMEOUT_MS = 30_000;
-const MAX_RETRY_ATTEMPTS = 4;
-const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const MAX_RETRY_ATTEMPTS = 2;
+const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 500, 502, 503, 504]);
 
 function nonEmpty(value?: string): string | undefined {
   const trimmed = (value ?? "").trim();

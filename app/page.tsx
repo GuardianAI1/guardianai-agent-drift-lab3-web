@@ -26,7 +26,7 @@ const DEFAULT_MAX_HISTORY_TURNS = 50;
 const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const RUN_LEVEL_LLM_MAX_ATTEMPTS = 5;
+const RUN_LEVEL_LLM_MAX_ATTEMPTS = 2;
 const DRIFT_DEV_EVENT_THRESHOLD = 8;
 const EARLY_WINDOW_TURNS = 40;
 const ROLLING_REINFORCEMENT_WINDOW = 20;
@@ -1319,17 +1319,7 @@ function isClientTransportErrorMessage(message: string): boolean {
 }
 
 function isRunLevelRetryableLLMError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    isClientTransportErrorMessage(message) ||
-    normalized.includes("rate limit exceeded") ||
-    normalized.includes("http 429") ||
-    normalized.includes("http 500") ||
-    normalized.includes("http 502") ||
-    normalized.includes("http 503") ||
-    normalized.includes("http 504") ||
-    normalized.includes("server returned non-json payload")
-  );
+  return isClientTransportErrorMessage(message);
 }
 
 function runLevelRetryDelayMs(attempt: number): number {
