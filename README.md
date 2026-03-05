@@ -63,8 +63,8 @@ Summary:
 
 ## Environment variables
 
-- `GUARDIAN_CORE_URL` (default: `http://127.0.0.1:18101`)
-- `GUARDIAN_GATE_URL` (default: `http://127.0.0.1:18102`)
+- `GUARDIAN_CORE_URL` (default in development: `http://127.0.0.1:18101`; production fallback: `https://guardianai.fr/core`)
+- `GUARDIAN_GATE_URL` (default in development: `http://127.0.0.1:18102`; production fallback: `https://guardianai.fr/gate`)
 - `GUARDIAN_ENDPOINT_KEY`
 - API policy/rate limits:
   - `GUARDIAN_API_ALLOWED_ORIGINS`

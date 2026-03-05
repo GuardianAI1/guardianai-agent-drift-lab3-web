@@ -378,14 +378,6 @@ interface ConditionSummary {
 
 interface GuardianObserveResponse {
   gateState?: "CONTINUE" | "PAUSE" | "YIELD";
-  telemetry?: {
-    authority_trend?: string | number;
-    revision_mode?: string;
-    trajectory_state?: string;
-    temporal_resistance_detected?: boolean;
-  };
-  structuralRecommendation?: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER";
-  reasonCodes?: string[];
 }
 
 type ConditionResults = Record<RepCondition, ConditionSummary | null>;
@@ -2343,14 +2335,6 @@ function traceToJsonl(summary: ConditionSummary): string {
       rollingDriftP95: trace.rollingDriftP95,
       dev_state: trace.devState,
       dev_threshold: DRIFT_DEV_EVENT_THRESHOLD,
-      guardian_gate_state: trace.guardianGateState,
-      guardian_structural_recommendation: trace.guardianStructuralRecommendation,
-      guardian_reason_codes: trace.guardianReasonCodes,
-      guardian_authority_trend: trace.guardianAuthorityTrend,
-      guardian_revision_mode: trace.guardianRevisionMode,
-      guardian_trajectory_state: trace.guardianTrajectoryState,
-      guardian_temporal_resistance_detected: trace.guardianTemporalResistanceDetected,
-      guardian_observe_error: trace.guardianObserveError,
       reasoning_depth: trace.reasoningDepth,
       authority_weights: trace.authorityWeights,
       contradiction_signal: trace.contradictionSignal,
@@ -2912,9 +2896,6 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
     `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
     `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
-    `- Guardian observe coverage/error: ${asPercent(summary.guardianObserveCoverage)} / ${asPercent(summary.guardianObserveErrorRate)}`,
-    `- Guardian gate rates CONTINUE/PAUSE/YIELD: ${asPercent(summary.guardianContinueRate)} / ${asPercent(summary.guardianPauseRate)} / ${asPercent(summary.guardianYieldRate)}`,
-    `- Guardian recommendation rates REOPEN/SLOW/DEFER: ${asPercent(summary.guardianReopenRate)} / ${asPercent(summary.guardianSlowRate)} / ${asPercent(summary.guardianDeferRate)}`,
     isBeliefLoopProfile(summary.profile)
       ? `- Agreement A↔B: ${asPercent(summary.agreementRateAB)} (pairs=${summary.consensusPairs})`
       : "",
@@ -4018,15 +3999,6 @@ export default function HomePage() {
     return response.content ?? "";
   }
 
-  function normalizeFiniteNumber(value: unknown): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string") {
-      const parsed = Number.parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  }
-
   async function requestGuardianObservation(params: {
     turnId: number;
     output: string;
@@ -4160,50 +4132,17 @@ export default function HomePage() {
       const elapsedTimeMs = Date.now() - llmStartMs;
 
       let guardianGateState: "CONTINUE" | "PAUSE" | "YIELD" | null = null;
-      let guardianStructuralRecommendation: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER" | null = null;
-      let guardianReasonCodes: string[] = [];
-      let guardianAuthorityTrend: number | null = null;
-      let guardianRevisionMode: string | null = null;
-      let guardianTrajectoryState: string | null = null;
-      let guardianTemporalResistanceDetected: number | null = null;
       let guardianObserveError: string | null = null;
 
       if (guardianEnabled) {
         try {
-          const guardianResponse = await requestGuardianObservation({
+          await requestGuardianObservation({
             turnId: turn,
             output: outputBytes,
             deterministicConstraint: expectedBytes
           });
-
-          const gateCandidate = guardianResponse.gateState;
-          guardianGateState =
-            gateCandidate === "CONTINUE" || gateCandidate === "PAUSE" || gateCandidate === "YIELD" ? gateCandidate : null;
-
-          const recommendationCandidate = guardianResponse.structuralRecommendation;
-          guardianStructuralRecommendation =
-            recommendationCandidate === "CONTINUE" ||
-            recommendationCandidate === "SLOW" ||
-            recommendationCandidate === "REOPEN" ||
-            recommendationCandidate === "DEFER"
-              ? recommendationCandidate
-              : null;
-
-          guardianReasonCodes = Array.isArray(guardianResponse.reasonCodes)
-            ? guardianResponse.reasonCodes.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-            : [];
-
-          guardianAuthorityTrend = normalizeFiniteNumber(guardianResponse.telemetry?.authority_trend);
-          guardianRevisionMode = typeof guardianResponse.telemetry?.revision_mode === "string" ? guardianResponse.telemetry.revision_mode : null;
-          guardianTrajectoryState = typeof guardianResponse.telemetry?.trajectory_state === "string" ? guardianResponse.telemetry.trajectory_state : null;
-          guardianTemporalResistanceDetected =
-            typeof guardianResponse.telemetry?.temporal_resistance_detected === "boolean"
-              ? guardianResponse.telemetry.temporal_resistance_detected
-                ? 1
-                : 0
-              : null;
         } catch (error) {
-          guardianObserveError = error instanceof Error ? error.message : "Guardian observe request failed.";
+          guardianObserveError = error instanceof Error ? "Observer unavailable." : "Observer unavailable.";
         }
       }
 
@@ -4305,7 +4244,7 @@ export default function HomePage() {
       const currentConsensus = consensusFieldsFromParsedData(parsedData);
       const reasoningDepth = currentConsensus ? currentConsensus.evidenceIds.length : null;
       const commitment = currentConsensus ? currentConsensus.confidence : null;
-      const authorityWeights = guardianAuthorityTrend ?? commitment;
+      const authorityWeights = commitment;
       const contradictionSignal =
         currentConsensus && previousConsensus ? (currentConsensus.stance === previousConsensus.stance ? 0 : 1) : null;
       const alternativeVariance = currentConsensus
@@ -4370,12 +4309,12 @@ export default function HomePage() {
         contextLengthGrowth,
         devState,
         guardianGateState,
-        guardianStructuralRecommendation,
-        guardianReasonCodes,
-        guardianAuthorityTrend,
-        guardianRevisionMode,
-        guardianTrajectoryState,
-        guardianTemporalResistanceDetected,
+        guardianStructuralRecommendation: null,
+        guardianReasonCodes: [],
+        guardianAuthorityTrend: null,
+        guardianRevisionMode: null,
+        guardianTrajectoryState: null,
+        guardianTemporalResistanceDetected: null,
         guardianObserveError,
         reasoningDepth,
         authorityWeights,
@@ -4831,7 +4770,7 @@ export default function HomePage() {
             </div>
 
             <div className="run-config-grid">
-              <div className="field-block">
+              <div className="field-block run-field-script">
                 <label>Script</label>
                 <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
                   {UI_PROFILE_LIST.map((value) => (
@@ -4842,7 +4781,7 @@ export default function HomePage() {
                 </select>
               </div>
 
-              <div className="field-block">
+              <div className="field-block run-field-turns">
                 <label>Turns (Horizon)</label>
                 <input
                   type="number"
@@ -4854,7 +4793,19 @@ export default function HomePage() {
                 />
               </div>
 
-              <div className="field-block">
+              <div className="field-block run-field-tokens">
+                <label>Max Tokens</label>
+                <input
+                  type="number"
+                  min={32}
+                  max={512}
+                  value={llmMaxTokens}
+                  onChange={(event) => setLlmMaxTokens(Math.max(32, Math.min(512, Number(event.target.value) || 32)))}
+                  disabled={isRunning}
+                />
+              </div>
+
+              <div className="field-block run-field-temp">
                 <label>Temperature</label>
                 <input
                   type="number"
@@ -4867,19 +4818,7 @@ export default function HomePage() {
                 />
               </div>
 
-              <div className="field-block">
-                <label>Max Tokens</label>
-                <input
-                  type="number"
-                  min={32}
-                  max={512}
-                  value={llmMaxTokens}
-                  onChange={(event) => setLlmMaxTokens(Math.max(32, Math.min(512, Number(event.target.value) || 32)))}
-                  disabled={isRunning}
-                />
-              </div>
-
-              <div className="field-block">
+              <div className="field-block run-field-delay">
                 <label>Inter-turn Delay (ms)</label>
                 <input
                   type="number"
@@ -4899,9 +4838,7 @@ export default function HomePage() {
 
             <div className="policy-inline">
               <p className="tiny">
-                <strong>Preflight gate:</strong> turn {PREFLIGHT_TURNS}, Agent {PREFLIGHT_AGENT}, ParseOK ≥{" "}
-                {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}%
-                {preflightRequiresState(objectiveMode) ? ` and StateOK ≥ ${(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}%` : ""}.
+                <strong>Quality gate:</strong> an early contract-compliance checkpoint can stop low-signal runs before full horizon.
               </p>
               <p className="tiny">
                 <strong>Structural drift criterion:</strong> commitment rises faster than constraint growth under stable reasoning depth.
@@ -4912,102 +4849,18 @@ export default function HomePage() {
       </section>
 
       <section className="body-grid">
-        <article className="panel">
+        <article className="panel live-panel">
           <header className="monitor-header">
             <div className="monitor-title-row">
               <div>
-                <h3>Summary</h3>
-                <p className="muted">
-                  This experiment measures whether commitment grows faster than constraint growth in recursive belief exchange.
-                </p>
-                <p className="muted">
-                  RAW = exact reinjection of model output. SANITIZED = canonicalized reinjection. DETECTED means RAW drift signal appears while SANITIZED does not.
-                </p>
-                <p className="muted">
-                  Quality gate: preflight at turn {PREFLIGHT_TURNS} (Agent {PREFLIGHT_AGENT} ParseOK ≥ {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}
-                  {preflightRequiresState(objectiveMode) ? `%, StateOK ≥ ${(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}%` : "%"}).
-                </p>
+                <h3>Live Telemetry</h3>
+                <p className="muted">Turn-by-turn stream while the selected condition is running.</p>
               </div>
             </div>
           </header>
 
           <div className="turn-stream">
-            <section className="latest-card">
-              <h4>Panel 1 - Run Monitor</h4>
-              <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
-              <p className="mono">Phase: {runPhaseText}</p>
-              <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
-              <p className="mono">
-                Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
-              </p>
-              <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
-              <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
-              <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
-              <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
-              <p className="mono">Structural drift verdict: {closure.label}</p>
-              <p className="mono">
-                commitment / delta / constraint growth:{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.commitment, 3)} / ${asFixed(activeTrace.commitmentDelta, 3)} / ${asFixed(activeTrace.constraintGrowth, 3)}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                reasoning depth / depth delta / drift streak:{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.reasoningDepth, 3)} / ${asFixed(activeTrace.depthDelta, 3)} / ${activeTrace.driftStreak}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                contradiction / alt variance / elapsed(ms):{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.contradictionSignal, 3)} / ${asFixed(activeTrace.alternativeVariance, 3)} / ${asFixed(
-                      activeTrace.elapsedTimeMs,
-                      1
-                    )}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                DAI / ΔDAI / regime:{" "}
-                {activeTrace ? `${asFixed(activeTrace.dai, 3)} / ${asFixed(activeTrace.daiDelta, 4)} / ${activeTrace.daiRegime ?? "n/a"}` : "n/a"}
-              </p>
-              <p className="mono">
-                Guardian gate / recommendation:{" "}
-                {activeTrace
-                  ? `${activeTrace.guardianGateState ?? "n/a"} / ${activeTrace.guardianStructuralRecommendation ?? "n/a"}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                Guardian reasons:{" "}
-                {activeTrace ? (activeTrace.guardianReasonCodes.length ? activeTrace.guardianReasonCodes.join(", ") : "n/a") : "n/a"}
-              </p>
-              <p className="mono">
-                Guardian authority / trajectory / temporal-resistance:{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.guardianAuthorityTrend, 3)} / ${activeTrace.guardianTrajectoryState ?? "n/a"} / ${
-                      activeTrace.guardianTemporalResistanceDetected === null
-                        ? "n/a"
-                        : activeTrace.guardianTemporalResistanceDetected === 1
-                          ? "yes"
-                          : "no"
-                    }`
-                  : "n/a"}
-              </p>
-              <p className="tiny">
-                <strong>Live LLM Output (latest turn)</strong>
-              </p>
-              <p className="tiny">Input (injected)</p>
-              <pre className="raw-pre">{activeTrace?.inputBytes ?? "[no trace yet]"}</pre>
-              <p className="tiny">Output (model)</p>
-              <pre className="raw-pre">{activeTrace?.outputBytes ?? "[no output yet]"}</pre>
-              <p className="tiny">Expected (contract)</p>
-              <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
-              <p className="tiny">Injected next turn</p>
-              <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
-              {activeTrace?.guardianObserveError ? <p className="warning-note">Guardian observe error: {activeTrace.guardianObserveError}</p> : null}
-              {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
-            </section>
-
-            <section className="latest-card">
+            <section className="latest-card live-stream-card">
               <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
               <p className="tiny">Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active.</p>
               <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
@@ -5061,13 +4914,77 @@ export default function HomePage() {
           <header className="monitor-header">
             <div className="monitor-title-row">
               <div>
-                <h3>Results</h3>
-                <p className="muted">Condition cards and structural epistemic drift check.</p>
+                <h3>Summary & Results</h3>
+                <p className="muted">Experiment summary, run monitor, condition cards, and structural drift check.</p>
               </div>
             </div>
           </header>
 
           <div className="turn-stream">
+            <section className="latest-card">
+              <h4>Summary</h4>
+              <p className="muted">This experiment measures whether commitment grows faster than constraint growth in recursive belief exchange.</p>
+              <p className="muted">
+                RAW = exact reinjection of model output. SANITIZED = canonicalized reinjection. DETECTED means RAW drift signal appears while SANITIZED does not.
+              </p>
+              <p className="muted">
+                Quality gate: an early checkpoint may pause long runs when the stream is not meeting baseline contract reliability.
+              </p>
+            </section>
+
+            <section className="latest-card">
+              <h4>Panel 1 - Run Monitor</h4>
+              <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
+              <p className="mono">Phase: {runPhaseText}</p>
+              <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
+              <p className="mono">
+                Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
+              </p>
+              <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
+              <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
+              <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
+              <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
+              <p className="mono">Structural drift verdict: {closure.label}</p>
+              <p className="mono">
+                commitment / delta / constraint growth:{" "}
+                {activeTrace
+                  ? `${asFixed(activeTrace.commitment, 3)} / ${asFixed(activeTrace.commitmentDelta, 3)} / ${asFixed(activeTrace.constraintGrowth, 3)}`
+                  : "n/a"}
+              </p>
+              <p className="mono">
+                reasoning depth / depth delta / drift streak:{" "}
+                {activeTrace
+                  ? `${asFixed(activeTrace.reasoningDepth, 3)} / ${asFixed(activeTrace.depthDelta, 3)} / ${activeTrace.driftStreak}`
+                  : "n/a"}
+              </p>
+              <p className="mono">
+                contradiction / alt variance / elapsed(ms):{" "}
+                {activeTrace
+                  ? `${asFixed(activeTrace.contradictionSignal, 3)} / ${asFixed(activeTrace.alternativeVariance, 3)} / ${asFixed(
+                      activeTrace.elapsedTimeMs,
+                      1
+                    )}`
+                  : "n/a"}
+              </p>
+              <p className="mono">
+                DAI / ΔDAI / regime:{" "}
+                {activeTrace ? `${asFixed(activeTrace.dai, 3)} / ${asFixed(activeTrace.daiDelta, 4)} / ${activeTrace.daiRegime ?? "n/a"}` : "n/a"}
+              </p>
+              <p className="tiny">
+                <strong>Live LLM Output (latest turn)</strong>
+              </p>
+              <p className="tiny">Input (injected)</p>
+              <pre className="raw-pre">{activeTrace?.inputBytes ?? "[no trace yet]"}</pre>
+              <p className="tiny">Output (model)</p>
+              <pre className="raw-pre">{activeTrace?.outputBytes ?? "[no output yet]"}</pre>
+              <p className="tiny">Expected (contract)</p>
+              <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
+              <p className="tiny">Injected next turn</p>
+              <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
+              {activeTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
+              {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
+            </section>
+
             {(["raw", "sanitized"] as const).map((condition) => {
               const summary = results[selectedProfile][condition];
               const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
@@ -5085,9 +5002,6 @@ export default function HomePage() {
                       </p>
                       <p className="mono">ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}</p>
                       <p className="mono">StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}</p>
-                      <p className="mono">Guardian observe coverage/error: {asPercent(summary.guardianObserveCoverage)} / {asPercent(summary.guardianObserveErrorRate)}</p>
-                      <p className="mono">Guardian gate CONTINUE/PAUSE/YIELD: {asPercent(summary.guardianContinueRate)} / {asPercent(summary.guardianPauseRate)} / {asPercent(summary.guardianYieldRate)}</p>
-                      <p className="mono">Guardian recommendation REOPEN/SLOW/DEFER: {asPercent(summary.guardianReopenRate)} / {asPercent(summary.guardianSlowRate)} / {asPercent(summary.guardianDeferRate)}</p>
                       <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
                       {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
                       <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>

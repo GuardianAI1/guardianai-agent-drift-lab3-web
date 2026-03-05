@@ -9,22 +9,24 @@ type ObserveRequestBody = {
 };
 
 type GuardianObserveResponse = {
-  telemetry: {
-    transitions?: Record<string, number>;
-    temporal_spacing?: number;
-  };
   structural_recommendation: string;
-  reason_codes: string[];
 };
 
 type GuardianGateResponse = {
   final_gate_decision: string;
-  reason_codes: string[];
 };
 
 function normalizeBaseURL(value: string): string {
   const trimmed = value.trim();
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+function defaultGuardianBaseURL(kind: "core" | "gate"): string {
+  const isProduction = process.env.NODE_ENV === "production";
+  if (isProduction) {
+    return kind === "core" ? "https://guardianai.fr/core" : "https://guardianai.fr/gate";
+  }
+  return kind === "core" ? "http://127.0.0.1:18101" : "http://127.0.0.1:18102";
 }
 
 function mapFinalGateDecision(value: string): GateState {
@@ -41,10 +43,15 @@ function guardianAuthHeaders(): Record<string, string> {
 }
 
 async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    cache: "no-store"
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      cache: "no-store"
+    });
+  } catch {
+    throw new Error("Guardian upstream unavailable");
+  }
 
   const text = await response.text();
   let payload: unknown = {};
@@ -57,7 +64,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${JSON.stringify(payload)}`);
+    throw new Error("Guardian upstream unavailable");
   }
 
   return payload as T;
@@ -78,8 +85,8 @@ export async function POST(request: NextRequest) {
 
     const turnId = Number.isFinite(body.turnId) ? Number(body.turnId) : 0;
 
-    const coreURL = normalizeBaseURL(process.env.GUARDIAN_CORE_URL ?? "http://127.0.0.1:18101");
-    const gateURL = normalizeBaseURL(process.env.GUARDIAN_GATE_URL ?? "http://127.0.0.1:18102");
+    const coreURL = normalizeBaseURL(process.env.GUARDIAN_CORE_URL ?? defaultGuardianBaseURL("core"));
+    const gateURL = normalizeBaseURL(process.env.GUARDIAN_GATE_URL ?? defaultGuardianBaseURL("gate"));
 
     const observePayload = {
       event_id: `turn-${turnId}`,
@@ -105,25 +112,12 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(gatePayload)
     });
 
-    const transition = observeResponse.telemetry?.transitions?.transition_index ?? 0;
-    const temporalDetected = (observeResponse.telemetry?.temporal_spacing ?? 1) <= 0.2 && transition <= 0.2;
-
-    const telemetry = {
-      authority_trend: transition.toFixed(2),
-      revision_mode: observeResponse.structural_recommendation.toLowerCase(),
-      grounding_markers: [],
-      temporal_resistance_detected: temporalDetected,
-      trajectory_state: observeResponse.reason_codes?.[0] ?? observeResponse.structural_recommendation
-    };
-
     return NextResponse.json({
-      gateState: mapFinalGateDecision(gateResponse.final_gate_decision),
-      telemetry,
-      structuralRecommendation: observeResponse.structural_recommendation,
-      reasonCodes: observeResponse.reason_codes ?? []
+      gateState: mapFinalGateDecision(gateResponse.final_gate_decision)
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Observer unavailable.";
+    const sanitized = message.includes("required") ? message : "Observer unavailable.";
+    return NextResponse.json({ error: sanitized }, { status: 500 });
   }
 }
