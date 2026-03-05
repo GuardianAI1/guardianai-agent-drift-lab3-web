@@ -5378,7 +5378,7 @@ export default function HomePage() {
                 <strong>Constraint variable:</strong> <code>evidence_ids</code> growth (tracked as new evidence / constraint growth).
               </p>
               <p className="tiny">
-                <strong>Claim loop:</strong> agents discuss/revise the same claim turn-by-turn; inspect revisions in Panel 1A and turn stream in Panel 1B.
+                <strong>Claim loop:</strong> agents discuss/revise the same claim turn-by-turn; inspect injections in Panel 1A, model output in Panel 1B, and stream telemetry in Panel 2.
               </p>
               <p className="tiny">
                 <strong>Time-series measurement:</strong> compare commitment change vs constraint growth over turns; rising commitment with flat constraints indicates closure pressure.
@@ -5419,90 +5419,6 @@ export default function HomePage() {
               </p>
             </section>
 
-            <section className="latest-card live-stream-card">
-              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
-              <p className="tiny">
-                {liveTelemetryNewestFirst
-                  ? "Newest first (turn N -> 1), auto-updates each completed turn while run is active."
-                  : "Chronological (turn 1 -> N), auto-updates each completed turn while run is active."}
-              </p>
-              <div className="telemetry-toolbar">
-                <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
-                <div className="telemetry-actions">
-                  <label className="tiny telemetry-toggle">
-                    <input
-                      type="checkbox"
-                      checked={liveTelemetryNewestFirst}
-                      onChange={(event) => setLiveTelemetryNewestFirst(event.target.checked)}
-                      disabled={isRunning && liveTelemetryRows.length === 0}
-                    />{" "}
-                    {liveTelemetryNewestFirst ? "Newest -> Oldest" : "Oldest -> Newest"}
-                  </label>
-                  <button type="button" onClick={jumpToNewestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
-                    Jump to newest
-                  </button>
-                  <button type="button" onClick={jumpToOldestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
-                    Jump to oldest
-                  </button>
-                </div>
-              </div>
-              {liveTelemetryRows.length > 0 ? (
-                <div className="telemetry-table-wrap live-telemetry-wrap" ref={telemetryTableWrapRef} style={{ maxHeight: `${panel1MonitorHeight}px` }}>
-                  <table className="telemetry-table">
-                    <thead>
-                      <tr>
-                        <th>Turn</th>
-                        <th>Agent</th>
-                        <th>DAI</th>
-                        <th>Regime</th>
-                        {!IS_PUBLIC_SIGNAL_MODE ? (
-                          <>
-                            <th>dDAI</th>
-                            <th>Commit</th>
-                            <th>cDelta</th>
-                            <th>cGrow</th>
-                            <th>Depth</th>
-                            <th>dDepth</th>
-                          </>
-                        ) : null}
-                        <th>Parse</th>
-                        <th>State</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {liveTelemetryDisplayRows.map((trace) => {
-                        const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
-                        return (
-                        <tr
-                          key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
-                          className={isViewedTurn ? "telemetry-row-active" : undefined}
-                          onClick={() => selectMonitorTurn(trace.turnIndex)}
-                        >
-                          <td>{trace.turnIndex}</td>
-                          <td>{trace.agent}</td>
-                          <td>{asFixed(trace.dai, 3)}</td>
-                          <td>{trace.daiRegime ?? "n/a"}</td>
-                          {!IS_PUBLIC_SIGNAL_MODE ? (
-                            <>
-                              <td>{asFixed(trace.daiDelta, 3)}</td>
-                              <td>{asFixed(trace.commitment, 3)}</td>
-                              <td>{asFixed(trace.commitmentDelta, 3)}</td>
-                              <td>{asFixed(trace.constraintGrowth, 3)}</td>
-                              <td>{asFixed(trace.reasoningDepth, 2)}</td>
-                              <td>{asFixed(trace.depthDelta, 2)}</td>
-                            </>
-                          ) : null}
-                          <td>{trace.parseOk}</td>
-                          <td>{trace.stateOk}</td>
-                        </tr>
-                      );})}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No telemetry yet. Start a run to stream per-turn signals."}</p>
-              )}
-            </section>
           </article>
 
           <article className="card run-card run-summary-card">
@@ -5533,7 +5449,7 @@ export default function HomePage() {
             </section>
 
             <section className="latest-card" ref={panel1MonitorRef}>
-              <h4>Panel 1A - LLM Output (Turn Explorer)</h4>
+              <h4>Panel 1A - Injection Stream (Turn Explorer)</h4>
               <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
@@ -5631,18 +5547,110 @@ export default function HomePage() {
                 <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No turns yet."}</p>
               )}
               <p className="tiny">
-                <strong>LLM Output (viewed turn)</strong>
+                <strong>Injection path (viewed turn)</strong>
               </p>
               <p className="tiny">Input (injected)</p>
               <pre className="raw-pre">{monitorTrace?.inputBytes ?? "[no trace yet]"}</pre>
+              <p className="tiny">Injected next turn</p>
+              <pre className="raw-pre">{monitorTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
+            </section>
+
+            <section className="latest-card">
+              <h4>Panel 1B - LLM Output (Model vs Contract)</h4>
+              <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
+              <p className="mono">Contract match (Cv): {monitorTrace ? (monitorTrace.cv === 0 ? "MATCH" : "MISMATCH") : "n/a"}</p>
               <p className="tiny">Output (model)</p>
               <pre className="raw-pre">{monitorTrace?.outputBytes ?? "[no output yet]"}</pre>
               <p className="tiny">Expected (contract)</p>
               <pre className="raw-pre">{monitorTrace?.expectedBytes ?? "[no expected yet]"}</pre>
-              <p className="tiny">Injected next turn</p>
-              <pre className="raw-pre">{monitorTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
               {monitorTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
               {monitorTrace?.parseError ? <p className="warning-note">Latest parse error: {monitorTrace.parseError}</p> : null}
+            </section>
+
+            <section className="latest-card live-stream-card">
+              <h4>Panel 2 - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
+              <p className="tiny">
+                {liveTelemetryNewestFirst
+                  ? "Newest first (turn N -> 1), auto-updates each completed turn while run is active."
+                  : "Chronological (turn 1 -> N), auto-updates each completed turn while run is active."}
+              </p>
+              <div className="telemetry-toolbar">
+                <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
+                <div className="telemetry-actions">
+                  <label className="tiny telemetry-toggle">
+                    <input
+                      type="checkbox"
+                      checked={liveTelemetryNewestFirst}
+                      onChange={(event) => setLiveTelemetryNewestFirst(event.target.checked)}
+                      disabled={isRunning && liveTelemetryRows.length === 0}
+                    />{" "}
+                    {liveTelemetryNewestFirst ? "Newest -> Oldest" : "Oldest -> Newest"}
+                  </label>
+                  <button type="button" onClick={jumpToNewestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
+                    Jump to newest
+                  </button>
+                  <button type="button" onClick={jumpToOldestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
+                    Jump to oldest
+                  </button>
+                </div>
+              </div>
+              {liveTelemetryRows.length > 0 ? (
+                <div className="telemetry-table-wrap live-telemetry-wrap" ref={telemetryTableWrapRef} style={{ maxHeight: `${panel1MonitorHeight}px` }}>
+                  <table className="telemetry-table">
+                    <thead>
+                      <tr>
+                        <th>Turn</th>
+                        <th>Agent</th>
+                        <th>DAI</th>
+                        <th>Regime</th>
+                        {!IS_PUBLIC_SIGNAL_MODE ? (
+                          <>
+                            <th>dDAI</th>
+                            <th>Commit</th>
+                            <th>cDelta</th>
+                            <th>cGrow</th>
+                            <th>Depth</th>
+                            <th>dDepth</th>
+                          </>
+                        ) : null}
+                        <th>Parse</th>
+                        <th>State</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveTelemetryDisplayRows.map((trace) => {
+                        const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
+                        return (
+                          <tr
+                            key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
+                            className={isViewedTurn ? "telemetry-row-active" : undefined}
+                            onClick={() => selectMonitorTurn(trace.turnIndex)}
+                          >
+                            <td>{trace.turnIndex}</td>
+                            <td>{trace.agent}</td>
+                            <td>{asFixed(trace.dai, 3)}</td>
+                            <td>{trace.daiRegime ?? "n/a"}</td>
+                            {!IS_PUBLIC_SIGNAL_MODE ? (
+                              <>
+                                <td>{asFixed(trace.daiDelta, 3)}</td>
+                                <td>{asFixed(trace.commitment, 3)}</td>
+                                <td>{asFixed(trace.commitmentDelta, 3)}</td>
+                                <td>{asFixed(trace.constraintGrowth, 3)}</td>
+                                <td>{asFixed(trace.reasoningDepth, 2)}</td>
+                                <td>{asFixed(trace.depthDelta, 2)}</td>
+                              </>
+                            ) : null}
+                            <td>{trace.parseOk}</td>
+                            <td>{trace.stateOk}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No telemetry yet. Start a run to stream per-turn signals."}</p>
+              )}
             </section>
 
             <section className="latest-card">
@@ -5655,7 +5663,7 @@ export default function HomePage() {
                 {(["raw", "sanitized"] as const).map((condition) => {
                   const summary = results[selectedProfile][condition];
                   const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
-                  const panelLabel = condition === "raw" ? "Panel 2" : "Panel 3";
+                  const panelLabel = condition === "raw" ? "Panel 3" : "Panel 4";
                   return (
                     <section key={condition} className="decision-card">
                       <div className="decision-top">
@@ -5743,7 +5751,7 @@ export default function HomePage() {
                 })}
 
                 <section className="latest-card">
-                  <h4>Panel 4 - Structural Epistemic Drift Check</h4>
+                  <h4>Panel 5 - Structural Epistemic Drift Check</h4>
                   {consensusEval ? (
                     <>
                       <p className="tiny">RAW=YES and SAN=NO indicates recursion-specific structural drift evidence.</p>
