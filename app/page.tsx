@@ -5088,7 +5088,7 @@ export default function HomePage() {
             </div>
 
             <section className="latest-card live-stream-card">
-              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
+              <h4>Panel 1A - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
               <p className="tiny">
                 {liveTelemetryNewestFirst
                   ? "Newest first (turn N -&gt; 1), auto-updates each completed turn while run is active."
@@ -5175,7 +5175,7 @@ export default function HomePage() {
             </p>
 
             <section className="latest-card" ref={panel1MonitorRef}>
-              <h4>Panel 1 - Run Monitor</h4>
+              <h4>Panel 1B - Run Monitor</h4>
               <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
               <p className="mono">Phase: {runPhaseText}</p>
               <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
@@ -5234,157 +5234,150 @@ export default function HomePage() {
               {activeTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
               {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
             </section>
-          </article>
-        </div>
-      </section>
 
-      <section className="body-grid results-only-grid">
-        <article className="panel results-panel">
-          <header className="monitor-header">
-            <div className="monitor-title-row">
-              <div>
-                <h3>Results</h3>
-                <p className="muted">Condition cards and structural epistemic drift check.</p>
-              </div>
-            </div>
-          </header>
+            <section className="latest-card">
+              <h4>Results</h4>
+              <p className="tiny">Condition cards and structural epistemic drift check.</p>
+              <div className="results-stack">
+                {(["raw", "sanitized"] as const).map((condition) => {
+                  const summary = results[selectedProfile][condition];
+                  const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
+                  const panelLabel = condition === "raw" ? "Panel 2A" : "Panel 2B";
+                  return (
+                    <section key={condition} className="decision-card">
+                      <div className="decision-top">
+                        <strong>
+                          {panelLabel} - {CONDITION_LABELS[condition]}
+                        </strong>
+                        <span className={`gate-pill ${statusClass}`}>{summary ? (summary.failed ? "FAILED" : "STABLE") : "NO RUN"}</span>
+                      </div>
+                      {summary ? (
+                        <>
+                          <p className="mono">Objective scope: {summary.objectiveScopeLabel}</p>
+                          <p className="mono">
+                            Turns attempted/configured: {summary.turnsAttempted}/{summary.turnsConfigured}
+                          </p>
+                          {IS_PUBLIC_SIGNAL_MODE ? (
+                            <>
+                              <p className="mono">ParseOK (all): {asPercent(summary.parseOkRate)}</p>
+                              <p className="mono">StateOK (all): {asPercent(summary.stateOkRate)}</p>
+                            </>
+                          ) : (
+                            <>
+                              <p className="mono">
+                                ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}
+                              </p>
+                              <p className="mono">
+                                StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
+                              </p>
+                            </>
+                          )}
+                          <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
+                          {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
+                          <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
+                          <p className="mono">
+                            FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
+                          </p>
+                          {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
+                            <p className="mono">
+                              agreement/diversity/no-new-evidence/evidence-growth: {asPercent(summary.agreementRateAB)} / {asFixed(summary.evidenceDiversity, 3)} /{" "}
+                              {asPercent(summary.noNewEvidenceRate)} / {asPercent(summary.evidenceGrowthRate)}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
+                            <p className="mono">
+                              commitmentΔ+ avg: {asFixed(summary.avgCommitmentDeltaPos, 4)} | constraint growth rate: {asPercent(summary.constraintGrowthRate)} |
+                              closure/constraint ratio: {asFixed(summary.closureConstraintRatio, 4)}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
+                            <p className="mono">
+                              avg reasoning depth: {asFixed(summary.avgReasoningDepth, 3)} | avg alternative variance: {asFixed(summary.avgAlternativeVariance, 3)} |
+                              drift streak max: {summary.structuralDriftStreakMax}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) ? (
+                            <p className="mono">
+                              structural drift flag: {summary.structuralEpistemicDriftFlag ? "YES" : "NO"} | first drift turn:{" "}
+                              {summary.firstStructuralDriftTurn ?? "n/a"}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) ? (
+                            <p className="mono">
+                              {IS_PUBLIC_SIGNAL_MODE
+                                ? `DAI latest/peak: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} | regime: ${summary.daiRegimeLatest ?? "n/a"}`
+                                : `DAI latest/peak/slope: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(
+                                    summary.daiSlope,
+                                    4
+                                  )} | regime: ${summary.daiRegimeLatest ?? "n/a"}`}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
+                            <p className="mono">
+                              ΔDAI latest: {asFixed(summary.daiDeltaLatest, 4)} | first attractor/drift/amplification: {summary.daiFirstAttractorTurn ?? "n/a"} /{" "}
+                              {summary.daiFirstDriftTurn ?? "n/a"} / {summary.daiFirstAmplificationTurn ?? "n/a"}
+                            </p>
+                          ) : null}
+                        </>
+                      ) : (
+                        <p className="muted">No data.</p>
+                      )}
+                    </section>
+                  );
+                })}
 
-          <div className="turn-stream">
-            {(["raw", "sanitized"] as const).map((condition) => {
-              const summary = results[selectedProfile][condition];
-              const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
-              return (
-                <section key={condition} className="decision-card">
-                  <div className="decision-top">
-                    <strong>Panel 2 - {CONDITION_LABELS[condition]}</strong>
-                    <span className={`gate-pill ${statusClass}`}>{summary ? (summary.failed ? "FAILED" : "STABLE") : "NO RUN"}</span>
-                  </div>
-                  {summary ? (
+                <section className="latest-card">
+                  <h4>Panel 3 - Structural Epistemic Drift Check</h4>
+                  {consensusEval ? (
                     <>
-                      <p className="mono">Objective scope: {summary.objectiveScopeLabel}</p>
+                      <p className="tiny">RAW=YES and SAN=NO indicates recursion-specific structural drift evidence.</p>
+                      <p>
+                        Drift verdict: <strong>{closure.label}</strong>
+                      </p>
                       <p className="mono">
-                        Turns attempted/configured: {summary.turnsAttempted}/{summary.turnsConfigured}
+                        <span className={`gate-pill ${closure.tone}`}>{closure.detail}</span>
+                      </p>
+                      <p className="mono">
+                        RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN DAI (latest, regime): {asFixed(consensusEval.rawDaiLatest, 3)} {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} /{" "}
+                        {asFixed(consensusEval.sanitizedDaiLatest, 3)} {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
                       </p>
                       {IS_PUBLIC_SIGNAL_MODE ? (
-                        <>
-                          <p className="mono">ParseOK (all): {asPercent(summary.parseOkRate)}</p>
-                          <p className="mono">StateOK (all): {asPercent(summary.stateOkRate)}</p>
-                        </>
+                        <p className="mono">
+                          RAW/SAN first drift turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
+                        </p>
                       ) : (
                         <>
                           <p className="mono">
-                            ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}
+                            RAW first drift turn / max streak: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.rawStructuralDriftStreakMax}
                           </p>
                           <p className="mono">
-                            StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
+                            SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
+                          </p>
+                          <p className="mono">
+                            RAW/SAN ΔDAI latest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} / {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} |{" "}
+                            {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
+                          </p>
+                          <p className="mono">
+                            RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} /{" "}
+                            {asFixed(consensusEval.sanitizedClosureConstraintRatio, 4)}
+                          </p>
+                          <p className="mono">
+                            RAW/SAN constraint-growth rate: {asPercent(consensusEval.rawConstraintGrowthRate)} / {asPercent(consensusEval.sanitizedConstraintGrowthRate)}
                           </p>
                         </>
                       )}
-                      <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
-                      {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
-                      <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
-                      <p className="mono">
-                        FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
-                      </p>
-                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
-                        <p className="mono">
-                          agreement/diversity/no-new-evidence/evidence-growth: {asPercent(summary.agreementRateAB)} / {asFixed(summary.evidenceDiversity, 3)} /{" "}
-                          {asPercent(summary.noNewEvidenceRate)} / {asPercent(summary.evidenceGrowthRate)}
-                        </p>
-                      ) : null}
-                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
-                        <p className="mono">
-                          commitmentΔ+ avg: {asFixed(summary.avgCommitmentDeltaPos, 4)} | constraint growth rate: {asPercent(summary.constraintGrowthRate)} |
-                          closure/constraint ratio: {asFixed(summary.closureConstraintRatio, 4)}
-                        </p>
-                      ) : null}
-                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
-                        <p className="mono">
-                          avg reasoning depth: {asFixed(summary.avgReasoningDepth, 3)} | avg alternative variance: {asFixed(summary.avgAlternativeVariance, 3)} |
-                          drift streak max: {summary.structuralDriftStreakMax}
-                        </p>
-                      ) : null}
-                      {isBeliefLoopProfile(summary.profile) ? (
-                        <p className="mono">
-                          structural drift flag: {summary.structuralEpistemicDriftFlag ? "YES" : "NO"} | first drift turn:{" "}
-                          {summary.firstStructuralDriftTurn ?? "n/a"}
-                        </p>
-                      ) : null}
-                      {isBeliefLoopProfile(summary.profile) ? (
-                        <p className="mono">
-                          {IS_PUBLIC_SIGNAL_MODE
-                            ? `DAI latest/peak: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} | regime: ${summary.daiRegimeLatest ?? "n/a"}`
-                            : `DAI latest/peak/slope: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(
-                                summary.daiSlope,
-                                4
-                              )} | regime: ${summary.daiRegimeLatest ?? "n/a"}`}
-                        </p>
-                      ) : null}
-                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
-                        <p className="mono">
-                          ΔDAI latest: {asFixed(summary.daiDeltaLatest, 4)} | first attractor/drift/amplification: {summary.daiFirstAttractorTurn ?? "n/a"} /{" "}
-                          {summary.daiFirstDriftTurn ?? "n/a"} / {summary.daiFirstAmplificationTurn ?? "n/a"}
-                        </p>
-                      ) : null}
                     </>
                   ) : (
-                    <p className="muted">No data.</p>
+                    <p className="muted">Run both RAW and SANITIZED for the current profile to evaluate the criterion.</p>
                   )}
                 </section>
-              );
-            })}
-
-            <section className="latest-card">
-              <h4>Panel 3 - Structural Epistemic Drift Check</h4>
-              {consensusEval ? (
-                <>
-                  <p className="tiny">RAW=YES and SAN=NO indicates recursion-specific structural drift evidence.</p>
-                  <p>
-                    Drift verdict: <strong>{closure.label}</strong>
-                  </p>
-                  <p className="mono">
-                    <span className={`gate-pill ${closure.tone}`}>{closure.detail}</span>
-                  </p>
-                  <p className="mono">
-                    RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
-                  </p>
-                  <p className="mono">
-                    RAW/SAN DAI (latest, regime): {asFixed(consensusEval.rawDaiLatest, 3)} {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} /{" "}
-                    {asFixed(consensusEval.sanitizedDaiLatest, 3)} {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
-                  </p>
-                  {IS_PUBLIC_SIGNAL_MODE ? (
-                    <p className="mono">
-                      RAW/SAN first drift turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
-                    </p>
-                  ) : (
-                    <>
-                      <p className="mono">
-                        RAW first drift turn / max streak: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.rawStructuralDriftStreakMax}
-                      </p>
-                      <p className="mono">
-                        SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
-                      </p>
-                      <p className="mono">
-                        RAW/SAN ΔDAI latest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} / {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} |{" "}
-                        {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
-                      </p>
-                      <p className="mono">
-                        RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} /{" "}
-                        {asFixed(consensusEval.sanitizedClosureConstraintRatio, 4)}
-                      </p>
-                      <p className="mono">
-                        RAW/SAN constraint-growth rate: {asPercent(consensusEval.rawConstraintGrowthRate)} / {asPercent(consensusEval.sanitizedConstraintGrowthRate)}
-                      </p>
-                    </>
-                  )}
-                </>
-              ) : (
-                <p className="muted">Run both RAW and SANITIZED for the current profile to evaluate the criterion.</p>
-              )}
+              </div>
             </section>
-
-          </div>
-        </article>
+          </article>
+        </div>
       </section>
     </main>
   );

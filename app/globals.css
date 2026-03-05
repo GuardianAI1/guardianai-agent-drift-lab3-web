@@ -861,6 +861,11 @@ button:disabled {
   gap: 6px;
 }
 
+.results-stack {
+  display: grid;
+  gap: 10px;
+}
+
 .telemetry-table {
   width: 100%;
   border-collapse: collapse;
