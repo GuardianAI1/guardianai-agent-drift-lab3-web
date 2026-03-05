@@ -362,6 +362,10 @@ button:disabled {
   gap: 8px;
 }
 
+.run-config-grid .field-block.wide {
+  grid-column: 1 / -1;
+}
+
 .policy-inline {
   border: 1px solid var(--line);
   border-radius: 10px;
