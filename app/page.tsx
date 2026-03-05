@@ -4849,7 +4849,7 @@ export default function HomePage() {
       traces.push(trace);
       previousIndentAvgByAgent[agent] = indent.indentAvg;
       setActiveTrace(trace);
-      setLiveTelemetryRows((prev) => [...prev, trace].slice(-32));
+      setLiveTelemetryRows((prev) => [...prev, trace]);
 
       if (pf === 0 && ld === 0) {
         authoritativeStep = expectedStep;
@@ -5123,6 +5123,16 @@ export default function HomePage() {
     wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
   }
 
+  function jumpToOldestTelemetryRow() {
+    const wrap = telemetryTableWrapRef.current;
+    if (!wrap) return;
+    if (liveTelemetryNewestFirst) {
+      wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
+      return;
+    }
+    wrap.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function jumpToNewestOutputTurnRow() {
     const wrap = outputTurnTableWrapRef.current;
     if (!wrap) return;
@@ -5131,6 +5141,16 @@ export default function HomePage() {
       return;
     }
     wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
+  }
+
+  function jumpToOldestOutputTurnRow() {
+    const wrap = outputTurnTableWrapRef.current;
+    if (!wrap) return;
+    if (outputTurnNewestFirst) {
+      wrap.scrollTo({ top: wrap.scrollHeight, behavior: "smooth" });
+      return;
+    }
+    wrap.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function selectMonitorTurn(turnIndex: number) {
@@ -5403,8 +5423,8 @@ export default function HomePage() {
               <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
               <p className="tiny">
                 {liveTelemetryNewestFirst
-                  ? "Newest first (turn N -&gt; 1), auto-updates each completed turn while run is active."
-                  : "Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active."}
+                  ? "Newest first (turn N -> 1), auto-updates each completed turn while run is active."
+                  : "Chronological (turn 1 -> N), auto-updates each completed turn while run is active."}
               </p>
               <div className="telemetry-toolbar">
                 <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
@@ -5416,10 +5436,13 @@ export default function HomePage() {
                       onChange={(event) => setLiveTelemetryNewestFirst(event.target.checked)}
                       disabled={isRunning && liveTelemetryRows.length === 0}
                     />{" "}
-                    Newest first
+                    {liveTelemetryNewestFirst ? "Newest -> Oldest" : "Oldest -> Newest"}
                   </label>
                   <button type="button" onClick={jumpToNewestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
                     Jump to newest
+                  </button>
+                  <button type="button" onClick={jumpToOldestTelemetryRow} disabled={liveTelemetryRows.length === 0}>
+                    Jump to oldest
                   </button>
                 </div>
               </div>
@@ -5562,10 +5585,13 @@ export default function HomePage() {
                       onChange={(event) => setOutputTurnNewestFirst(event.target.checked)}
                       disabled={monitorTraces.length === 0}
                     />{" "}
-                    Newest first
+                    {outputTurnNewestFirst ? "Newest -> Oldest" : "Oldest -> Newest"}
                   </label>
                   <button type="button" onClick={jumpToNewestOutputTurnRow} disabled={monitorTraces.length === 0}>
                     Jump to newest
+                  </button>
+                  <button type="button" onClick={jumpToOldestOutputTurnRow} disabled={monitorTraces.length === 0}>
+                    Jump to oldest
                   </button>
                 </div>
               </div>
