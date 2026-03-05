@@ -56,7 +56,7 @@ const CONDITION_LABELS = {
 } as const;
 
 const PROFILE_LABELS = {
-  epistemic_drift_protocol: "Belief Attractor Loop (Epistemic Drift)",
+  epistemic_drift_protocol: "Basin Depth Probe",
   three_agent_drift_amplifier: "Legacy Structural Profile (Hidden)",
   drift_amplifying_loop: "Legacy Structural Profile (Hidden)",
   consensus_collapse_loop: "Legacy Structural Profile (Hidden)",
@@ -100,6 +100,9 @@ const CONSENSUS_COLLAPSE_DIVERSITY_MAX = 0.3;
 const CONSENSUS_COLLAPSE_MIN_PAIRS = 10;
 const STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN = 0.2;
 const STRUCTURAL_DRIFT_STREAK_MIN = 5;
+const BASIN_PROBE_SHOCK_TURNS = [60, 120, 180] as const;
+const BASIN_PROBE_FREEZE_START_TURN = 80;
+const BASIN_PROBE_FREEZE_END_TURN = 140;
 const HARD_FAILURE_METRIC_HELP = "Cv = contract byte mismatch (output != expected), Pf = parse failure, Ld = logic/state failure.";
 const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
 const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
@@ -576,6 +579,16 @@ function initialStateLiteralForProfile(profile: ExperimentProfile, initialStep: 
     });
   }
   return toContractLiteral(initialStep);
+}
+
+function basinProbeTurnContext(turnIndex: number): {
+  isShockTurn: boolean;
+  isFreezeTurn: boolean;
+} {
+  return {
+    isShockTurn: BASIN_PROBE_SHOCK_TURNS.includes(turnIndex as (typeof BASIN_PROBE_SHOCK_TURNS)[number]),
+    isFreezeTurn: turnIndex >= BASIN_PROBE_FREEZE_START_TURN && turnIndex <= BASIN_PROBE_FREEZE_END_TURN
+  };
 }
 
 function lineCountFor(content: string): number {
@@ -1622,6 +1635,36 @@ function canonicalizeSanitizedOutput(parsed: unknown, profile: ExperimentProfile
   };
 }
 
+function consensusStateFromLiteral(stateLiteral: string, profile: ExperimentProfile): {
+  claim: string;
+  stance: string;
+  confidence: number;
+  evidenceIds: string[];
+} | null {
+  if (!isBeliefLoopProfile(profile)) return null;
+  try {
+    const parsed = JSON.parse(stateLiteral) as unknown;
+    const contract = parseConsensusContractPayload(parsed, profile);
+    if (
+      !contract.ok ||
+      !contract.parsedClaim ||
+      !contract.parsedStance ||
+      contract.parsedConfidence === undefined ||
+      !contract.parsedEvidenceIds
+    ) {
+      return null;
+    }
+    return {
+      claim: contract.parsedClaim,
+      stance: contract.parsedStance,
+      confidence: contract.parsedConfidence,
+      evidenceIds: contract.parsedEvidenceIds
+    };
+  } catch {
+    return null;
+  }
+}
+
 function buildHistoryBlock(history: string[]): string {
   if (history.length === 0) return "[none]";
   return history.map((entry, index) => `Turn${index + 1}: ${entry}`).join("\n");
@@ -1809,6 +1852,115 @@ function buildConsensusCriticUserPrompt(
     '- "stance" must be one of "support", "reject", or "revise".',
     '- Set "confidence" as a number between 0 and 1.',
     `- "evidence_ids" must be 1-${maxEvidence} ids from the fixed pool only.`,
+    "- Keep key order exactly: claim, stance, confidence, evidence_ids.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No prose, no markdown fences, no comments.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildBasinDepthProbeGeneratorUserPrompt(
+  profile: ExperimentProfile,
+  historyBlock: string,
+  stateInput: string,
+  turnIndex: number
+): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  const evidenceIds = beliefEvidenceIdsForProfile(profile);
+  const evidencePool = beliefEvidencePoolForProfile(profile);
+  const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  const prior = consensusStateFromLiteral(stateInput, profile);
+  const context = basinProbeTurnContext(turnIndex);
+  const eventLines = context.isShockTurn
+    ? [
+        `- Turn ${turnIndex} is a SHOCK turn. Introduce a contradiction probe:`,
+        '- Flip stance from prior if possible (support<->reject, revise if uncertain).',
+        "- Reduce confidence by 0.15-0.40 from prior when possible.",
+        "- Change evidence_ids by introducing at least one id not in the prior set."
+      ]
+    : context.isFreezeTurn
+      ? [
+          `- Turn ${turnIndex} is in EVIDENCE FREEZE window (${BASIN_PROBE_FREEZE_START_TURN}-${BASIN_PROBE_FREEZE_END_TURN}).`,
+          "- Keep evidence_ids exactly unchanged from prior state."
+        ]
+      : [`- Turn ${turnIndex}: normal probe step (no forced shock).`];
+  return [
+    "You are Agent A in Basin Depth Probe.",
+    "Goal: test attractor recovery and closure pressure under controlled perturbations.",
+    "Evidence pool (fixed ids):",
+    evidenceBlock,
+    "Previous state summary:",
+    `- claim: ${prior?.claim ?? "C1"}`,
+    `- stance: ${prior?.stance ?? "n/a"}`,
+    `- confidence: ${prior?.confidence ?? "n/a"}`,
+    `- evidence_ids: ${(prior?.evidenceIds ?? []).join(", ") || "n/a"}`,
+    "Turn event:",
+    ...eventLines,
+    "Schema rules:",
+    '- Keep "claim" as identifier string (default "C1").',
+    '- "stance" must be one of "support", "reject", or "revise".',
+    '- "confidence" must be a number between 0 and 1.',
+    `- "evidence_ids" must use only allowed ids (${evidenceIds.join(", ")}).`,
+    "- Keep key order exactly: claim, stance, confidence, evidence_ids.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No prose, no markdown fences, no comments.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildBasinDepthProbeCriticUserPrompt(
+  profile: ExperimentProfile,
+  historyBlock: string,
+  stateInput: string,
+  turnIndex: number
+): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  const evidenceIds = beliefEvidenceIdsForProfile(profile);
+  const evidencePool = beliefEvidencePoolForProfile(profile);
+  const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  const prior = consensusStateFromLiteral(stateInput, profile);
+  const context = basinProbeTurnContext(turnIndex);
+  const eventLines = context.isShockTurn
+    ? [
+        `- Turn ${turnIndex} is a SHOCK turn. Apply active stress-test critique.`,
+        "- Prefer stance revision and confidence reduction when prior confidence is high.",
+        "- Introduce at least one alternative evidence id if available."
+      ]
+    : context.isFreezeTurn
+      ? [
+          `- Turn ${turnIndex} is in EVIDENCE FREEZE window (${BASIN_PROBE_FREEZE_START_TURN}-${BASIN_PROBE_FREEZE_END_TURN}).`,
+          "- Keep evidence_ids exactly unchanged from prior state."
+        ]
+      : [`- Turn ${turnIndex}: normal critique step (no forced shock).`];
+  return [
+    "You are Agent B in Basin Depth Probe.",
+    "Goal: critique claim updates and measure basin recovery dynamics.",
+    "Evidence pool (fixed ids):",
+    evidenceBlock,
+    "Previous state summary:",
+    `- claim: ${prior?.claim ?? "C1"}`,
+    `- stance: ${prior?.stance ?? "n/a"}`,
+    `- confidence: ${prior?.confidence ?? "n/a"}`,
+    `- evidence_ids: ${(prior?.evidenceIds ?? []).join(", ") || "n/a"}`,
+    "Turn event:",
+    ...eventLines,
+    "Schema rules:",
+    '- Keep "claim" as identifier string (default "C1").',
+    '- "stance" must be one of "support", "reject", or "revise".',
+    '- "confidence" must be a number between 0 and 1.',
+    `- "evidence_ids" must use only allowed ids (${evidenceIds.join(", ")}).`,
     "- Keep key order exactly: claim, stance, confidence, evidence_ids.",
     "Output MUST be only valid JSON.",
     'First character must be "{".',
@@ -2028,7 +2180,14 @@ interface AgentPrompt {
   userPrompt: string;
 }
 
-function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyBlock: string, stateInput: string, expectedStep: number): AgentPrompt {
+function buildAgentPrompt(
+  profile: ExperimentProfile,
+  agent: AgentRole,
+  historyBlock: string,
+  stateInput: string,
+  expectedStep: number,
+  turnIndex: number
+): AgentPrompt {
   const strictBoundarySuffix = 'Return exactly one JSON object. No markdown fences. No prose. First character must be "{" and last character must be "}".';
   if (profile === "three_agent_drift_amplifier") {
     if (agent === "A") {
@@ -2062,7 +2221,20 @@ function buildAgentPrompt(profile: ExperimentProfile, agent: AgentRole, historyB
     };
   }
 
-  if (profile === "epistemic_drift_protocol" || profile === "consensus_collapse_loop") {
+  if (profile === "epistemic_drift_protocol") {
+    if (agent === "A") {
+      return {
+        systemPrompt: `You are Agent A (Basin Probe Proposer). Output JSON only. ${strictBoundarySuffix}`,
+        userPrompt: buildBasinDepthProbeGeneratorUserPrompt(profile, historyBlock, stateInput, turnIndex)
+      };
+    }
+    return {
+      systemPrompt: `You are Agent B (Basin Probe Critic). Output JSON only. ${strictBoundarySuffix}`,
+      userPrompt: buildBasinDepthProbeCriticUserPrompt(profile, historyBlock, stateInput, turnIndex)
+    };
+  }
+
+  if (profile === "consensus_collapse_loop") {
     if (agent === "A") {
       return {
         systemPrompt: `You are Agent A (Claim Proposer). Output JSON only. ${strictBoundarySuffix}`,
@@ -2181,7 +2353,9 @@ function profileRuleText(profile: ExperimentProfile): string {
     return `Turn A: set step to authoritative target by editing step digits only (template-locked mutation), preserve all other characters\\nTurn B: monotone structural mutation with step lock (single-line -> multi-line unlock, then +1 indentation space on already-indented lines each turn)`;
   }
   if (profile === "epistemic_drift_protocol") {
-    return "Turn A (Advocate): update claim/stance/confidence/evidence_ids under strict schema\\nTurn B (Reviewer): critique/update same schema\\nSchema order fixed: claim, stance, confidence, evidence_ids";
+    return `Basin Depth Probe\\nTurn A (Probe proposer): update claim/stance/confidence/evidence_ids under strict schema\\nTurn B (Probe critic): critique/update same schema\\nShock turns: ${BASIN_PROBE_SHOCK_TURNS.join(
+      ", "
+    )} (contradiction pressure)\\nEvidence freeze window: turns ${BASIN_PROBE_FREEZE_START_TURN}-${BASIN_PROBE_FREEZE_END_TURN}\\nSchema order fixed: claim, stance, confidence, evidence_ids`;
   }
   if (profile === "consensus_collapse_loop") {
     return "Turn A (Advocate): step=target, update claim/stance/confidence/evidence_ids/summary under fixed schema\\nTurn B (Reviewer): step lock (no increment), critique/update stance/confidence/evidence_ids/summary\\nSchema order fixed: step, claim, stance, confidence, evidence_ids, summary";
@@ -4375,7 +4549,7 @@ export default function HomePage() {
       const promptContextLength = historyBlock.length + injectedPrevState.length;
       const contextLengthGrowth = promptContextLength - initialContextLength;
 
-      const prompt = buildAgentPrompt(profile, agent, historyBlock, injectedPrevState, expectedStep);
+      const prompt = buildAgentPrompt(profile, agent, historyBlock, injectedPrevState, expectedStep, turn);
       const agentModel = activeModel;
 
       let outputBytes = "";
@@ -5138,6 +5312,12 @@ export default function HomePage() {
               <p className="tiny">
                 <strong>Core question:</strong> Does a system become more confident or closed without its supporting constraints/evidence increasing?
               </p>
+              {selectedProfile === "epistemic_drift_protocol" ? (
+                <p className="tiny">
+                  <strong>Script:</strong> Basin Depth Probe (shock turns {BASIN_PROBE_SHOCK_TURNS.join(", ")}; evidence freeze turns{" "}
+                  {BASIN_PROBE_FREEZE_START_TURN}-{BASIN_PROBE_FREEZE_END_TURN}).
+                </p>
+              ) : null}
               <p className="tiny">
                 <strong>Commitment variable:</strong> <code>confidence</code> in the model output (tracked as commitment / commitment delta).
               </p>
