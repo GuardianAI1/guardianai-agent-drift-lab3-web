@@ -4408,7 +4408,7 @@ export default function HomePage() {
       traces.push(trace);
       previousIndentAvgByAgent[agent] = indent.indentAvg;
       setActiveTrace(trace);
-      setLiveTelemetryRows((prev) => [trace, ...prev].slice(0, 32));
+      setLiveTelemetryRows((prev) => [...prev, trace].slice(-32));
 
       if (pf === 0 && ld === 0) {
         authoritativeStep = expectedStep;
@@ -4991,7 +4991,7 @@ export default function HomePage() {
 
             <section className="latest-card">
               <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
-              <p className="tiny">Newest first, auto-updates each turn while run is active.</p>
+              <p className="tiny">Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active.</p>
               {liveTelemetryRows.length > 0 ? (
                 <div className="telemetry-table-wrap">
                   <table className="telemetry-table">
