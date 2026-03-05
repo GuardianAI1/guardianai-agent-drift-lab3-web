@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultModelForProvider,
+  detectKeyProvider,
+  modelOptionsForProvider,
+  normalizeApiKeyInput,
+  providerOptions,
+  resolveProvider
 } from "@/lib/providers";
 import type { APIProvider } from "@/lib/types";
 
@@ -3198,8 +3203,9 @@ function setConditionResult(
 }
 
 export default function HomePage() {
-  const apiProvider: APIProvider = DEFAULT_PROVIDER;
-  const model = DEFAULT_MODEL;
+  const [apiProvider, setApiProvider] = useState<APIProvider>(DEFAULT_PROVIDER);
+  const [apiKey, setApiKey] = useState<string>("");
+  const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
   const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
@@ -3219,29 +3225,85 @@ export default function HomePage() {
   const [runPhaseText, setRunPhaseText] = useState<string>("Idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
   useEffect(() => {
-    // Public deployment uses a locked backend provider/model and server-side key only.
-    localStorage.setItem(STORAGE_UI_DEFAULTS_VERSION_KEY, UI_DEFAULTS_VERSION);
-    localStorage.removeItem(STORAGE_API_PROVIDER_KEY);
-    localStorage.removeItem(STORAGE_API_MODEL_KEY);
+    const defaultsVersion = localStorage.getItem(STORAGE_UI_DEFAULTS_VERSION_KEY);
+    const shouldMigrateDefaults = defaultsVersion !== UI_DEFAULTS_VERSION;
+    if (shouldMigrateDefaults) {
+      setApiProvider(DEFAULT_PROVIDER);
+      setModel(DEFAULT_MODEL);
+      localStorage.setItem(STORAGE_API_PROVIDER_KEY, DEFAULT_PROVIDER);
+      localStorage.setItem(STORAGE_API_MODEL_KEY, DEFAULT_MODEL);
+      localStorage.setItem(STORAGE_UI_DEFAULTS_VERSION_KEY, UI_DEFAULTS_VERSION);
+    } else {
+      const validProviders = new Set(providerOptions.map((provider) => provider.value));
+      const savedProvider = localStorage.getItem(STORAGE_API_PROVIDER_KEY);
+      if (savedProvider && validProviders.has(savedProvider as APIProvider)) {
+        setApiProvider(savedProvider as APIProvider);
+      }
+
+      const savedModel = localStorage.getItem(STORAGE_API_MODEL_KEY);
+      if (savedModel) {
+        setModel(savedModel);
+      }
+    }
+
+    // Never persist or auto-hydrate API keys into the UI.
     localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
   }, []);
+
+  const detectedKeyProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey]);
+  const effectiveProvider = useMemo(() => resolveProvider(apiProvider, apiKey), [apiProvider, apiKey]);
+  const effectiveModelOptions = useMemo(() => modelOptionsForProvider(effectiveProvider), [effectiveProvider]);
+
+  useEffect(() => {
+    const allowedModels = effectiveModelOptions.map((option) => option.value);
+    if (!allowedModels.includes(model)) {
+      setModel(defaultModelForProvider(effectiveProvider));
+    }
+  }, [effectiveModelOptions, effectiveProvider, model]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_API_PROVIDER_KEY, apiProvider);
+  }, [apiProvider]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_API_MODEL_KEY, model);
+  }, [model]);
+
+  const keyStatusLabel = !apiKey.trim()
+    ? "Server Env / None"
+    : apiProvider === "auto"
+      ? detectedKeyProvider
+        ? providerOptions.find((item) => item.value === detectedKeyProvider)?.label ?? "Detected"
+        : "Provided"
+      : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
 
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
 
+  function setNormalizedApiKey(rawValue: string) {
+    setApiKey(normalizeApiKeyInput(rawValue));
+  }
+
   async function requestLLM(params: { model: string; prompt: string; systemPrompt: string }): Promise<string> {
+    const requestApiKey = normalizeApiKeyInput(apiKeyInputRef.current?.value ?? apiKey);
+    if (requestApiKey !== apiKey) {
+      setApiKey(requestApiKey);
+    }
+
     const response = await requestJSON<{ content: string }>("/api/llm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: params.model,
         prompt: params.prompt,
-        providerPreference: DEFAULT_PROVIDER,
+        apiKey: requestApiKey,
+        providerPreference: apiProvider,
         temperature: FIXED_TEMPERATURE,
         maxTokens: llmMaxTokens,
         systemPrompt: params.systemPrompt,
@@ -3258,8 +3320,8 @@ export default function HomePage() {
       profile,
       condition,
       objectiveMode,
-      providerPreference: DEFAULT_PROVIDER,
-      resolvedProvider: DEFAULT_PROVIDER,
+      providerPreference: apiProvider,
+      resolvedProvider: effectiveProvider,
       modelA: model,
       modelB: model,
       temperature: FIXED_TEMPERATURE,
@@ -3706,12 +3768,52 @@ export default function HomePage() {
 
           <div className="field-block">
             <label>Provider</label>
-            <input value="Together (Locked)" disabled />
+            <select value={apiProvider} onChange={(event) => setApiProvider(event.target.value as APIProvider)} disabled={isRunning}>
+              {providerOptions.map((provider) => (
+                <option key={provider.value} value={provider.value}>
+                  {provider.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="field-block">
             <label>Model (All Agents)</label>
-            <input value={`${DEFAULT_MODEL} (Locked)`} disabled />
+            <select value={model} onChange={(event) => setModel(event.target.value)} disabled={isRunning}>
+              {effectiveModelOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field-block wide key-field">
+            <div className="field-label-row">
+              <label>API Key</label>
+              <button
+                type="button"
+                className="text-action inline-action"
+                onClick={() => setApiKey("")}
+                title="Clear API key and use server default key"
+              >
+                Use Default Server Key
+              </button>
+            </div>
+            <input
+              ref={apiKeyInputRef}
+              type="password"
+              value={apiKey}
+              onChange={(event) => setNormalizedApiKey(event.target.value)}
+              autoComplete="new-password"
+              inputMode="text"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              data-lpignore="true"
+              placeholder="Enter API key or rely on server env key"
+              disabled={isRunning}
+            />
           </div>
         </div>
 
@@ -3726,8 +3828,8 @@ export default function HomePage() {
               <span>{runPhaseText}</span>
             </div>
             <div className="status-line">
-              <span className="dot good" />
-              <span>Server Key Only (Hidden)</span>
+              <span className={`dot ${apiKey.trim() ? "good" : "warn"}`} />
+              <span>Key {keyStatusLabel}</span>
             </div>
           </div>
 

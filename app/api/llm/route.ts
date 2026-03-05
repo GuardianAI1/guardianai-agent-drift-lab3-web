@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { guardApiRequest, guardErrorResponse } from "@/lib/apiGuard";
-import { normalizeApiKeyInput, resolveProvider } from "@/lib/providers";
+import { defaultModelForProvider, detectKeyProvider, normalizeApiKeyInput, resolveProvider } from "@/lib/providers";
 import type { APIProvider } from "@/lib/types";
 
 type RequestBody = {
@@ -17,8 +17,6 @@ type RequestBody = {
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_RETRY_ATTEMPTS = 4;
 const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const PUBLIC_PROVIDER: APIProvider = "together";
-const PUBLIC_MODEL = "google/gemma-3n-e4b-it";
 
 function nonEmpty(value?: string): string | undefined {
   const trimmed = (value ?? "").trim();
@@ -244,24 +242,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Prompt is required." }, { status: 400 });
     }
 
-    const forcedPublicBody: RequestBody = {
-      ...body,
-      providerPreference: PUBLIC_PROVIDER,
-      apiKey: ""
-    };
-    const { provider, apiKey, keySource } = resolveProviderAndKey(forcedPublicBody, { allowServerEnvKey: true });
+    const { provider, apiKey, keySource } = resolveProviderAndKey(body, { allowServerEnvKey: access.trusted });
     resolvedProvider = provider;
     resolvedKeySource = keySource;
     if (!apiKey) {
       return NextResponse.json(
         {
-          error: "Server key missing. Configure TOGETHER_API_KEY in Vercel env vars."
+          error:
+            access.trusted
+              ? "No API key available. Provide one in UI or set server env vars."
+              : "Client API key is required for this request."
         },
-        { status: 500 }
+        { status: access.trusted ? 400 : 403 }
       );
     }
 
-    const model = PUBLIC_MODEL;
+    const model = nonEmpty(body.model) ?? defaultModelForProvider(provider);
     const systemPrompt = body.systemPrompt ?? "You are a helpful assistant.";
     const temperature = Number.isFinite(body.temperature) ? Number(body.temperature) : 0.7;
     const maxTokens = Number.isFinite(body.maxTokens) ? Number(body.maxTokens) : 512;
@@ -445,7 +441,7 @@ export async function POST(request: NextRequest) {
       content,
       provider,
       keySource: resolvedKeySource,
-      detectedProviderFromKey: null,
+      detectedProviderFromKey: body.apiKey ? detectKeyProvider(normalizeApiKeyInput(body.apiKey)) : null,
       model
     });
   } catch (error) {
