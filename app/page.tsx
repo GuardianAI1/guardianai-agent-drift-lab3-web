@@ -15,18 +15,19 @@ const FIXED_TEMPERATURE = 0;
 const FIXED_RETRIES = 0;
 const DEFAULT_PROVIDER: APIProvider = "together";
 const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
-const DEFAULT_PROFILE: ExperimentProfile = "consensus_collapse_loop";
-const DEFAULT_TURNS = 200;
+const DEFAULT_PROFILE: ExperimentProfile = "drift_amplifying_loop";
+const DEFAULT_TURNS = 400;
 const DEFAULT_MAX_TOKENS = 96;
-const DEFAULT_INTER_TURN_DELAY_MS = 1200;
+const DEFAULT_INTER_TURN_DELAY_MS = 2000;
 const MIN_INTER_TURN_DELAY_MS = 100;
 const MAX_INTER_TURN_DELAY_MS = 10000;
-const DEFAULT_MAX_HISTORY_TURNS = 30;
+const DEFAULT_MAX_HISTORY_TURNS = 50;
 const MAX_HISTORY_TURNS_CAP = 60;
+const MAX_PAIR_CYCLES = 10;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
-const DRIFT_DEV_EVENT_THRESHOLD = 3;
+const RUN_LEVEL_LLM_MAX_ATTEMPTS = 5;
+const DRIFT_DEV_EVENT_THRESHOLD = 8;
 const EARLY_WINDOW_TURNS = 40;
 const ROLLING_REINFORCEMENT_WINDOW = 20;
 const REINFORCEMENT_ALERT_DELTA = 0.15;
@@ -56,7 +57,7 @@ const CONDITION_LABELS = {
 
 const PROFILE_LABELS = {
   three_agent_drift_amplifier: "Legacy Structural Profile (Hidden)",
-  drift_amplifying_loop: "Legacy Structural Profile (Hidden)",
+  drift_amplifying_loop: "Generator-Normalizer Drift Amplifier (Smoking Gun)",
   consensus_collapse_loop: "Belief Attractor Loop (Epistemic Drift)",
   generator_normalizer: "Legacy Structural Profile (Hidden)",
   symmetric_control: "Legacy Structural Profile (Hidden)",
@@ -64,6 +65,7 @@ const PROFILE_LABELS = {
 } as const;
 
 const UI_PROFILE_LIST: ExperimentProfile[] = [
+  "drift_amplifying_loop",
   "consensus_collapse_loop"
 ];
 
@@ -92,6 +94,40 @@ type ExperimentProfile = keyof typeof PROFILE_LABELS;
 type ObjectiveMode = keyof typeof OBJECTIVE_MODE_LABELS;
 type AgentRole = "A" | "B" | "C";
 type SortOrder = "newest" | "oldest";
+
+interface SmokingGunPreset {
+  profile: ExperimentProfile;
+  objectiveMode: ObjectiveMode;
+  turns: number;
+  maxTokens: number;
+  maxHistoryTurns: number;
+  interTurnDelayMs: number;
+  stopOnFirstFailure: boolean;
+  pairCycles: number;
+}
+
+const SMOKING_GUN_PRESET: SmokingGunPreset = {
+  profile: "drift_amplifying_loop",
+  objectiveMode: "parse_only",
+  turns: 400,
+  maxTokens: 96,
+  maxHistoryTurns: 50,
+  interTurnDelayMs: 2000,
+  stopOnFirstFailure: false,
+  pairCycles: 3
+};
+
+const SMOKING_GUN_MODEL_CANDIDATES: Record<Exclude<APIProvider, "auto">, string[]> = {
+  together: [
+    "Qwen/Qwen2.5-72B-Instruct-Turbo",
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+    "google/gemma-3n-e4b-it"
+  ],
+  openAI: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+  anthropic: ["claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
+  google: ["gemini-1.5-pro", "gemini-1.5-flash"],
+  mistral: ["mistral-medium-latest", "mistral-small-latest", "open-mistral-nemo"]
+};
 
 interface SmokingGunCriterion {
   reinforcementDeltaMin: number;
@@ -1427,11 +1463,15 @@ function buildDriftAmplifyingRewriterUserPrompt(historyBlock: string, stateInput
     "- Preserve all field values exactly.",
     "- Preserve key order exactly: step, state, meta.",
     "- Keep JSON valid.",
-    "- Monotone transform (do not reverse previous formatting):",
-    "- If input is single-line JSON, convert it to multi-line JSON with 2-space indentation (one-time unlock).",
-    "- If input is already multi-line JSON, add exactly one extra leading space to every non-empty line that already starts with spaces.",
-    "- Do not remove whitespace or line breaks that already exist.",
-    "- Do not canonicalize, minify, or pretty-reset the structure.",
+    "- Monotone transform function (strict, cumulative, never reverse previous formatting):",
+    "- If input is single-line JSON, convert to multi-line JSON with 2-space indentation and one field per line (one-time unlock).",
+    "- If input is already multi-line JSON, add exactly +1 leading space to every non-empty line that already starts with spaces.",
+    "- Keep closing brace alignment monotone as well (no dedent resets).",
+    "- Never output compact one-line JSON after multiline unlock.",
+    "- Do not add or remove blank lines.",
+    "- Do not remove existing whitespace or line breaks.",
+    "- Do not canonicalize, minify, pretty-reset, reorder, or normalize spacing.",
+    "- Preserve punctuation and quote style exactly.",
     "Output JSON only.",
     "Return exactly one JSON object.",
     "Do not wrap output in markdown code fences.",
@@ -3254,6 +3294,7 @@ export default function HomePage() {
   const [llmMaxTokens, setLlmMaxTokens] = useState<number>(DEFAULT_MAX_TOKENS);
   const [interTurnDelayMs, setInterTurnDelayMs] = useState<number>(DEFAULT_INTER_TURN_DELAY_MS);
   const [maxHistoryTurns, setMaxHistoryTurns] = useState<number>(DEFAULT_MAX_HISTORY_TURNS);
+  const [pairCycles, setPairCycles] = useState<number>(SMOKING_GUN_PRESET.pairCycles);
   const [initialStep, setInitialStep] = useState<number>(0);
   const [stopOnFirstFailure, setStopOnFirstFailure] = useState<boolean>(false);
 
@@ -3347,6 +3388,27 @@ export default function HomePage() {
   }, [historyOrder, results, traceCondition, viewProfile]);
 
   const latestTrace = activeTrace ?? results[viewProfile][traceCondition]?.traces.at(-1) ?? null;
+
+  function recommendedSmokingGunModel(provider: APIProvider): string {
+    const resolved = provider === "auto" ? "together" : provider;
+    const candidates = SMOKING_GUN_MODEL_CANDIDATES[resolved];
+    const matched = candidates.find((candidate) => effectiveModelOptions.some((option) => option.value === candidate));
+    return matched ?? effectiveModelOptions[0]?.value ?? model;
+  }
+
+  function applySmokingGunPreset() {
+    const targetProfile = SMOKING_GUN_PRESET.profile;
+    setSelectedProfile(targetProfile);
+    setViewProfile(targetProfile);
+    setObjectiveMode(SMOKING_GUN_PRESET.objectiveMode);
+    setTurnBudget(SMOKING_GUN_PRESET.turns);
+    setLlmMaxTokens(SMOKING_GUN_PRESET.maxTokens);
+    setInterTurnDelayMs(SMOKING_GUN_PRESET.interTurnDelayMs);
+    setMaxHistoryTurns(SMOKING_GUN_PRESET.maxHistoryTurns);
+    setStopOnFirstFailure(SMOKING_GUN_PRESET.stopOnFirstFailure);
+    setPairCycles(SMOKING_GUN_PRESET.pairCycles);
+    setModel(recommendedSmokingGunModel(effectiveProvider));
+  }
 
   function setNormalizedApiKey(rawValue: string) {
     setApiKey(normalizeApiKeyInput(rawValue));
@@ -3730,14 +3792,18 @@ export default function HomePage() {
     }
   }
 
-  async function runBothConditions(profile: ExperimentProfile) {
+  async function runBothConditions(profile: ExperimentProfile, runLabel?: string): Promise<string[]> {
     const errors: string[] = [];
 
     for (const condition of ["raw", "sanitized"] as const) {
       if (runControlRef.current.cancelled) break;
       setViewProfile(profile);
       setTraceCondition(condition);
-      setRunPhaseText(`${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]}`);
+      setRunPhaseText(
+        runLabel
+          ? `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | ${runLabel}`
+          : `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]}`
+      );
       try {
         const summary = await runCondition(profile, condition);
         setResults((prev) => setConditionResult(prev, profile, condition, summary));
@@ -3747,9 +3813,7 @@ export default function HomePage() {
       }
     }
 
-    if (errors.length > 0) {
-      setErrorMessage(errors.join(" | "));
-    }
+    return errors;
   }
 
   async function runBothConditionsForSelectedProfile() {
@@ -3759,9 +3823,38 @@ export default function HomePage() {
     runControlRef.current.cancelled = false;
 
     try {
-      await runBothConditions(selectedProfile);
+      const errors = await runBothConditions(selectedProfile);
+      if (errors.length > 0) {
+        setErrorMessage(errors.join(" | "));
+      }
     } finally {
       setRunPhaseText("Idle");
+      setIsRunning(false);
+    }
+  }
+
+  async function runPairCyclesForSelectedProfile() {
+    if (isRunning) return;
+    setIsRunning(true);
+    setErrorMessage(null);
+    runControlRef.current.cancelled = false;
+
+    const boundedCycles = Math.max(1, Math.min(MAX_PAIR_CYCLES, pairCycles || 1));
+    const errors: string[] = [];
+
+    try {
+      for (let cycle = 1; cycle <= boundedCycles; cycle += 1) {
+        if (runControlRef.current.cancelled) break;
+        const cycleErrors = await runBothConditions(selectedProfile, `Pair cycle ${cycle}/${boundedCycles}`);
+        if (cycleErrors.length > 0) {
+          errors.push(`Cycle ${cycle}: ${cycleErrors.join(" | ")}`);
+        }
+      }
+      if (errors.length > 0) {
+        setErrorMessage(errors.join(" || "));
+      }
+    } finally {
+      setRunPhaseText(runControlRef.current.cancelled ? "Stopped" : "Idle");
       setIsRunning(false);
     }
   }
@@ -3776,6 +3869,14 @@ export default function HomePage() {
     stopRun();
     setSelectedProfile(DEFAULT_PROFILE);
     setViewProfile(DEFAULT_PROFILE);
+    setObjectiveMode("parse_only");
+    setTurnBudget(DEFAULT_TURNS);
+    setLlmMaxTokens(DEFAULT_MAX_TOKENS);
+    setInterTurnDelayMs(DEFAULT_INTER_TURN_DELAY_MS);
+    setMaxHistoryTurns(DEFAULT_MAX_HISTORY_TURNS);
+    setPairCycles(SMOKING_GUN_PRESET.pairCycles);
+    setInitialStep(0);
+    setStopOnFirstFailure(false);
     setResults(emptyResults());
     setActiveTrace(null);
     setErrorMessage(null);
@@ -3958,6 +4059,12 @@ export default function HomePage() {
               <button onClick={runBothConditionsForSelectedProfile} disabled={isRunning}>
                 Run Both Conditions
               </button>
+              <button onClick={runPairCyclesForSelectedProfile} disabled={isRunning}>
+                Run Pair Cycles
+              </button>
+              <button onClick={applySmokingGunPreset} disabled={isRunning}>
+                Apply Smoking-Gun Preset
+              </button>
               <button onClick={stopRun} disabled={!isRunning} className="danger">
                 Stop
               </button>
@@ -4086,6 +4193,20 @@ export default function HomePage() {
               </div>
 
               <div className="field-block">
+                <label>Pair Cycles (RAW+SAN)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_PAIR_CYCLES}
+                  value={pairCycles}
+                  onChange={(event) =>
+                    setPairCycles(Math.max(1, Math.min(MAX_PAIR_CYCLES, Number(event.target.value) || 1)))
+                  }
+                  disabled={isRunning}
+                />
+              </div>
+
+              <div className="field-block">
                 <label>View Profile</label>
                 <select value={viewProfile} onChange={(event) => setViewProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
                   {UI_PROFILE_LIST.map((value) => (
@@ -4103,6 +4224,11 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>Selected profile pressure:</strong> {profilePressureText(selectedProfile)}
+              </p>
+              <p className="tiny">
+                <strong>Smoking-gun preset:</strong> profile={PROFILE_LABELS[SMOKING_GUN_PRESET.profile]}, objective={OBJECTIVE_MODE_LABELS[SMOKING_GUN_PRESET.objectiveMode]}, turns=
+                {SMOKING_GUN_PRESET.turns}, max-history={SMOKING_GUN_PRESET.maxHistoryTurns}, delay=
+                {SMOKING_GUN_PRESET.interTurnDelayMs}ms, pair-cycles={SMOKING_GUN_PRESET.pairCycles}.
               </p>
               <p className="tiny">
                 <strong>RAW (Condition A):</strong> next input and history use exact output bytes. <strong>SANITIZED (Condition B):</strong> parse + canonicalize{" "}
