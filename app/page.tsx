@@ -1,13 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   defaultModelForProvider,
-  detectKeyProvider,
-  modelOptionsForProvider,
-  normalizeApiKeyInput,
-  providerOptions,
-  resolveProvider
 } from "@/lib/providers";
 import type { APIProvider } from "@/lib/types";
 
@@ -89,7 +84,6 @@ type RepCondition = keyof typeof CONDITION_LABELS;
 type ExperimentProfile = keyof typeof PROFILE_LABELS;
 type ObjectiveMode = keyof typeof OBJECTIVE_MODE_LABELS;
 type AgentRole = "A" | "B" | "C";
-type SortOrder = "newest" | "oldest";
 
 interface SmokingGunCriterion {
   reinforcementDeltaMin: number;
@@ -1820,42 +1814,6 @@ function preflightGateStatus(params: {
   };
 }
 
-function profilePressureText(profile: ExperimentProfile): string {
-  if (profile === "three_agent_drift_amplifier") {
-    return "Three-way dialect pressure: A imitates prior style while B beautifies and C compresses; recursive format negotiation amplifies drift probability.";
-  }
-  if (profile === "drift_amplifying_loop") {
-    return "Template-locked mutation pressure: Agent A edits only step digits toward authoritative target while preserving prior byte template; Agent B applies monotone accumulating formatting transforms with step lock.";
-  }
-  if (profile === "consensus_collapse_loop") {
-    return "Closed-evidence pressure: A advocates and B reviews at fixed evidence pool; confidence can increase while evidence growth stays near zero, enabling synthetic consensus.";
-  }
-  if (profile === "dialect_negotiation") {
-    return "Agent A enforces compact JSON while Agent B enforces readable JSON, both with style-imitation pressure; recursive dialect conflict drives drift dynamics.";
-  }
-  if (profile === "generator_normalizer") {
-    return "Generator and Normalizer both advance state, but formatting directives remain asymmetric.";
-  }
-  return "Symmetric control uses identical prompt behavior across agents to test attractor stability.";
-}
-
-function profileArchitectureText(profile: ExperimentProfile): string {
-  if (profile === "three_agent_drift_amplifier") {
-    return "Legacy hidden profile (not exposed in UI).";
-  }
-  if (profile === "consensus_collapse_loop") {
-    return "2-agent loop A→B→A→B. A advances step and proposes claim state; B critiques with step lock to test agreement/provenance collapse dynamics.";
-  }
-  return "2-agent loop with turn alternation A→B→A→B. Both agents use the selected shared model.";
-}
-
-function byteVector(content: string): string {
-  const bytes = new TextEncoder().encode(content);
-  if (bytes.length === 0) return "[]";
-  const preview = Array.from(bytes.slice(0, 120)).join(", ");
-  return `[${preview}${bytes.length > 120 ? ", ..." : ""}]`;
-}
-
 function downloadTextFile(filename: string, content: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -3240,17 +3198,13 @@ function setConditionResult(
 }
 
 export default function HomePage() {
-  const [apiProvider, setApiProvider] = useState<APIProvider>(DEFAULT_PROVIDER);
-  const [apiKey, setApiKey] = useState<string>("");
-  const [model, setModel] = useState<string>(DEFAULT_MODEL);
+  const apiProvider: APIProvider = DEFAULT_PROVIDER;
+  const model = DEFAULT_MODEL;
 
   const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
-  const [traceCondition, setTraceCondition] = useState<RepCondition>("raw");
-  const [historyOrder, setHistoryOrder] = useState<SortOrder>("newest");
-
   const [turnBudget, setTurnBudget] = useState<number>(DEFAULT_TURNS);
   const [llmMaxTokens, setLlmMaxTokens] = useState<number>(DEFAULT_MAX_TOKENS);
   const [interTurnDelayMs, setInterTurnDelayMs] = useState<number>(DEFAULT_INTER_TURN_DELAY_MS);
@@ -3259,103 +3213,35 @@ export default function HomePage() {
   const [stopOnFirstFailure, setStopOnFirstFailure] = useState<boolean>(false);
 
   const [results, setResults] = useState<ResultsByProfile>(emptyResults());
-  const [activeTrace, setActiveTrace] = useState<TurnTrace | null>(null);
+  const [, setActiveTrace] = useState<TurnTrace | null>(null);
 
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [runPhaseText, setRunPhaseText] = useState<string>("Idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
-  const websiteURL = process.env.NEXT_PUBLIC_GUARDIAN_WEBSITE_URL?.trim() || "https://guardianai.fr";
-  const githubURL =
-    process.env.NEXT_PUBLIC_GITHUB_REPO_URL?.trim() || "https://github.com/GuardianAI1/guardianai-agent-drift-lab3-web";
-  const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
-
   useEffect(() => {
-    const defaultsVersion = localStorage.getItem(STORAGE_UI_DEFAULTS_VERSION_KEY);
-    const shouldMigrateDefaults = defaultsVersion !== UI_DEFAULTS_VERSION;
-    if (shouldMigrateDefaults) {
-      setApiProvider(DEFAULT_PROVIDER);
-      setModel(DEFAULT_MODEL);
-      localStorage.setItem(STORAGE_API_PROVIDER_KEY, DEFAULT_PROVIDER);
-      localStorage.setItem(STORAGE_API_MODEL_KEY, DEFAULT_MODEL);
-      localStorage.setItem(STORAGE_UI_DEFAULTS_VERSION_KEY, UI_DEFAULTS_VERSION);
-    } else {
-      const validProviders = new Set(providerOptions.map((provider) => provider.value));
-      const savedProvider = localStorage.getItem(STORAGE_API_PROVIDER_KEY);
-      if (savedProvider && validProviders.has(savedProvider as APIProvider)) {
-        setApiProvider(savedProvider as APIProvider);
-      }
-
-      const savedModel = localStorage.getItem(STORAGE_API_MODEL_KEY);
-      if (savedModel) {
-        setModel(savedModel);
-      }
-    }
-
-    // Never persist or auto-hydrate API keys into the UI.
+    // Public deployment uses a locked backend provider/model and server-side key only.
+    localStorage.setItem(STORAGE_UI_DEFAULTS_VERSION_KEY, UI_DEFAULTS_VERSION);
+    localStorage.removeItem(STORAGE_API_PROVIDER_KEY);
+    localStorage.removeItem(STORAGE_API_MODEL_KEY);
     localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
   }, []);
-
-  const detectedKeyProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey]);
-  const effectiveProvider = useMemo(() => resolveProvider(apiProvider, apiKey), [apiProvider, apiKey]);
-  const effectiveModelOptions = useMemo(() => modelOptionsForProvider(effectiveProvider), [effectiveProvider]);
-
-  useEffect(() => {
-    const allowedModels = effectiveModelOptions.map((option) => option.value);
-    if (!allowedModels.includes(model)) {
-      setModel(defaultModelForProvider(effectiveProvider));
-    }
-  }, [effectiveModelOptions, effectiveProvider, model]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_API_PROVIDER_KEY, apiProvider);
-  }, [apiProvider]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_API_MODEL_KEY, model);
-  }, [model]);
-
-  const keyStatusLabel = !apiKey.trim()
-    ? "Server Env / None"
-    : apiProvider === "auto"
-      ? detectedKeyProvider
-        ? providerOptions.find((item) => item.value === detectedKeyProvider)?.label ?? "Detected"
-        : "Provided"
-      : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
 
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
 
-  const selectedTraces = useMemo(() => {
-    const traces = results[selectedProfile][traceCondition]?.traces ?? [];
-    return historyOrder === "newest" ? traces.slice().reverse() : traces;
-  }, [historyOrder, results, selectedProfile, traceCondition]);
-
-  const latestTrace = activeTrace ?? results[selectedProfile][traceCondition]?.traces.at(-1) ?? null;
-
-  function setNormalizedApiKey(rawValue: string) {
-    setApiKey(normalizeApiKeyInput(rawValue));
-  }
-
   async function requestLLM(params: { model: string; prompt: string; systemPrompt: string }): Promise<string> {
-    const requestApiKey = normalizeApiKeyInput(apiKeyInputRef.current?.value ?? apiKey);
-    if (requestApiKey !== apiKey) {
-      setApiKey(requestApiKey);
-    }
-
     const response = await requestJSON<{ content: string }>("/api/llm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: params.model,
         prompt: params.prompt,
-        apiKey: requestApiKey,
-        providerPreference: apiProvider,
+        providerPreference: DEFAULT_PROVIDER,
         temperature: FIXED_TEMPERATURE,
         maxTokens: llmMaxTokens,
         systemPrompt: params.systemPrompt,
@@ -3372,8 +3258,8 @@ export default function HomePage() {
       profile,
       condition,
       objectiveMode,
-      providerPreference: apiProvider,
-      resolvedProvider: effectiveProvider,
+      providerPreference: DEFAULT_PROVIDER,
+      resolvedProvider: DEFAULT_PROVIDER,
       modelA: model,
       modelB: model,
       temperature: FIXED_TEMPERATURE,
@@ -3705,7 +3591,6 @@ export default function HomePage() {
     setIsRunning(true);
     setErrorMessage(null);
     runControlRef.current.cancelled = false;
-    setTraceCondition(selectedCondition);
     setRunPhaseText(`${PROFILE_LABELS[selectedProfile]} — ${CONDITION_LABELS[selectedCondition]}`);
 
     try {
@@ -3725,7 +3610,6 @@ export default function HomePage() {
     for (const condition of ["raw", "sanitized"] as const) {
       if (runControlRef.current.cancelled) break;
       setSelectedProfile(profile);
-      setTraceCondition(condition);
       setRunPhaseText(
         runLabel
           ? `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | ${runLabel}`
@@ -3822,52 +3706,12 @@ export default function HomePage() {
 
           <div className="field-block">
             <label>Provider</label>
-            <select value={apiProvider} onChange={(event) => setApiProvider(event.target.value as APIProvider)} disabled={isRunning}>
-              {providerOptions.map((provider) => (
-                <option key={provider.value} value={provider.value}>
-                  {provider.label}
-                </option>
-              ))}
-            </select>
+            <input value="Together (Locked)" disabled />
           </div>
 
           <div className="field-block">
             <label>Model (All Agents)</label>
-            <select value={model} onChange={(event) => setModel(event.target.value)} disabled={isRunning}>
-              {effectiveModelOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field-block wide key-field">
-            <div className="field-label-row">
-              <label>API Key</label>
-              <button
-                type="button"
-                className="text-action inline-action"
-                onClick={() => setApiKey("")}
-                title="Clear API key and use server default key"
-              >
-                Use Default Server Key
-              </button>
-            </div>
-            <input
-              ref={apiKeyInputRef}
-              type="password"
-              value={apiKey}
-              onChange={(event) => setNormalizedApiKey(event.target.value)}
-              autoComplete="new-password"
-              inputMode="text"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              data-lpignore="true"
-              placeholder="Enter API key or rely on server env key"
-              disabled={isRunning}
-            />
+            <input value={`${DEFAULT_MODEL} (Locked)`} disabled />
           </div>
         </div>
 
@@ -3882,12 +3726,8 @@ export default function HomePage() {
               <span>{runPhaseText}</span>
             </div>
             <div className="status-line">
-              <span className={`dot ${apiKey.trim() ? "good" : "warn"}`} />
-              <span>Key {keyStatusLabel}</span>
-            </div>
-            <div className="status-line">
-              <span className={`dot ${guardianEnabled ? "good" : "warn"}`} />
-              <span>GuardianAI {guardianEnabled ? "ON" : "OFF"}</span>
+              <span className="dot good" />
+              <span>Server Key Only (Hidden)</span>
             </div>
           </div>
 
@@ -3902,14 +3742,6 @@ export default function HomePage() {
             <button onClick={generateLabReport}>Generate Lab Report</button>
           </div>
 
-          <div className="row-actions">
-            <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
-              Website
-            </a>
-            <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
-              GitHub
-            </a>
-          </div>
         </div>
       </section>
 
@@ -3938,46 +3770,7 @@ export default function HomePage() {
               <button onClick={resetAll}>Reset</button>
             </div>
 
-            <div className="temp-grid">
-              <div className="temp-control">
-                <div className="temperature-row">
-                  <label>LLM Temperature</label>
-                  <strong>{FIXED_TEMPERATURE.toFixed(2)}</strong>
-                </div>
-                <input type="range" min={0} max={1} step={0.05} value={FIXED_TEMPERATURE} disabled />
-              </div>
-              <div className="temp-control">
-                <div className="temperature-row">
-                  <label>Retries</label>
-                  <strong>{FIXED_RETRIES}</strong>
-                </div>
-                <input type="range" min={0} max={1} step={1} value={FIXED_RETRIES} disabled />
-              </div>
-            </div>
-
             <div className="run-config-grid">
-              <div className="field-block">
-                <label>Experiment Profile</label>
-                <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
-                  {UI_PROFILE_LIST.map((value) => (
-                    <option key={value} value={value}>
-                      {PROFILE_LABELS[value]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="field-block">
-                <label>Objective Mode</label>
-                <select value={objectiveMode} onChange={(event) => setObjectiveMode(event.target.value as ObjectiveMode)} disabled={isRunning}>
-                  {Object.entries(OBJECTIVE_MODE_LABELS).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
               <div className="field-block">
                 <label>Turns (Horizon)</label>
                 <input
@@ -4001,377 +3794,24 @@ export default function HomePage() {
                   disabled={isRunning}
                 />
               </div>
-
-              <div className="field-block">
-                <label>Initial Step</label>
-                <input
-                  type="number"
-                  min={-1000000}
-                  max={1000000}
-                  value={initialStep}
-                  onChange={(event) => setInitialStep(Math.max(-1000000, Math.min(1000000, Number(event.target.value) || 0)))}
-                  disabled={isRunning}
-                />
-              </div>
-
-              <div className="field-block">
-                <label>Max History Turns</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={MAX_HISTORY_TURNS_CAP}
-                  value={maxHistoryTurns}
-                  onChange={(event) =>
-                    setMaxHistoryTurns(Math.max(1, Math.min(MAX_HISTORY_TURNS_CAP, Number(event.target.value) || 1)))
-                  }
-                  disabled={isRunning}
-                />
-              </div>
-
-              <div className="field-block">
-                <label>Inter-turn Delay (ms)</label>
-                <input
-                  type="number"
-                  min={MIN_INTER_TURN_DELAY_MS}
-                  max={MAX_INTER_TURN_DELAY_MS}
-                  value={interTurnDelayMs}
-                  onChange={(event) =>
-                    setInterTurnDelayMs(
-                      Math.max(
-                        MIN_INTER_TURN_DELAY_MS,
-                        Math.min(MAX_INTER_TURN_DELAY_MS, Number(event.target.value) || MIN_INTER_TURN_DELAY_MS)
-                      )
-                    )
-                  }
-                  disabled={isRunning}
-                />
-              </div>
-
-              <div className="field-block">
-                <label>Failure Policy</label>
-                <select
-                  value={stopOnFirstFailure ? "stop" : "continue"}
-                  onChange={(event) => setStopOnFirstFailure(event.target.value === "stop")}
-                  disabled={isRunning}
-                >
-                  <option value="stop">Stop on first objective failure</option>
-                  <option value="continue">Continue after first objective failure</option>
-                </select>
-              </div>
-
             </div>
 
             <div className="policy-inline">
               <p className="tiny">
-                <strong>Architecture:</strong> {profileArchitectureText(selectedProfile)}
-              </p>
-              <p className="tiny">
-                <strong>Selected profile pressure:</strong> {profilePressureText(selectedProfile)}
-              </p>
-              <p className="tiny">
-                <strong>RAW (Condition A):</strong> next input and history use exact output bytes. <strong>SANITIZED (Condition B):</strong> parse + canonicalize{" "}
-                <code>
-                  {selectedProfile === "consensus_collapse_loop"
-                    ? `{"step":N,"claim":"C1","stance":"support|reject|uncertain","confidence":0.0,"evidence_ids":["e1"],"summary":""}`
-                    : `{"step":N,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`}
-                </code>{" "}
-                only.
-              </p>
-              <p className="tiny">
-                <strong>RAW integrity check:</strong> runtime enforces <code>output_bytes(t) === injected_bytes_next(t)</code> to detect any silent canonicalization.
-              </p>
-              <p className="tiny">
-                <strong>History accumulation:</strong> prompts include rolling conversation history (bounded by max history turns).
-              </p>
-              <p className="tiny">
-                <strong>Contract:</strong> expected canonical bytes each turn are{" "}
-                <code>
-                  {selectedProfile === "consensus_collapse_loop"
-                    ? `{"step":expected_step,"claim":"C1","stance":"support|reject|uncertain","confidence":<0..1>,"evidence_ids":[...],"summary":"..."}` 
-                    : `{"step":expected_step,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`}
-                </code>
-                ; Cv compares output bytes to this literal.
-              </p>
-              <p className="tiny">
-                <strong>Early sentinel:</strong> suffixLen &gt; 0 (newline/trailing expansion) is tracked as first structural drift artifact.
-              </p>
-              <p className="tiny">
-                <strong>Preflight gate:</strong> at turn {PREFLIGHT_TURNS}, Agent {PREFLIGHT_AGENT} must meet ParseOK ≥{" "}
+                <strong>Preflight gate:</strong> turn {PREFLIGHT_TURNS}, Agent {PREFLIGHT_AGENT}, ParseOK ≥{" "}
                 {(PREFLIGHT_PARSE_OK_MIN * 100).toFixed(0)}%
-                {preflightRequiresState(objectiveMode)
-                  ? ` and StateOK ≥ ${(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}%`
-                  : " (parse-only objective; state gate disabled)"}{" "}
-                (otherwise run is rejected).
+                {preflightRequiresState(objectiveMode) ? ` and StateOK ≥ ${(PREFLIGHT_STATE_OK_MIN * 100).toFixed(0)}%` : ""}.
               </p>
               <p className="tiny">
-                <strong>Consensus-collapse criterion:</strong> agreement≥{CONSENSUS_COLLAPSE_AGREEMENT_MIN.toFixed(2)}, evidence diversity≤
-                {CONSENSUS_COLLAPSE_DIVERSITY_MAX.toFixed(2)}, no-new-evidence high (growth near 0) for at least {CONSENSUS_COLLAPSE_MIN_PAIRS} A↔B pairs while ParseOK/StateOK ≥{" "}
-                {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.
+                <strong>Consensus criterion:</strong> agreement≥{CONSENSUS_COLLAPSE_AGREEMENT_MIN.toFixed(2)}, diversity≤
+                {CONSENSUS_COLLAPSE_DIVERSITY_MAX.toFixed(2)}, no-new-evidence high for at least {CONSENSUS_COLLAPSE_MIN_PAIRS} A↔B pairs.
               </p>
-              <p className="tiny">
-                <strong>Early warning:</strong> persistence inflection when rolling reinforcementDelta(window {ROLLING_REINFORCEMENT_WINDOW}) exceeds{" "}
-                {REINFORCEMENT_ALERT_DELTA.toFixed(2)} for {REINFORCEMENT_INFLECTION_STREAK} consecutive points.
-              </p>
-            </div>
-          </article>
-
-          <article className="card script-config-card">
-            <h3>Contract Setup</h3>
-            <div className="script-config-grid">
-              <div className="field-block script-field-wide">
-                <label>Required Output (Canonical Byte-Exact)</label>
-                <pre className="raw-pre">
-                  {selectedProfile === "consensus_collapse_loop"
-                    ? `{"step":<int>,"claim":"<id>","stance":"support|reject|uncertain","confidence":<0..1>,"evidence_ids":["e1","e2"],"summary":"<text>"}` 
-                    : `{"step":<int>,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`}
-                </pre>
-              </div>
-              <div className="field-block script-field-wide">
-                <label>Deterministic State Rule</label>
-                <pre className="raw-pre">{profileRuleText(selectedProfile)}</pre>
-              </div>
-              {selectedProfile === "consensus_collapse_loop" ? (
-                <div className="field-block script-field-wide">
-                  <label>Allowed Evidence IDs (Fixed Pool)</label>
-                  <pre className="raw-pre">{CONSENSUS_EVIDENCE_IDS.map((id) => `${id}: ${CONSENSUS_EVIDENCE_POOL[id]}`).join("\n")}</pre>
-                </div>
-              ) : null}
-              <div className="field-block script-field-wide">
-                <label>Initial State</label>
-                <pre className="raw-pre">{initialStateLiteralForProfile(selectedProfile, initialStep)}</pre>
-              </div>
             </div>
           </article>
         </div>
-
-        <article className="raw-live">
-          <header className="raw-live-head">
-            <div className="raw-live-title">
-              <div>
-                <h3>GuardianAI Belief Attractor Monitor</h3>
-                <p className="raw-live-subtitle">Epistemic drift, agreement pressure, and objective failure telemetry</p>
-              </div>
-            </div>
-            <div className="raw-live-head-meta">
-              <span>Profile: {PROFILE_LABELS[selectedProfile]}</span>
-              <span>Condition: {latestTrace ? CONDITION_LABELS[latestTrace.condition] : "n/a"}</span>
-            </div>
-          </header>
-
-          <div className="raw-live-grid">
-            <article className="raw-panel">
-              <h4>Panel 1 - Turn Context</h4>
-              <div className="raw-line">
-                <span className="tiny">Turn</span>
-                <strong>{latestTrace ? `${latestTrace.turnIndex}/${turnBudget}` : "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Agent</span>
-                <strong>{latestTrace?.agent ?? "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Context length / growth</span>
-                <strong>{latestTrace ? `${latestTrace.contextLength}/${latestTrace.contextLengthGrowth}` : "n/a"}</strong>
-              </div>
-              <p className="tiny">History block (exactly injected into prompt)</p>
-              <pre className="raw-pre">{latestTrace?.historyBytes ?? "[no trace yet]"}</pre>
-              <p className="tiny">Input bytes</p>
-              <pre className="raw-pre">{latestTrace?.inputBytes ?? "[no trace yet]"}</pre>
-              <p className="tiny">Expected canonical bytes</p>
-              <pre className="raw-pre">{latestTrace?.expectedBytes ?? "[no trace yet]"}</pre>
-            </article>
-
-            <article className="raw-panel">
-              <h4>Panel 2 - Output</h4>
-              <div className="raw-line">
-                <span className="tiny">Chars</span>
-                <strong>{latestTrace?.byteLength ?? 0}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Lines</span>
-                <strong>{latestTrace?.lineCount ?? "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Prefix / Suffix</span>
-                <strong>{latestTrace ? `${latestTrace.prefixLen}/${latestTrace.suffixLen}` : "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Len delta</span>
-                <strong>{latestTrace?.lenDeltaVsContract ?? "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Deviation magnitude</span>
-                <strong>{latestTrace?.deviationMagnitude ?? "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Indent avg / max / delta</span>
-                <strong>{latestTrace ? `${asFixed(latestTrace.indentAvg, 2)}/${asFixed(latestTrace.indentMax, 2)}/${asFixed(latestTrace.indentDelta, 2)}` : "n/a"}</strong>
-              </div>
-              <p className="tiny">Escaped output literal</p>
-              <pre className="raw-pre">{latestTrace ? JSON.stringify(latestTrace.outputBytes) : "[no output yet]"}</pre>
-              <div className="raw-line">
-                <span className="tiny">UTF-8 bytes</span>
-                <span className="mono raw-bytes">{latestTrace ? byteVector(latestTrace.outputBytes) : "[]"}</span>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Injected bytes (next turn)</span>
-                <span className="mono raw-bytes">{latestTrace ? JSON.stringify(latestTrace.injectedBytesNext) : "n/a"}</span>
-              </div>
-            </article>
-
-            <article className="raw-panel">
-              <h4>Panel 3 - Verdict</h4>
-              <div className="raw-line">
-                <span className="tiny">ParseOK / StateOK</span>
-                <strong>{latestTrace ? `${latestTrace.parseOk}/${latestTrace.stateOk}` : "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Cv / Pf / Ld</span>
-                <strong>{latestTrace ? `${latestTrace.cv}/${latestTrace.pf}/${latestTrace.ld}` : "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Objective fail</span>
-                <strong>{latestTrace?.objectiveFailure ?? "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Uptime(t)</span>
-                <strong>{latestTrace?.uptime ?? "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Rolling Pf(20)</span>
-                <strong>{latestTrace ? asFixed(latestTrace.rollingPf20, 3) : "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Rolling driftP95(20)</span>
-                <strong>{latestTrace ? asFixed(latestTrace.rollingDriftP95, 3) : "n/a"}</strong>
-              </div>
-              <div className="raw-line">
-                <span className="tiny">Expected step / Parsed step</span>
-                <strong>{latestTrace ? `${latestTrace.expectedStep}/${latestTrace.parsedStep ?? "n/a"}` : "n/a"}</strong>
-              </div>
-              {latestTrace?.bTransformOk !== null ? (
-                <div className="raw-line">
-                  <span className="tiny">B monotone transform ok</span>
-                  <strong>{latestTrace ? latestTrace.bTransformOk : "n/a"}</strong>
-                </div>
-              ) : null}
-              {latestTrace?.parseError ? <p className="warning-note">{latestTrace.parseError}</p> : null}
-              {latestTrace?.bTransformReason ? <p className="warning-note">{latestTrace.bTransformReason}</p> : null}
-              <p className="tiny">Parsed data</p>
-              <pre className="raw-pre">{latestTrace?.parsedData ? JSON.stringify(latestTrace.parsedData, null, 2) : "n/a"}</pre>
-            </article>
-
-            <article className="raw-panel">
-              <h4>Panel 4 - Condition Metrics ({PROFILE_LABELS[selectedProfile]})</h4>
-              {(["raw", "sanitized"] as const).map((condition) => {
-                const summary = results[selectedProfile][condition];
-                return (
-                  <div key={condition} className="policy-inline">
-                    <p className="tiny">
-                      <strong>{condition.toUpperCase()}</strong>
-                    </p>
-                    <p className="tiny">Objective scope: {summary?.objectiveScopeLabel ?? "n/a"}</p>
-                    <p className="tiny">Turns: {summary?.turnsAttempted ?? "n/a"}</p>
-                    <p className="tiny">ParseOK (all/A/B): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)}</p>
-                    <p className="tiny">StateOK (all/A/B): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)}</p>
-                    {selectedProfile === "consensus_collapse_loop" ? (
-                      <>
-                        <p className="tiny">Agreement A↔B: {asPercent(summary?.agreementRateAB ?? null)} (pairs={summary?.consensusPairs ?? 0})</p>
-                        <p className="tiny">Evidence diversity: {asFixed(summary?.evidenceDiversity ?? null, 3)}</p>
-                        <p className="tiny">Unsupported consensus rate/streak: {asPercent(summary?.unsupportedConsensusRate ?? null)} / {summary?.unsupportedConsensusStreakMax ?? 0}</p>
-                        <p className="tiny">No-new-evidence rate: {asPercent(summary?.noNewEvidenceRate ?? null)}</p>
-                        <p className="tiny">Evidence growth rate: {asPercent(summary?.evidenceGrowthRate ?? null)}</p>
-                        <p className="tiny">Confidence gain avg (B-A): {asFixed(summary?.confidenceGainAvg ?? null, 4)}</p>
-                        <p className="tiny">
-                          Collapse signal: {summary?.consensusCollapseFlag ? "YES" : "NO"}
-                          {summary?.consensusCollapseReason ? ` (${summary.consensusCollapseReason})` : ""}
-                        </p>
-                      </>
-                    ) : null}
-                    <p className="tiny">Cv/Pf/Ld: {asPercent(summary?.cvRate ?? null)} / {asPercent(summary?.pfRate ?? null)} / {asPercent(summary?.ldRate ?? null)}</p>
-                    <p className="tiny">Cv/Pf/Ld (A): {asPercent(summary?.cvRateA ?? null)} / {asPercent(summary?.pfRateA ?? null)} / {asPercent(summary?.ldRateA ?? null)}</p>
-                    <p className="tiny">FTF total/parse/logic/struct: {summary?.ftfTotal ?? "n/a"} / {summary?.ftfParse ?? "n/a"} / {summary?.ftfLogic ?? "n/a"} / {summary?.ftfStruct ?? "n/a"}</p>
-                    <p className="tiny">FTF_A total/parse/logic/struct: {summary?.ftfTotalA ?? "n/a"} / {summary?.ftfParseA ?? "n/a"} / {summary?.ftfLogicA ?? "n/a"} / {summary?.ftfStructA ?? "n/a"}</p>
-                    <p className="tiny">driftP95/max/slope: {asFixed(summary?.driftP95 ?? null, 2)} / {asFixed(summary?.driftMax ?? null, 2)} / {asFixed(summary?.escalationSlope ?? null, 4)}</p>
-                    <p className="tiny">driftP95_A/max_A/slope_A: {asFixed(summary?.driftP95A ?? null, 2)} / {asFixed(summary?.driftMaxA ?? null, 2)} / {asFixed(summary?.escalationSlopeA ?? null, 4)}</p>
-                    <p className="tiny">Early slope{`(${EARLY_WINDOW_TURNS})`} all/A: {asFixed(summary?.earlySlope40 ?? null, 4)} / {asFixed(summary?.earlySlope40A ?? null, 4)}</p>
-                    <p className="tiny">Indent avg/max/deltaAvg all: {asFixed(summary?.indentAvg ?? null, 2)} / {asFixed(summary?.indentMax ?? null, 2)} / {asFixed(summary?.indentDeltaAvg ?? null, 3)}</p>
-                    <p className="tiny">Indent avg/max/deltaAvg A: {asFixed(summary?.indentAvgA ?? null, 2)} / {asFixed(summary?.indentMaxA ?? null, 2)} / {asFixed(summary?.indentDeltaAvgA ?? null, 3)}</p>
-                    {(summary?.bTransformSamples ?? 0) > 0 ? (
-                      <p className="tiny">B monotone transform compliance: {asPercent(summary?.bTransformOkRate ?? null)} (samples={summary?.bTransformSamples ?? 0})</p>
-                    ) : null}
-                    <p className="tiny">artifactPersistence: {asFixed(summary?.artifactPersistence ?? null, 4)}</p>
-                    <p className="tiny">artifactPersistence_A: {asFixed(summary?.artifactPersistenceA ?? null, 4)}</p>
-                    <p className="tiny">A_template_entropy: {asFixed(summary?.templateEntropyA ?? null, 4)}</p>
-                    <p className="tiny">First suffix drift / max suffix / suffix slope: {summary?.firstSuffixDriftTurn ?? "n/a"} / {summary?.maxSuffixLen ?? "n/a"} / {asFixed(summary?.suffixGrowthSlope ?? null, 4)}</p>
-                    <p className="tiny">reinforcementDelta: {asFixed(summary?.reinforcementDelta ?? null, 4)}</p>
-                    <p className="tiny">P(dev_next_same|dev_same): {asPercent(summary?.reinforcementWhenDev ?? null)} | P(dev_next_same|clean_same): {asPercent(summary?.reinforcementWhenClean ?? null)}</p>
-                    <p className="tiny">Agent A/B delta: {asFixed(summary?.reinforcementDeltaA ?? null, 4)} / {asFixed(summary?.reinforcementDeltaB ?? null, 4)}</p>
-                    <p className="tiny">A→B P(dev_B|dev_A): {asPercent(summary?.edgeAB.pDevGivenDev ?? null)} | P(dev_B|clean_A): {asPercent(summary?.edgeAB.pDevGivenClean ?? null)} | Δ: {asFixed(summary?.edgeAB.delta ?? null, 4)}</p>
-                    <p className="tiny">Rolling delta max / inflection: {asFixed(summary?.maxRollingReinforcementDelta ?? null, 4)} / {summary?.persistenceInflectionTurn ?? "none"}</p>
-                    <p className="tiny">Inflection→FTF_total lead: {summary?.collapseLeadTurnsFromInflection ?? "n/a"} turns</p>
-                    <p className="tiny">
-                      Preflight:{" "}
-                      {summary?.preflightPassed === null ? "n/a" : summary?.preflightPassed ? "PASS" : "FAIL"}
-                    </p>
-                    <p className="tiny">Byte continuity output→next input: {asPercent(summary?.prevOutputToNextInputRate ?? null)} | Injected→next input: {asPercent(summary?.prevInjectedToNextInputRate ?? null)}</p>
-                    <p className="tiny">Phase transition: {summary?.phaseTransition ? `turn ${summary.phaseTransition.turn}` : "none"}</p>
-                  </div>
-                );
-              })}
-            </article>
-          </div>
-        </article>
       </section>
 
       <section className="body-grid">
-        <article className="panel">
-          <header className="panel-header-row">
-            <h3>Trace Stream</h3>
-            <div className="row-actions">
-              <label className="order-control">
-                <span>Condition</span>
-                <select value={traceCondition} onChange={(event) => setTraceCondition(event.target.value as RepCondition)}>
-                  <option value="raw">Raw (Condition A)</option>
-                  <option value="sanitized">Sanitized (Condition B)</option>
-                </select>
-              </label>
-              <label className="order-control">
-                <span>Order</span>
-                <select value={historyOrder} onChange={(event) => setHistoryOrder(event.target.value as SortOrder)}>
-                  <option value="newest">Newest</option>
-                  <option value="oldest">Oldest</option>
-                </select>
-              </label>
-            </div>
-          </header>
-
-          <div className="turn-stream">
-            {selectedTraces.length === 0 ? <p className="muted">No trace yet for this profile/condition.</p> : null}
-            {selectedTraces.map((trace) => (
-              <section key={`${trace.runId}-${trace.condition}-${trace.turnIndex}-${trace.agent}`} className="turn-card">
-                <h4>
-                  Turn {trace.turnIndex} Agent {trace.agent} - ParseOK:{trace.parseOk} StateOK:{trace.stateOk} Cv:{trace.cv} Pf:{trace.pf} Ld:{trace.ld} Obj:{trace.objectiveFailure}
-                </h4>
-                <label>Input bytes</label>
-                <pre>{trace.inputBytes}</pre>
-                <label>Output bytes</label>
-                <pre>{trace.outputBytes}</pre>
-                <label>Expected bytes</label>
-                <pre>{trace.expectedBytes}</pre>
-                <label>Injected bytes next</label>
-                <pre>{trace.injectedBytesNext}</pre>
-                <label>Boundary telemetry</label>
-                <pre>
-                  prefix={trace.prefixLen} suffix={trace.suffixLen} lenDelta={trace.lenDeltaVsContract} lines={trace.lineCount} drift={trace.deviationMagnitude} indentAvg={asFixed(trace.indentAvg, 2)} indentMax={asFixed(trace.indentMax, 2)} indentDelta={asFixed(trace.indentDelta, 2)} bTransformOk={trace.bTransformOk === null ? "n/a" : trace.bTransformOk} rollDriftP95={asFixed(trace.rollingDriftP95, 3)} ctxGrowth={trace.contextLengthGrowth} rollPf20={asFixed(trace.rollingPf20, 3)}
-                </pre>
-                {trace.bTransformReason ? <p className="warning-note">{trace.bTransformReason}</p> : null}
-                {trace.parseError ? <p className="warning-note">{trace.parseError}</p> : null}
-              </section>
-            ))}
-          </div>
-        </article>
-
         <article className="panel">
           <header className="monitor-header">
             <div className="monitor-title-row">
@@ -4386,33 +3826,6 @@ export default function HomePage() {
           </header>
 
           <div className="turn-stream">
-            <MetricCurveChart
-              title="Deviation Magnitude vs Turn"
-              subtitle="Boundary drift telemetry for RAW vs SANITIZED (objective scope only)."
-              rawSummary={rawSummary}
-              sanitizedSummary={sanitizedSummary}
-              valueFor={(trace) => trace.deviationMagnitude}
-            />
-            <MetricCurveChart
-              title="driftP95(t) vs Turn (Rolling 20)"
-              subtitle="Rolling p95 of deviation magnitude in objective scope. Useful for phase-transition onset."
-              rawSummary={rawSummary}
-              sanitizedSummary={sanitizedSummary}
-              valueFor={(trace) => trace.rollingDriftP95}
-            />
-            <ReinforcementEarlySignalChart rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
-            <MetricCurveChart
-              title="Uptime vs Turn"
-              subtitle="Uptime is 1 until objective failure, then 0."
-              rawSummary={rawSummary}
-              sanitizedSummary={sanitizedSummary}
-              valueFor={(trace) => trace.uptime}
-              fixedMax={1}
-            />
-            <DriftUptimeDivergenceChart summary={results[selectedProfile][traceCondition]} />
-            <DriftPhasePlot rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
-            <EdgeTransferPanel profile={selectedProfile} rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
-
             {(["raw", "sanitized"] as const).map((condition) => {
               const summary = results[selectedProfile][condition];
               const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
@@ -4425,35 +3838,17 @@ export default function HomePage() {
                   {summary ? (
                     <>
                       <p className="mono">Objective scope: {summary.objectiveScopeLabel}</p>
-                  <p className="mono">
-                    Turns: {summary.turnsAttempted} | ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} | StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
-                  </p>
+                      <p className="mono">
+                        Turns attempted/configured: {summary.turnsAttempted}/{summary.turnsConfigured}
+                      </p>
+                      <p className="mono">ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}</p>
+                      <p className="mono">StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}</p>
+                      <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
+                      {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
+                      <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
                       <p className="mono">
                         FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
                       </p>
-                      <p className="mono">
-                        FTF_A(total/parse/logic/struct): {summary.ftfTotalA ?? "n/a"}/{summary.ftfParseA ?? "n/a"}/{summary.ftfLogicA ?? "n/a"}/{summary.ftfStructA ?? "n/a"}
-                      </p>
-                      <p className="mono">
-                        driftP95/max/slope: {asFixed(summary.driftP95, 2)}/{asFixed(summary.driftMax, 2)}/{asFixed(summary.escalationSlope, 4)}
-                      </p>
-                      <p className="mono">
-                        driftP95_A/max_A/slope_A: {asFixed(summary.driftP95A, 2)}/{asFixed(summary.driftMaxA, 2)}/{asFixed(summary.escalationSlopeA, 4)}
-                      </p>
-                      <p className="mono">
-                        earlySlope{`(${EARLY_WINDOW_TURNS})`} all/A: {asFixed(summary.earlySlope40, 4)}/{asFixed(summary.earlySlope40A, 4)}
-                      </p>
-                      <p className="mono">
-                        indent avg/max/deltaAvg all: {asFixed(summary.indentAvg, 2)}/{asFixed(summary.indentMax, 2)}/{asFixed(summary.indentDeltaAvg, 3)}
-                      </p>
-                      <p className="mono">
-                        indent avg/max/deltaAvg A: {asFixed(summary.indentAvgA, 2)}/{asFixed(summary.indentMaxA, 2)}/{asFixed(summary.indentDeltaAvgA, 3)}
-                      </p>
-                      {summary.bTransformSamples > 0 ? (
-                        <p className="mono">
-                          B transform compliance: {asPercent(summary.bTransformOkRate)} (samples={summary.bTransformSamples})
-                        </p>
-                      ) : null}
                       {summary.profile === "consensus_collapse_loop" ? (
                         <p className="mono">
                           agreement/diversity/no-new-evidence/evidence-growth: {asPercent(summary.agreementRateAB)} / {asFixed(summary.evidenceDiversity, 3)} / {asPercent(summary.noNewEvidenceRate)} / {asPercent(summary.evidenceGrowthRate)}
@@ -4464,35 +3859,6 @@ export default function HomePage() {
                           confidenceGainAvg(B-A): {asFixed(summary.confidenceGainAvg, 4)} | collapse signal: {summary.consensusCollapseFlag ? "YES" : "NO"}
                         </p>
                       ) : null}
-                      <p className="mono">
-                        Cv/Pf/Ld_A: {asPercent(summary.cvRateA)} / {asPercent(summary.pfRateA)} / {asPercent(summary.ldRateA)}
-                      </p>
-                      <p className="mono">Artifact persistence all/A: {asFixed(summary.artifactPersistence, 4)} / {asFixed(summary.artifactPersistenceA, 4)}</p>
-                      <p className="mono">A_template_entropy: {asFixed(summary.templateEntropyA, 4)}</p>
-                      <p className="mono">
-                        firstSuffix/maxSuffix/suffixSlope: {summary.firstSuffixDriftTurn ?? "n/a"}/{summary.maxSuffixLen ?? "n/a"}/
-                        {asFixed(summary.suffixGrowthSlope, 4)}
-                      </p>
-                      <p className="mono">
-                        Reinf delta: {asFixed(summary.reinforcementDelta, 4)} | P(dev_next_same|dev_same): {asPercent(summary.reinforcementWhenDev)} | P(dev_next_same|clean_same): {asPercent(summary.reinforcementWhenClean)}
-                      </p>
-                      <p className="mono">
-                        Agent A/B delta: {asFixed(summary.reinforcementDeltaA, 4)} / {asFixed(summary.reinforcementDeltaB, 4)}
-                      </p>
-                      <p className="mono">
-                        A→B delta: {asFixed(summary.edgeAB.delta, 4)}
-                      </p>
-                      <p className="mono">
-                        Rolling delta max/inflection: {asFixed(summary.maxRollingReinforcementDelta, 4)}/{summary.persistenceInflectionTurn ?? "none"} | lead to FTF_total: {summary.collapseLeadTurnsFromInflection ?? "n/a"}
-                      </p>
-                  <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
-                      <p className="mono">
-                        Byte continuity output→next input: {asPercent(summary.prevOutputToNextInputRate)} | Injected→next input:{" "}
-                        {asPercent(summary.prevInjectedToNextInputRate)}
-                      </p>
-                      <p className="mono">
-                        Phase transition: {summary.phaseTransition ? `turn ${summary.phaseTransition.turn} (${summary.phaseTransition.reason})` : "none"}
-                      </p>
                     </>
                   ) : (
                     <p className="muted">No data.</p>
