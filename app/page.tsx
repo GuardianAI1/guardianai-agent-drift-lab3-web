@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultModelForProvider,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/providers";
 import type { APIProvider } from "@/lib/types";
 
-const FIXED_TEMPERATURE = 0;
+const DEFAULT_TEMPERATURE = 0;
 const FIXED_RETRIES = 0;
 const DEFAULT_PROVIDER: APIProvider = "together";
 const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
@@ -3211,6 +3212,7 @@ export default function HomePage() {
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
+  const [temperature, setTemperature] = useState<number>(DEFAULT_TEMPERATURE);
   const [turnBudget, setTurnBudget] = useState<number>(DEFAULT_TURNS);
   const [llmMaxTokens, setLlmMaxTokens] = useState<number>(DEFAULT_MAX_TOKENS);
   const [interTurnDelayMs, setInterTurnDelayMs] = useState<number>(DEFAULT_INTER_TURN_DELAY_MS);
@@ -3305,7 +3307,7 @@ export default function HomePage() {
         prompt: params.prompt,
         apiKey: requestApiKey,
         providerPreference: apiProvider,
-        temperature: FIXED_TEMPERATURE,
+        temperature,
         maxTokens: llmMaxTokens,
         systemPrompt: params.systemPrompt,
         mistralJsonSchemaMode: false
@@ -3325,7 +3327,7 @@ export default function HomePage() {
       resolvedProvider: effectiveProvider,
       modelA: model,
       modelB: model,
-      temperature: FIXED_TEMPERATURE,
+      temperature,
       retries: FIXED_RETRIES,
       horizon: turnBudget,
       maxTokens: llmMaxTokens,
@@ -3717,6 +3719,7 @@ export default function HomePage() {
     stopRun();
     setSelectedProfile(DEFAULT_PROFILE);
     setObjectiveMode("parse_only");
+    setTemperature(DEFAULT_TEMPERATURE);
     setTurnBudget(DEFAULT_TURNS);
     setLlmMaxTokens(DEFAULT_MAX_TOKENS);
     setInterTurnDelayMs(DEFAULT_INTER_TURN_DELAY_MS);
@@ -3732,7 +3735,7 @@ export default function HomePage() {
     const payload = {
       protocol: "Agent Lab Suite v1",
       generatedAt: new Date().toISOString(),
-      fixedTemperature: FIXED_TEMPERATURE,
+      fixedTemperature: temperature,
       fixedRetries: FIXED_RETRIES,
       smokingGunCriterion: SMOKING_GUN,
       results
@@ -3759,6 +3762,14 @@ export default function HomePage() {
     <main className="shell">
       <section className="top-band">
         <div className="left-toolbar">
+          <div className="brand-strip">
+            <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={40} height={40} priority />
+            <div className="brand-copy">
+              <strong>GuardianAI</strong>
+              <span>Agent Drift Lab</span>
+            </div>
+          </div>
+
           <div className="field-block">
             <label>Condition</label>
             <select value={selectedCondition} onChange={(event) => setSelectedCondition(event.target.value as RepCondition)} disabled={isRunning}>
@@ -3857,9 +3868,10 @@ export default function HomePage() {
       {errorMessage ? <p className="error-line">{errorMessage}</p> : null}
 
       <section className="subtitle-row">
-        <span>Agent Lab Suite v1 — Belief Attractors and Epistemic Drift</span>
+        <span>GuardianAI Agent Lab Suite v1 — Belief Attractors and Epistemic Drift</span>
         <span>
-          Profile: {PROFILE_LABELS[selectedProfile]} | Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} | Deterministic decoding enforced
+          Profile: {PROFILE_LABELS[selectedProfile]} | Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} | Temperature: {temperature.toFixed(2)}
+          {temperature === 0 ? " (deterministic)" : " (non-deterministic)"}
         </span>
       </section>
 
@@ -3923,6 +3935,19 @@ export default function HomePage() {
               </div>
 
               <div className="field-block">
+                <label>Temperature</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={temperature}
+                  onChange={(event) => setTemperature(Math.max(0, Math.min(1, Number(event.target.value) || 0)))}
+                  disabled={isRunning}
+                />
+              </div>
+
+              <div className="field-block">
                 <label>Max Tokens</label>
                 <input
                   type="number"
@@ -3976,11 +4001,11 @@ export default function HomePage() {
               <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
               <p className="mono">Phase: {runPhaseText}</p>
               <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
-              <p className="mono">Horizon / Max tokens: {turnBudget} / {llmMaxTokens}</p>
+              <p className="mono">Horizon / Temperature / Max tokens: {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens}</p>
               <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
-              <p className="mono">
-                Latest verdict: {activeTrace ? `ParseOK=${activeTrace.parseOk}, StateOK=${activeTrace.stateOk}, Cv/Pf/Ld=${activeTrace.cv}/${activeTrace.pf}/${activeTrace.ld}` : "n/a"}
-              </p>
+              <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
+              <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
+              <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
               <p className="tiny">
                 <strong>Live LLM Output (latest turn)</strong>
               </p>
