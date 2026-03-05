@@ -16,6 +16,8 @@ type GuardianGateResponse = {
   final_gate_decision: string;
 };
 
+const DEFAULT_GUARDIAN_UPSTREAM_TIMEOUT_MS = 1500;
+
 function normalizeBaseURL(value: string): string {
   const trimmed = value.trim();
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
@@ -43,14 +45,23 @@ function guardianAuthHeaders(): Record<string, string> {
 }
 
 async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
+  const configuredTimeoutMs = Number(process.env.GUARDIAN_UPSTREAM_TIMEOUT_MS ?? DEFAULT_GUARDIAN_UPSTREAM_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs)
+    ? Math.max(250, Math.min(20000, Math.round(configuredTimeoutMs)))
+    : DEFAULT_GUARDIAN_UPSTREAM_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
     response = await fetch(url, {
       ...init,
-      cache: "no-store"
+      cache: "no-store",
+      signal: controller.signal
     });
   } catch {
     throw new Error("Guardian upstream unavailable");
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   const text = await response.text();

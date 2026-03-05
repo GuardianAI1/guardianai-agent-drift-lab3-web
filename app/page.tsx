@@ -112,6 +112,7 @@ type SignalVisibilityMode = "public" | "private";
 const SIGNAL_VISIBILITY_MODE: SignalVisibilityMode =
   (process.env.NEXT_PUBLIC_SIGNAL_VISIBILITY ?? "public").trim().toLowerCase() === "private" ? "private" : "public";
 const IS_PUBLIC_SIGNAL_MODE = SIGNAL_VISIBILITY_MODE === "public";
+type GuardianRuntimeState = "unknown" | "connected" | "degraded" | "disabled";
 
 type RepCondition = keyof typeof CONDITION_LABELS;
 type ExperimentProfile = keyof typeof PROFILE_LABELS;
@@ -2228,10 +2229,12 @@ function downloadTextFile(filename: string, content: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
-async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
+async function requestJSON<T>(url: string, init: RequestInit, options?: { maxAttempts?: number }): Promise<T> {
+  const maxAttemptsRaw = options?.maxAttempts ?? CLIENT_API_MAX_ATTEMPTS;
+  const maxAttempts = Number.isFinite(maxAttemptsRaw) ? Math.max(1, Math.floor(maxAttemptsRaw)) : CLIENT_API_MAX_ATTEMPTS;
   let lastError: Error | null = null;
 
-  for (let attempt = 1; attempt <= CLIENT_API_MAX_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let response: Response;
     try {
       response = await fetch(url, {
@@ -2242,7 +2245,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
       const message = error instanceof Error ? error.message : "Network request failed.";
       const transportError = isClientTransportErrorMessage(message);
       lastError = new Error(message);
-      if (attempt < CLIENT_API_MAX_ATTEMPTS && transportError) {
+      if (attempt < maxAttempts && transportError) {
         await sleep(clientRetryDelayMs(attempt));
         continue;
       }
@@ -2262,7 +2265,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
         const parseError = new Error(`HTTP ${response.status}: server returned non-JSON payload (${preview})`);
         lastError = parseError;
 
-        if (attempt < CLIENT_API_MAX_ATTEMPTS && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
+        if (attempt < maxAttempts && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
           await sleep(clientRetryDelayMs(attempt));
           continue;
         }
@@ -2276,7 +2279,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
       const httpError = new Error(message);
       lastError = httpError;
 
-      if (attempt < CLIENT_API_MAX_ATTEMPTS && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
+      if (attempt < maxAttempts && CLIENT_API_RETRYABLE_STATUSES.has(response.status)) {
         await sleep(clientRetryDelayMs(attempt));
         continue;
       }
@@ -4034,6 +4037,7 @@ function setConditionResult(
 }
 
 export default function HomePage() {
+  const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
   const [apiProvider, setApiProvider] = useState<APIProvider>(DEFAULT_PROVIDER);
   const [apiKey, setApiKey] = useState<string>("");
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
@@ -4061,10 +4065,10 @@ export default function HomePage() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [runPhaseText, setRunPhaseText] = useState<string>("Idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [guardianRuntimeState, setGuardianRuntimeState] = useState<GuardianRuntimeState>(guardianEnabled ? "unknown" : "disabled");
 
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const runControlRef = useRef<{ cancelled: boolean }>({ cancelled: false });
-  const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
 
   useEffect(() => {
     const defaultsVersion = localStorage.getItem(STORAGE_UI_DEFAULTS_VERSION_KEY);
@@ -4122,6 +4126,14 @@ export default function HomePage() {
         ? providerOptions.find((item) => item.value === detectedKeyProvider)?.label ?? "Detected"
         : "Provided"
       : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
+  const guardianStatusLabel = !guardianEnabled
+    ? "Disabled"
+    : guardianRuntimeState === "connected"
+      ? "Connected"
+      : guardianRuntimeState === "degraded"
+        ? "Degraded"
+        : "Unknown";
+  const guardianStatusDotClass = !guardianEnabled ? "warn" : guardianRuntimeState === "connected" ? "good" : guardianRuntimeState === "degraded" ? "bad" : "warn";
 
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
@@ -4172,7 +4184,7 @@ export default function HomePage() {
         output: params.output,
         deterministicConstraint: params.deterministicConstraint
       })
-    });
+    }, { maxAttempts: 1 });
   }
 
   async function runCondition(
@@ -4220,6 +4232,7 @@ export default function HomePage() {
 
     let failed = false;
     let failureReason: string | undefined;
+    let guardianAvailableThisRun = guardianEnabled;
 
     setResults((prev) => setConditionResult(prev, profile, condition, null));
     setLiveTraceCondition(condition);
@@ -4294,16 +4307,23 @@ export default function HomePage() {
       let guardianGateState: "CONTINUE" | "PAUSE" | "YIELD" | null = null;
       let guardianObserveError: string | null = null;
 
-      if (guardianEnabled) {
+      if (guardianEnabled && guardianAvailableThisRun) {
         try {
-          await requestGuardianObservation({
+          const guardianObservation = await requestGuardianObservation({
             turnId: turn,
             output: outputBytes,
             deterministicConstraint: expectedBytes
           });
+          guardianGateState = guardianObservation.gateState ?? null;
+          setGuardianRuntimeState((prev) => (prev === "connected" ? prev : "connected"));
         } catch (error) {
           guardianObserveError = error instanceof Error ? "Observer unavailable." : "Observer unavailable.";
+          guardianAvailableThisRun = false;
+          setGuardianRuntimeState("degraded");
+          setRunPhaseText(`${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Observer unavailable (fail-open)`);
         }
+      } else if (guardianEnabled) {
+        guardianObserveError = "Observer unavailable.";
       }
 
       const [rawHash, expectedHash] = await Promise.all([sha256Hex(outputBytes), sha256Hex(expectedBytes)]);
@@ -4599,6 +4619,7 @@ export default function HomePage() {
     if (isRunning) return;
 
     setIsRunning(true);
+    setGuardianRuntimeState(guardianEnabled ? "unknown" : "disabled");
     setErrorMessage(null);
     runControlRef.current.cancelled = false;
     setRunPhaseText(`${PROFILE_LABELS[selectedProfile]} — ${CONDITION_LABELS[selectedCondition]}`);
@@ -4640,6 +4661,7 @@ export default function HomePage() {
   async function runBothConditionsForSelectedProfile() {
     if (isRunning) return;
     setIsRunning(true);
+    setGuardianRuntimeState(guardianEnabled ? "unknown" : "disabled");
     setErrorMessage(null);
     runControlRef.current.cancelled = false;
 
@@ -4661,6 +4683,7 @@ export default function HomePage() {
     const replicates = Math.max(1, Math.min(20, Math.floor(Number(matrixReplicates) || 1)));
 
     setIsRunning(true);
+    setGuardianRuntimeState(guardianEnabled ? "unknown" : "disabled");
     setErrorMessage(null);
     runControlRef.current.cancelled = false;
     setMatrixRows([]);
@@ -4736,6 +4759,7 @@ export default function HomePage() {
     setLiveTraceCondition("raw");
     setMatrixRows([]);
     setErrorMessage(null);
+    setGuardianRuntimeState(guardianEnabled ? "unknown" : "disabled");
   }
 
   function exportSnapshotJSON() {
@@ -4849,8 +4873,8 @@ export default function HomePage() {
               <span>Key {keyStatusLabel}</span>
             </div>
             <div className="status-line">
-              <span className={`dot ${guardianEnabled ? "good" : "warn"}`} />
-              <span>GuardianAI {guardianEnabled ? "ON" : "OFF"}</span>
+              <span className={`dot ${guardianStatusDotClass}`} />
+              <span>Guardian Link {guardianStatusLabel}</span>
             </div>
           </div>
         </div>
