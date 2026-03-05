@@ -81,4 +81,5 @@ Summary:
   - `MISTRAL_API_KEY`
 - Optional UI links:
   - `NEXT_PUBLIC_GUARDIAN_WEBSITE_URL`
+  - `NEXT_PUBLIC_SIGNAL_VISIBILITY` (`public` default for black-box signal surface, `private` for full diagnostics)
   - `NEXT_PUBLIC_GITHUB_REPO_URL`

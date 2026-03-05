@@ -303,6 +303,13 @@ button:disabled {
   background: transparent;
 }
 
+.run-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
 .control-stack {
   display: flex;
   flex-direction: column;
@@ -358,7 +365,7 @@ button:disabled {
 
 .run-config-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 420px) repeat(3, minmax(110px, 150px));
+  grid-template-columns: minmax(170px, 220px) repeat(4, minmax(90px, 116px));
   gap: 8px;
   justify-content: start;
   align-items: end;
@@ -385,8 +392,16 @@ button:disabled {
 }
 
 .run-field-delay {
-  grid-column: 1 / 3;
-  max-width: 360px;
+  grid-column: 5 / 6;
+}
+
+.run-controls-card,
+.run-summary-card {
+  align-content: start;
+}
+
+.run-summary-card .latest-card {
+  margin-top: 4px;
 }
 
 .measure-grid {
@@ -1021,6 +1036,10 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .run-workspace {
+    grid-template-columns: 1fr;
+  }
+
   .control-stack {
     height: auto;
   }
@@ -1109,6 +1128,5 @@ button:disabled {
   .run-field-temp,
   .run-field-delay {
     grid-column: auto;
-    max-width: none;
   }
 }

@@ -19,7 +19,7 @@ const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
 const DEFAULT_PROFILE: ExperimentProfile = "epistemic_drift_protocol";
 const DEFAULT_TURNS = 400;
 const DEFAULT_MAX_TOKENS = 96;
-const DEFAULT_INTER_TURN_DELAY_MS = 300;
+const DEFAULT_INTER_TURN_DELAY_MS = 50;
 const MIN_INTER_TURN_DELAY_MS = 0;
 const MAX_INTER_TURN_DELAY_MS = 10000;
 const DEFAULT_MAX_HISTORY_TURNS = 50;
@@ -107,6 +107,11 @@ const OBJECTIVE_MODE_LABELS = {
   strict_structural: "Strict structural failure",
   composite_pf_or_ld: "Composite (Pf or Ld)"
 } as const;
+
+type SignalVisibilityMode = "public" | "private";
+const SIGNAL_VISIBILITY_MODE: SignalVisibilityMode =
+  (process.env.NEXT_PUBLIC_SIGNAL_VISIBILITY ?? "public").trim().toLowerCase() === "private" ? "private" : "public";
+const IS_PUBLIC_SIGNAL_MODE = SIGNAL_VISIBILITY_MODE === "public";
 
 type RepCondition = keyof typeof CONDITION_LABELS;
 type ExperimentProfile = keyof typeof PROFILE_LABELS;
@@ -2295,9 +2300,9 @@ function objectiveFailureReason(mode: ObjectiveMode, pf: number, ld: number, cv:
   return "Objective failure";
 }
 
-function traceToJsonl(summary: ConditionSummary): string {
-  const lines = summary.traces.map((trace) => {
-    const payload = {
+function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record<string, unknown> {
+  if (IS_PUBLIC_SIGNAL_MODE) {
+    return {
       run_id: trace.runId,
       profile: trace.profile,
       condition: trace.condition,
@@ -2305,12 +2310,9 @@ function traceToJsonl(summary: ConditionSummary): string {
       agent: trace.agent,
       agent_model: trace.agentModel,
       input_bytes: trace.inputBytes,
-      history_bytes: trace.historyBytes,
       output_bytes: trace.outputBytes,
       expected_bytes: trace.expectedBytes,
       injected_bytes_next: trace.injectedBytesNext,
-      expected_step: trace.expectedStep,
-      parsed_step: trace.parsedStep,
       parse_ok: trace.parseOk,
       state_ok: trace.stateOk,
       Pf: trace.pf,
@@ -2320,48 +2322,142 @@ function traceToJsonl(summary: ConditionSummary): string {
       objective_scope: objectiveScopeLabel(summary.profile),
       agent_in_objective_scope: isAgentInObjectiveScope(summary.profile, trace.agent) ? 1 : 0,
       uptime: trace.uptime,
-      byteLength: trace.byteLength,
-      lineCount: trace.lineCount,
-      prefixLen: trace.prefixLen,
-      suffixLen: trace.suffixLen,
-      lenDeltaVsContract: trace.lenDeltaVsContract,
-      deviationMagnitude: trace.deviationMagnitude,
-      indentAvg: trace.indentAvg,
-      indentMax: trace.indentMax,
-      indentDelta: trace.indentDelta,
-      b_transform_ok: trace.bTransformOk,
-      b_transform_reason: trace.bTransformReason ?? null,
-      rollingPf20: trace.rollingPf20,
-      rollingDriftP95: trace.rollingDriftP95,
-      dev_state: trace.devState,
-      dev_threshold: DRIFT_DEV_EVENT_THRESHOLD,
-      reasoning_depth: trace.reasoningDepth,
-      authority_weights: trace.authorityWeights,
-      contradiction_signal: trace.contradictionSignal,
-      alternative_variance: trace.alternativeVariance,
-      elapsed_time_ms: trace.elapsedTimeMs,
-      commitment: trace.commitment,
-      commitment_delta: trace.commitmentDelta,
-      constraint_growth: trace.constraintGrowth,
-      evidence_delta: trace.evidenceDelta,
-      depth_delta: trace.depthDelta,
-      drift_rule_satisfied: trace.driftRuleSatisfied,
-      drift_streak: trace.driftStreak,
       structural_epistemic_drift: trace.structuralEpistemicDrift,
       dai: trace.dai,
-      dai_delta: trace.daiDelta,
       dai_regime: trace.daiRegime,
-      context_length: trace.contextLength,
-      context_length_growth: trace.contextLengthGrowth,
       raw_hash: trace.rawHash,
       expected_hash: trace.expectedHash,
-      parse_error: trace.parseError ?? null,
-      parsed_data: trace.parsedData ?? null
+      parse_error: trace.parseError ?? null
     };
-    return JSON.stringify(payload);
-  });
+  }
 
+  return {
+    run_id: trace.runId,
+    profile: trace.profile,
+    condition: trace.condition,
+    turn_index: trace.turnIndex,
+    agent: trace.agent,
+    agent_model: trace.agentModel,
+    input_bytes: trace.inputBytes,
+    history_bytes: trace.historyBytes,
+    output_bytes: trace.outputBytes,
+    expected_bytes: trace.expectedBytes,
+    injected_bytes_next: trace.injectedBytesNext,
+    expected_step: trace.expectedStep,
+    parsed_step: trace.parsedStep,
+    parse_ok: trace.parseOk,
+    state_ok: trace.stateOk,
+    Pf: trace.pf,
+    Cv: trace.cv,
+    Ld: trace.ld,
+    objective_failure: trace.objectiveFailure,
+    objective_scope: objectiveScopeLabel(summary.profile),
+    agent_in_objective_scope: isAgentInObjectiveScope(summary.profile, trace.agent) ? 1 : 0,
+    uptime: trace.uptime,
+    byteLength: trace.byteLength,
+    lineCount: trace.lineCount,
+    prefixLen: trace.prefixLen,
+    suffixLen: trace.suffixLen,
+    lenDeltaVsContract: trace.lenDeltaVsContract,
+    deviationMagnitude: trace.deviationMagnitude,
+    indentAvg: trace.indentAvg,
+    indentMax: trace.indentMax,
+    indentDelta: trace.indentDelta,
+    b_transform_ok: trace.bTransformOk,
+    b_transform_reason: trace.bTransformReason ?? null,
+    rollingPf20: trace.rollingPf20,
+    rollingDriftP95: trace.rollingDriftP95,
+    dev_state: trace.devState,
+    dev_threshold: DRIFT_DEV_EVENT_THRESHOLD,
+    reasoning_depth: trace.reasoningDepth,
+    authority_weights: trace.authorityWeights,
+    contradiction_signal: trace.contradictionSignal,
+    alternative_variance: trace.alternativeVariance,
+    elapsed_time_ms: trace.elapsedTimeMs,
+    commitment: trace.commitment,
+    commitment_delta: trace.commitmentDelta,
+    constraint_growth: trace.constraintGrowth,
+    evidence_delta: trace.evidenceDelta,
+    depth_delta: trace.depthDelta,
+    drift_rule_satisfied: trace.driftRuleSatisfied,
+    drift_streak: trace.driftStreak,
+    structural_epistemic_drift: trace.structuralEpistemicDrift,
+    dai: trace.dai,
+    dai_delta: trace.daiDelta,
+    dai_regime: trace.daiRegime,
+    context_length: trace.contextLength,
+    context_length_growth: trace.contextLengthGrowth,
+    raw_hash: trace.rawHash,
+    expected_hash: trace.expectedHash,
+    parse_error: trace.parseError ?? null,
+    parsed_data: trace.parsedData ?? null
+  };
+}
+
+function traceToJsonl(summary: ConditionSummary): string {
+  const lines = summary.traces.map((trace) => JSON.stringify(traceExportPayload(summary, trace)));
   return `${lines.join("\n")}\n`;
+}
+
+function exportableConditionSummary(summary: ConditionSummary): unknown {
+  if (!IS_PUBLIC_SIGNAL_MODE) {
+    return summary;
+  }
+
+  return {
+    profile: summary.profile,
+    condition: summary.condition,
+    objectiveMode: summary.objectiveMode,
+    objectiveLabel: summary.objectiveLabel,
+    objectiveScopeLabel: summary.objectiveScopeLabel,
+    startedAt: summary.startedAt,
+    finishedAt: summary.finishedAt,
+    turnsConfigured: summary.turnsConfigured,
+    turnsAttempted: summary.turnsAttempted,
+    failed: summary.failed,
+    failureReason: summary.failureReason ?? null,
+    parseOkRate: summary.parseOkRate,
+    stateOkRate: summary.stateOkRate,
+    cvRate: summary.cvRate,
+    pfRate: summary.pfRate,
+    ldRate: summary.ldRate,
+    preflightPassed: summary.preflightPassed,
+    structuralEpistemicDriftFlag: summary.structuralEpistemicDriftFlag,
+    firstStructuralDriftTurn: summary.firstStructuralDriftTurn,
+    daiLatest: summary.daiLatest,
+    daiPeak: summary.daiPeak,
+    daiRegimeLatest: summary.daiRegimeLatest,
+    traces: summary.traces.map((trace) => traceExportPayload(summary, trace))
+  };
+}
+
+function exportableResultsSnapshot(results: ResultsByProfile): unknown {
+  if (!IS_PUBLIC_SIGNAL_MODE) {
+    return results;
+  }
+
+  const exportResults: Record<string, { raw: unknown; sanitized: unknown }> = {};
+  for (const profile of Object.keys(results) as ExperimentProfile[]) {
+    const conditionResults = results[profile];
+    exportResults[profile] = {
+      raw: conditionResults.raw ? exportableConditionSummary(conditionResults.raw) : null,
+      sanitized: conditionResults.sanitized ? exportableConditionSummary(conditionResults.sanitized) : null
+    };
+  }
+  return exportResults;
+}
+
+function exportableMatrixRowsSnapshot(rows: MatrixTrialRow[]): unknown {
+  if (!IS_PUBLIC_SIGNAL_MODE) {
+    return rows;
+  }
+
+  return rows.map((row) => ({
+    profile: row.profile,
+    model: row.model,
+    replicate: row.replicate,
+    closureDetected: row.closureDetected
+  }));
 }
 
 function buildConditionSummary(params: {
@@ -2889,6 +2985,41 @@ function aggregateMatrixRows(rows: MatrixTrialRow[]): MatrixAggregateRow[] {
 function buildConditionMarkdown(summary: ConditionSummary): string {
   const phase = summary.phaseTransition;
 
+  if (IS_PUBLIC_SIGNAL_MODE) {
+    return [
+      `### ${PROFILE_LABELS[summary.profile]} — ${CONDITION_LABELS[summary.condition]}`,
+      `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
+      `- Objective scope: ${summary.objectiveScopeLabel}`,
+      `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
+      `- ParseOK rate (all): ${asPercent(summary.parseOkRate)}`,
+      `- StateOK rate (all): ${asPercent(summary.stateOkRate)}`,
+      `- Preflight gate: ${summary.preflightPassed === null ? "not evaluated" : summary.preflightPassed ? "PASS" : "FAIL"}`,
+      isBeliefLoopProfile(summary.profile)
+        ? `- Structural epistemic drift signal: ${summary.consensusCollapseFlag ? "YES" : "NO"}`
+        : "",
+      isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
+      isBeliefLoopProfile(summary.profile)
+        ? `- DAI latest/peak/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${summary.daiRegimeLatest ?? "n/a"}`
+        : "",
+      `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
+      `- FTF_total/parse/logic/struct: ${summary.ftfTotal ?? "N/A"} / ${summary.ftfParse ?? "N/A"} / ${summary.ftfLogic ?? "N/A"} / ${
+        summary.ftfStruct ?? "N/A"
+      }`,
+      `- Phase transition candidate: ${phase ? `turn ${phase.turn}` : "none detected"}`,
+      "",
+      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | Regime |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      ...summary.traces.slice(0, 30).map((trace) => {
+        return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
+          trace.dai,
+          3
+        )} | ${trace.daiRegime ?? "n/a"} |`;
+      })
+    ]
+      .filter((line) => line.length > 0)
+      .join("\n");
+  }
+
   return [
     `### ${PROFILE_LABELS[summary.profile]} — ${CONDITION_LABELS[summary.condition]}`,
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
@@ -2983,23 +3114,37 @@ function buildLabReportMarkdown(params: {
 }): string {
   const { generatedAt, results } = params;
 
-  const sections: string[] = [
-    "# Agent Lab Suite v1 — Belief Attractor Lab Report",
-    "",
-    "## Purpose",
-    "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding (temperature = 0.00).",
-    "",
-    "## Structural Epistemic Drift Criterion",
-    `Drift is flagged when commitment_delta > ${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(
-      2
-    )}, evidence_delta = 0, and depth_delta = 0 for at least ${STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns while ParseOK/StateOK remain >= ${(
-      STRUCTURAL_GUARDRAIL.parseOkMin * 100
-    ).toFixed(0)}%.`,
-    "",
-    "## Run Timestamp",
-    `- Generated at: ${generatedAt}`,
-    ""
-  ];
+  const sections: string[] = IS_PUBLIC_SIGNAL_MODE
+    ? [
+        "# Agent Lab Suite v1 — Belief Attractor Lab Report",
+        "",
+        "## Purpose",
+        "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding.",
+        "",
+        "## Detection Policy",
+        "GuardianAI applies structural gating and reports high-level drift outcomes (black-box mode).",
+        "",
+        "## Run Timestamp",
+        `- Generated at: ${generatedAt}`,
+        ""
+      ]
+    : [
+        "# Agent Lab Suite v1 — Belief Attractor Lab Report",
+        "",
+        "## Purpose",
+        "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding (temperature = 0.00).",
+        "",
+        "## Structural Epistemic Drift Criterion",
+        `Drift is flagged when commitment_delta > ${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(
+          2
+        )}, evidence_delta = 0, and depth_delta = 0 for at least ${STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns while ParseOK/StateOK remain >= ${(
+          STRUCTURAL_GUARDRAIL.parseOkMin * 100
+        ).toFixed(0)}%.`,
+        "",
+        "## Run Timestamp",
+        `- Generated at: ${generatedAt}`,
+        ""
+      ];
 
   for (const profile of UI_PROFILE_LIST) {
     const raw = results[profile].raw;
@@ -3027,6 +3172,19 @@ function buildLabReportMarkdown(params: {
 
     if (!raw || !sanitized) {
       sections.push("Run both conditions for this profile to compute comparative metrics.");
+    } else if (IS_PUBLIC_SIGNAL_MODE) {
+      const consensus = evaluateConsensusCollapse(raw, sanitized);
+      sections.push(`- Drift verdict: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
+      sections.push(`- RAW signal: ${consensus?.rawSignal ? "YES" : "NO"} | SAN signal: ${consensus?.sanitizedSignal ? "YES" : "NO"}`);
+      sections.push(
+        `- RAW/SAN first drift turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
+      );
+      sections.push(
+        `- RAW/SAN DAI latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
+          consensus?.sanitizedDaiLatest ?? null,
+          3
+        )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
+      );
     } else {
       if (isBeliefLoopProfile(profile)) {
         const consensus = evaluateConsensusCollapse(raw, sanitized);
@@ -3116,14 +3274,16 @@ function buildLabReportMarkdown(params: {
 
   sections.push("## Guardrails");
   sections.push("- No semantic judging was used.");
-  sections.push("- Metrics are machine-checkable dynamics over recursive state updates (agreement, evidence reuse, confidence drift, parse/state integrity).");
+  sections.push("- Metrics are machine-checkable dynamics over recursive state updates.");
   sections.push("- Belief-loop profiles enforce fixed schema + fixed evidence ID pools; no free-form evidence invention allowed.");
-  sections.push(`- Reinforcement dev-event is defined as deviationMagnitude > ${DRIFT_DEV_EVENT_THRESHOLD}.`);
-  sections.push(
-    `- Persistence inflection alert uses rolling window ${ROLLING_REINFORCEMENT_WINDOW} with reinforcementDelta > ${REINFORCEMENT_ALERT_DELTA.toFixed(2)} for ${REINFORCEMENT_INFLECTION_STREAK} consecutive points.`
-  );
-  sections.push("- Byte continuity audit is included: prev_output->next_input and prev_injected->next_input rates.");
-  sections.push("- Newline-first drift sentinel is explicitly tracked via suffixLen and firstSuffixDriftTurn.");
+  if (!IS_PUBLIC_SIGNAL_MODE) {
+    sections.push(`- Reinforcement dev-event is defined as deviationMagnitude > ${DRIFT_DEV_EVENT_THRESHOLD}.`);
+    sections.push(
+      `- Persistence inflection alert uses rolling window ${ROLLING_REINFORCEMENT_WINDOW} with reinforcementDelta > ${REINFORCEMENT_ALERT_DELTA.toFixed(2)} for ${REINFORCEMENT_INFLECTION_STREAK} consecutive points.`
+    );
+    sections.push("- Byte continuity audit is included: prev_output->next_input and prev_injected->next_input rates.");
+    sections.push("- Newline-first drift sentinel is explicitly tracked via suffixLen and firstSuffixDriftTurn.");
+  }
   sections.push("- Configuration is captured immutably per run in snapshot.json.");
 
   return sections.join("\n");
@@ -4581,12 +4741,13 @@ export default function HomePage() {
   function exportSnapshotJSON() {
     const payload = {
       protocol: "Agent Lab Suite v1",
+      signalVisibilityMode: SIGNAL_VISIBILITY_MODE,
       generatedAt: new Date().toISOString(),
       fixedTemperature: temperature,
       fixedRetries: FIXED_RETRIES,
-      structuralGuardrailCriterion: STRUCTURAL_GUARDRAIL,
-      results,
-      matrixRows
+      structuralGuardrailCriterion: IS_PUBLIC_SIGNAL_MODE ? "hidden" : STRUCTURAL_GUARDRAIL,
+      results: exportableResultsSnapshot(results),
+      matrixRows: exportableMatrixRowsSnapshot(matrixRows)
     };
 
     downloadTextFile("snapshot.json", JSON.stringify(payload, null, 2), "application/json");
@@ -4684,10 +4845,6 @@ export default function HomePage() {
               <span>Run {isRunning ? "ON" : "OFF"}</span>
             </div>
             <div className="status-line">
-              <span className="dot good" />
-              <span>{runPhaseText}</span>
-            </div>
-            <div className="status-line">
               <span className={`dot ${apiKey.trim() ? "good" : "warn"}`} />
               <span>Key {keyStatusLabel}</span>
             </div>
@@ -4724,38 +4881,57 @@ export default function HomePage() {
       </section>
 
       <section className="control-band">
-        <div className="control-stack">
-          <article className="card run-card">
-            <h3>What This Measures</h3>
-            <div className="measure-grid">
-              <p className="tiny">
-                <strong>GuardianAI V3 framing:</strong> structural observer only (content-agnostic, no truth scoring).
-              </p>
-              <p className="tiny">
-                <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
-              </p>
-              <p className="tiny">
-                <strong>Contract keys:</strong> <code>claim, stance, confidence, evidence_ids</code> with fixed key order.
-              </p>
-              <p className="tiny">
-                <strong>Drift rule:</strong> commitment delta &gt; {STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence delta = 0 and depth delta = 0 for at least {STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns.
-              </p>
-              <p className="tiny">
-                <strong>Triangle signals:</strong> P = artifact persistence, E = 1 - normalized template entropy, R = clamp(reinforcement delta, 0..1).
-              </p>
-              <p className="tiny">
-                <strong>DAI formula:</strong> <code>DAI = (P * E * R)^(1/3)</code>. Geometric mean keeps DAI low unless all three are active.
-              </p>
-              <p className="tiny measure-full">
-                <strong>DAI regimes:</strong> 0.00-0.20 noise, 0.20-0.50 attractor formation, 0.50-0.80 structural drift, 0.80-1.00 drift amplification.
-              </p>
-              <p className="tiny measure-full">
-                <strong>Primary readout:</strong> Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO.
-              </p>
-            </div>
-          </article>
+        <article className="card run-card">
+          <h3>What This Measures</h3>
+          <div className="measure-grid">
+            {IS_PUBLIC_SIGNAL_MODE ? (
+              <>
+                <p className="tiny">
+                  <strong>Framing:</strong> GuardianAI observes structure, not truth content.
+                </p>
+                <p className="tiny">
+                  <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
+                </p>
+                <p className="tiny">
+                  <strong>Contract:</strong> fixed output schema with deterministic decoding.
+                </p>
+                <p className="tiny measure-full">
+                  <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, with DAI regime support.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="tiny">
+                  <strong>GuardianAI V3 framing:</strong> structural observer only (content-agnostic, no truth scoring).
+                </p>
+                <p className="tiny">
+                  <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
+                </p>
+                <p className="tiny">
+                  <strong>Contract keys:</strong> <code>claim, stance, confidence, evidence_ids</code> with fixed key order.
+                </p>
+                <p className="tiny">
+                  <strong>Drift rule:</strong> commitment delta &gt; {STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence delta = 0 and depth delta = 0 for at least {STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns.
+                </p>
+                <p className="tiny">
+                  <strong>Triangle signals:</strong> P = artifact persistence, E = 1 - normalized template entropy, R = clamp(reinforcement delta, 0..1).
+                </p>
+                <p className="tiny">
+                  <strong>DAI formula:</strong> <code>DAI = (P * E * R)^(1/3)</code>. Geometric mean keeps DAI low unless all three are active.
+                </p>
+                <p className="tiny measure-full">
+                  <strong>DAI regimes:</strong> 0.00-0.20 noise, 0.20-0.50 attractor formation, 0.50-0.80 structural drift, 0.80-1.00 drift amplification.
+                </p>
+                <p className="tiny measure-full">
+                  <strong>Primary readout:</strong> Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO.
+                </p>
+              </>
+            )}
+          </div>
+        </article>
 
-          <article className="card run-card">
+        <div className="run-workspace">
+          <article className="card run-card run-controls-card">
             <div className="row-actions">
               <button onClick={runSelectedCondition} disabled={isRunning} className="primary">
                 Run Selected Condition
@@ -4782,7 +4958,7 @@ export default function HomePage() {
               </div>
 
               <div className="field-block run-field-turns">
-                <label>Turns (Horizon)</label>
+                <label>Turns</label>
                 <input
                   type="number"
                   min={1}
@@ -4806,7 +4982,7 @@ export default function HomePage() {
               </div>
 
               <div className="field-block run-field-temp">
-                <label>Temperature</label>
+                <label>Temp</label>
                 <input
                   type="number"
                   min={0}
@@ -4819,7 +4995,7 @@ export default function HomePage() {
               </div>
 
               <div className="field-block run-field-delay">
-                <label>Inter-turn Delay (ms)</label>
+                <label>Inter-turn (ms)</label>
                 <input
                   type="number"
                   min={MIN_INTER_TURN_DELAY_MS}
@@ -4833,7 +5009,6 @@ export default function HomePage() {
                   disabled={isRunning}
                 />
               </div>
-
             </div>
 
             <div className="policy-inline">
@@ -4841,9 +5016,84 @@ export default function HomePage() {
                 <strong>Quality gate:</strong> an early contract-compliance checkpoint can stop low-signal runs before full horizon.
               </p>
               <p className="tiny">
-                <strong>Structural drift criterion:</strong> commitment rises faster than constraint growth under stable reasoning depth.
+                <strong>Structural drift criterion:</strong>{" "}
+                {IS_PUBLIC_SIGNAL_MODE
+                  ? "observer evaluates commitment-vs-constraint divergence over time."
+                  : "commitment rises faster than constraint growth under stable reasoning depth."}
               </p>
             </div>
+          </article>
+
+          <article className="card run-card run-summary-card">
+            <h3>Summary</h3>
+            <p className="muted">This experiment measures whether commitment grows faster than constraint growth in recursive belief exchange.</p>
+            <p className="muted">
+              RAW = exact reinjection of model output. SANITIZED = canonicalized reinjection. DETECTED means RAW drift signal appears while SANITIZED does not.
+            </p>
+            <p className="muted">
+              Quality gate: an early checkpoint may pause long runs when the stream is not meeting baseline contract reliability.
+            </p>
+
+            <section className="latest-card">
+              <h4>Panel 1 - Run Monitor</h4>
+              <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
+              <p className="mono">Phase: {runPhaseText}</p>
+              <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
+              <p className="mono">
+                Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
+              </p>
+              <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
+              <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
+              <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
+              <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
+              <p className="mono">Structural drift verdict: {closure.label}</p>
+              <p className="mono">
+                {IS_PUBLIC_SIGNAL_MODE ? "DAI / regime: " : "DAI / ΔDAI / regime: "}
+                {activeTrace
+                  ? IS_PUBLIC_SIGNAL_MODE
+                    ? `${asFixed(activeTrace.dai, 3)} / ${activeTrace.daiRegime ?? "n/a"}`
+                    : `${asFixed(activeTrace.dai, 3)} / ${asFixed(activeTrace.daiDelta, 4)} / ${activeTrace.daiRegime ?? "n/a"}`
+                  : "n/a"}
+              </p>
+              {!IS_PUBLIC_SIGNAL_MODE ? (
+                <>
+                  <p className="mono">
+                    commitment / delta / constraint growth:{" "}
+                    {activeTrace
+                      ? `${asFixed(activeTrace.commitment, 3)} / ${asFixed(activeTrace.commitmentDelta, 3)} / ${asFixed(activeTrace.constraintGrowth, 3)}`
+                      : "n/a"}
+                  </p>
+                  <p className="mono">
+                    reasoning depth / depth delta / drift streak:{" "}
+                    {activeTrace
+                      ? `${asFixed(activeTrace.reasoningDepth, 3)} / ${asFixed(activeTrace.depthDelta, 3)} / ${activeTrace.driftStreak}`
+                      : "n/a"}
+                  </p>
+                  <p className="mono">
+                    contradiction / alt variance / elapsed(ms):{" "}
+                    {activeTrace
+                      ? `${asFixed(activeTrace.contradictionSignal, 3)} / ${asFixed(activeTrace.alternativeVariance, 3)} / ${asFixed(
+                          activeTrace.elapsedTimeMs,
+                          1
+                        )}`
+                      : "n/a"}
+                  </p>
+                </>
+              ) : null}
+              <p className="tiny">
+                <strong>Live LLM Output (latest turn)</strong>
+              </p>
+              <p className="tiny">Input (injected)</p>
+              <pre className="raw-pre">{activeTrace?.inputBytes ?? "[no trace yet]"}</pre>
+              <p className="tiny">Output (model)</p>
+              <pre className="raw-pre">{activeTrace?.outputBytes ?? "[no output yet]"}</pre>
+              <p className="tiny">Expected (contract)</p>
+              <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
+              <p className="tiny">Injected next turn</p>
+              <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
+              {activeTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
+              {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
+            </section>
           </article>
         </div>
       </section>
@@ -4872,13 +5122,17 @@ export default function HomePage() {
                         <th>Turn</th>
                         <th>Agent</th>
                         <th>DAI</th>
-                        <th>dDAI</th>
                         <th>Regime</th>
-                        <th>Commit</th>
-                        <th>cDelta</th>
-                        <th>cGrow</th>
-                        <th>Depth</th>
-                        <th>dDepth</th>
+                        {!IS_PUBLIC_SIGNAL_MODE ? (
+                          <>
+                            <th>dDAI</th>
+                            <th>Commit</th>
+                            <th>cDelta</th>
+                            <th>cGrow</th>
+                            <th>Depth</th>
+                            <th>dDepth</th>
+                          </>
+                        ) : null}
                         <th>Parse</th>
                         <th>State</th>
                       </tr>
@@ -4889,13 +5143,17 @@ export default function HomePage() {
                           <td>{trace.turnIndex}</td>
                           <td>{trace.agent}</td>
                           <td>{asFixed(trace.dai, 3)}</td>
-                          <td>{asFixed(trace.daiDelta, 3)}</td>
                           <td>{trace.daiRegime ?? "n/a"}</td>
-                          <td>{asFixed(trace.commitment, 3)}</td>
-                          <td>{asFixed(trace.commitmentDelta, 3)}</td>
-                          <td>{asFixed(trace.constraintGrowth, 3)}</td>
-                          <td>{asFixed(trace.reasoningDepth, 2)}</td>
-                          <td>{asFixed(trace.depthDelta, 2)}</td>
+                          {!IS_PUBLIC_SIGNAL_MODE ? (
+                            <>
+                              <td>{asFixed(trace.daiDelta, 3)}</td>
+                              <td>{asFixed(trace.commitment, 3)}</td>
+                              <td>{asFixed(trace.commitmentDelta, 3)}</td>
+                              <td>{asFixed(trace.constraintGrowth, 3)}</td>
+                              <td>{asFixed(trace.reasoningDepth, 2)}</td>
+                              <td>{asFixed(trace.depthDelta, 2)}</td>
+                            </>
+                          ) : null}
                           <td>{trace.parseOk}</td>
                           <td>{trace.stateOk}</td>
                         </tr>
@@ -4914,77 +5172,13 @@ export default function HomePage() {
           <header className="monitor-header">
             <div className="monitor-title-row">
               <div>
-                <h3>Summary & Results</h3>
-                <p className="muted">Experiment summary, run monitor, condition cards, and structural drift check.</p>
+                <h3>Results</h3>
+                <p className="muted">Condition cards and structural epistemic drift check.</p>
               </div>
             </div>
           </header>
 
           <div className="turn-stream">
-            <section className="latest-card">
-              <h4>Summary</h4>
-              <p className="muted">This experiment measures whether commitment grows faster than constraint growth in recursive belief exchange.</p>
-              <p className="muted">
-                RAW = exact reinjection of model output. SANITIZED = canonicalized reinjection. DETECTED means RAW drift signal appears while SANITIZED does not.
-              </p>
-              <p className="muted">
-                Quality gate: an early checkpoint may pause long runs when the stream is not meeting baseline contract reliability.
-              </p>
-            </section>
-
-            <section className="latest-card">
-              <h4>Panel 1 - Run Monitor</h4>
-              <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
-              <p className="mono">Phase: {runPhaseText}</p>
-              <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
-              <p className="mono">
-                Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
-              </p>
-              <p className="mono">Latest turn: {activeTrace ? `${activeTrace.turnIndex} (${activeTrace.agent})` : "n/a"}</p>
-              <p className="mono">ParseOK / StateOK: {activeTrace ? `${activeTrace.parseOk} / ${activeTrace.stateOk}` : "n/a"}</p>
-              <p className="mono">Cv / Pf / Ld: {activeTrace ? `${activeTrace.cv} / ${activeTrace.pf} / ${activeTrace.ld}` : "n/a"}</p>
-              <p className="mono">Objective fail: {activeTrace ? activeTrace.objectiveFailure : "n/a"}</p>
-              <p className="mono">Structural drift verdict: {closure.label}</p>
-              <p className="mono">
-                commitment / delta / constraint growth:{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.commitment, 3)} / ${asFixed(activeTrace.commitmentDelta, 3)} / ${asFixed(activeTrace.constraintGrowth, 3)}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                reasoning depth / depth delta / drift streak:{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.reasoningDepth, 3)} / ${asFixed(activeTrace.depthDelta, 3)} / ${activeTrace.driftStreak}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                contradiction / alt variance / elapsed(ms):{" "}
-                {activeTrace
-                  ? `${asFixed(activeTrace.contradictionSignal, 3)} / ${asFixed(activeTrace.alternativeVariance, 3)} / ${asFixed(
-                      activeTrace.elapsedTimeMs,
-                      1
-                    )}`
-                  : "n/a"}
-              </p>
-              <p className="mono">
-                DAI / ΔDAI / regime:{" "}
-                {activeTrace ? `${asFixed(activeTrace.dai, 3)} / ${asFixed(activeTrace.daiDelta, 4)} / ${activeTrace.daiRegime ?? "n/a"}` : "n/a"}
-              </p>
-              <p className="tiny">
-                <strong>Live LLM Output (latest turn)</strong>
-              </p>
-              <p className="tiny">Input (injected)</p>
-              <pre className="raw-pre">{activeTrace?.inputBytes ?? "[no trace yet]"}</pre>
-              <p className="tiny">Output (model)</p>
-              <pre className="raw-pre">{activeTrace?.outputBytes ?? "[no output yet]"}</pre>
-              <p className="tiny">Expected (contract)</p>
-              <pre className="raw-pre">{activeTrace?.expectedBytes ?? "[no expected yet]"}</pre>
-              <p className="tiny">Injected next turn</p>
-              <pre className="raw-pre">{activeTrace?.injectedBytesNext ?? "[no injection yet]"}</pre>
-              {activeTrace?.guardianObserveError ? <p className="warning-note">Observer service unavailable for this turn.</p> : null}
-              {activeTrace?.parseError ? <p className="warning-note">Latest parse error: {activeTrace.parseError}</p> : null}
-            </section>
-
             {(["raw", "sanitized"] as const).map((condition) => {
               const summary = results[selectedProfile][condition];
               const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
@@ -5000,27 +5194,40 @@ export default function HomePage() {
                       <p className="mono">
                         Turns attempted/configured: {summary.turnsAttempted}/{summary.turnsConfigured}
                       </p>
-                      <p className="mono">ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}</p>
-                      <p className="mono">StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}</p>
+                      {IS_PUBLIC_SIGNAL_MODE ? (
+                        <>
+                          <p className="mono">ParseOK (all): {asPercent(summary.parseOkRate)}</p>
+                          <p className="mono">StateOK (all): {asPercent(summary.stateOkRate)}</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="mono">
+                            ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}
+                          </p>
+                          <p className="mono">
+                            StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
+                          </p>
+                        </>
+                      )}
                       <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
                       {summary.failed ? <p className="mono">Failure reason: {summary.failureReason ?? "n/a"}</p> : null}
                       <p className="mono">Cv/Pf/Ld: {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}</p>
                       <p className="mono">
                         FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
                       </p>
-                      {isBeliefLoopProfile(summary.profile) ? (
+                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
                         <p className="mono">
                           agreement/diversity/no-new-evidence/evidence-growth: {asPercent(summary.agreementRateAB)} / {asFixed(summary.evidenceDiversity, 3)} /{" "}
                           {asPercent(summary.noNewEvidenceRate)} / {asPercent(summary.evidenceGrowthRate)}
                         </p>
                       ) : null}
-                      {isBeliefLoopProfile(summary.profile) ? (
+                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
                         <p className="mono">
                           commitmentΔ+ avg: {asFixed(summary.avgCommitmentDeltaPos, 4)} | constraint growth rate: {asPercent(summary.constraintGrowthRate)} |
                           closure/constraint ratio: {asFixed(summary.closureConstraintRatio, 4)}
                         </p>
                       ) : null}
-                      {isBeliefLoopProfile(summary.profile) ? (
+                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
                         <p className="mono">
                           avg reasoning depth: {asFixed(summary.avgReasoningDepth, 3)} | avg alternative variance: {asFixed(summary.avgAlternativeVariance, 3)} |
                           drift streak max: {summary.structuralDriftStreakMax}
@@ -5034,11 +5241,15 @@ export default function HomePage() {
                       ) : null}
                       {isBeliefLoopProfile(summary.profile) ? (
                         <p className="mono">
-                          DAI latest/peak/slope: {asFixed(summary.daiLatest, 3)} / {asFixed(summary.daiPeak, 3)} / {asFixed(summary.daiSlope, 4)} | regime:{" "}
-                          {summary.daiRegimeLatest ?? "n/a"}
+                          {IS_PUBLIC_SIGNAL_MODE
+                            ? `DAI latest/peak: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} | regime: ${summary.daiRegimeLatest ?? "n/a"}`
+                            : `DAI latest/peak/slope: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(
+                                summary.daiSlope,
+                                4
+                              )} | regime: ${summary.daiRegimeLatest ?? "n/a"}`}
                         </p>
                       ) : null}
-                      {isBeliefLoopProfile(summary.profile) ? (
+                      {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
                         <p className="mono">
                           ΔDAI latest: {asFixed(summary.daiDeltaLatest, 4)} | first attractor/drift/amplification: {summary.daiFirstAttractorTurn ?? "n/a"} /{" "}
                           {summary.daiFirstDriftTurn ?? "n/a"} / {summary.daiFirstAmplificationTurn ?? "n/a"}
@@ -5056,12 +5267,7 @@ export default function HomePage() {
               <h4>Panel 3 - Structural Epistemic Drift Check</h4>
               {consensusEval ? (
                 <>
-                  <p className="tiny">
-                    Interpretation: RAW=YES + SAN=NO means recursion-specific structural drift evidence. RAW=YES + SAN=YES means the effect is not isolated to raw reinjection.
-                  </p>
-                  <p className="tiny">
-                    DAI regime map: 0.00-0.20 noise, 0.20-0.50 attractor formation, 0.50-0.80 structural drift, 0.80-1.00 drift amplification.
-                  </p>
+                  <p className="tiny">RAW=YES and SAN=NO indicates recursion-specific structural drift evidence.</p>
                   <p>
                     Drift verdict: <strong>{closure.label}</strong>
                   </p>
@@ -5072,25 +5278,34 @@ export default function HomePage() {
                     RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
                   </p>
                   <p className="mono">
-                    RAW first drift turn / max streak: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.rawStructuralDriftStreakMax}
-                  </p>
-                  <p className="mono">
-                    SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
-                  </p>
-                  <p className="mono">
                     RAW/SAN DAI (latest, regime): {asFixed(consensusEval.rawDaiLatest, 3)} {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} /{" "}
                     {asFixed(consensusEval.sanitizedDaiLatest, 3)} {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
                   </p>
-                  <p className="mono">
-                    RAW/SAN ΔDAI latest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} / {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} |{" "}
-                    {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
-                  </p>
-                  <p className="mono">
-                    RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} / {asFixed(consensusEval.sanitizedClosureConstraintRatio, 4)}
-                  </p>
-                  <p className="mono">
-                    RAW/SAN constraint-growth rate: {asPercent(consensusEval.rawConstraintGrowthRate)} / {asPercent(consensusEval.sanitizedConstraintGrowthRate)}
-                  </p>
+                  {IS_PUBLIC_SIGNAL_MODE ? (
+                    <p className="mono">
+                      RAW/SAN first drift turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
+                    </p>
+                  ) : (
+                    <>
+                      <p className="mono">
+                        RAW first drift turn / max streak: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.rawStructuralDriftStreakMax}
+                      </p>
+                      <p className="mono">
+                        SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN ΔDAI latest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} / {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} |{" "}
+                        {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} /{" "}
+                        {asFixed(consensusEval.sanitizedClosureConstraintRatio, 4)}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN constraint-growth rate: {asPercent(consensusEval.rawConstraintGrowthRate)} / {asPercent(consensusEval.sanitizedConstraintGrowthRate)}
+                      </p>
+                    </>
+                  )}
                 </>
               ) : (
                 <p className="muted">Run both RAW and SANITIZED for the current profile to evaluate the criterion.</p>
