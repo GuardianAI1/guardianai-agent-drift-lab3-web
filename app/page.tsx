@@ -3913,6 +3913,8 @@ export default function HomePage() {
 
   const [results, setResults] = useState<ResultsByProfile>(emptyResults());
   const [activeTrace, setActiveTrace] = useState<TurnTrace | null>(null);
+  const [liveTelemetryRows, setLiveTelemetryRows] = useState<TurnTrace[]>([]);
+  const [liveTraceCondition, setLiveTraceCondition] = useState<RepCondition>("raw");
   const [matrixRows, setMatrixRows] = useState<MatrixTrialRow[]>([]);
 
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -3983,8 +3985,6 @@ export default function HomePage() {
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
-  const liveSummary = profileResults[selectedCondition];
-  const liveTelemetryRows = liveSummary ? liveSummary.traces.slice(-16).reverse() : [];
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
   const closure = closureVerdict(consensusEval);
   const matrixAggregate = useMemo(() => aggregateMatrixRows(matrixRows), [matrixRows]);
@@ -4090,6 +4090,8 @@ export default function HomePage() {
     let failureReason: string | undefined;
 
     setResults((prev) => setConditionResult(prev, profile, condition, null));
+    setLiveTraceCondition(condition);
+    setLiveTelemetryRows([]);
 
     for (let turn = 1; turn <= turnBudget; turn += 1) {
       if (runControlRef.current.cancelled) break;
@@ -4406,6 +4408,7 @@ export default function HomePage() {
       traces.push(trace);
       previousIndentAvgByAgent[agent] = indent.indentAvg;
       setActiveTrace(trace);
+      setLiveTelemetryRows((prev) => [trace, ...prev].slice(0, 32));
 
       if (pf === 0 && ld === 0) {
         authoritativeStep = expectedStep;
@@ -4630,6 +4633,8 @@ export default function HomePage() {
     setStopOnFirstFailure(false);
     setResults(emptyResults());
     setActiveTrace(null);
+    setLiveTelemetryRows([]);
+    setLiveTraceCondition("raw");
     setMatrixRows([]);
     setErrorMessage(null);
   }
@@ -4985,7 +4990,7 @@ export default function HomePage() {
             </section>
 
             <section className="latest-card">
-              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[selectedCondition]})</h4>
+              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
               <p className="tiny">Newest first, auto-updates each turn while run is active.</p>
               {liveTelemetryRows.length > 0 ? (
                 <div className="telemetry-table-wrap">
@@ -5027,7 +5032,7 @@ export default function HomePage() {
                   </table>
                 </div>
               ) : (
-                <p className="muted">No telemetry yet. Start a run to stream per-turn signals.</p>
+                <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No telemetry yet. Start a run to stream per-turn signals."}</p>
               )}
             </section>
           </div>
