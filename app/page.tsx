@@ -4153,6 +4153,11 @@ export default function HomePage() {
   const canViewPrevTrace = monitorTraceIndex > 0;
   const canViewNextTrace = monitorTraceIndex >= 0 && monitorTraceIndex < monitorTraces.length - 1;
   const monitorTurnMax = monitorTraces.length > 0 ? monitorTraces[monitorTraces.length - 1].turnIndex : 0;
+  const liveTurnProgressPct = turnBudget > 0 ? Math.min(100, (monitorTurnMax / turnBudget) * 100) : 0;
+  const liveDaiStatus =
+    monitorLatestTrace?.dai !== null && monitorLatestTrace?.dai !== undefined
+      ? `${asFixed(monitorLatestTrace.dai, 3)} (${monitorLatestTrace.daiRegime ?? "n/a"})`
+      : "N/A (needs mixed dev/clean baseline)";
 
   useEffect(() => {
     const panelNode = panel1MonitorRef.current;
@@ -4981,66 +4986,10 @@ export default function HomePage() {
 
       {errorMessage ? <p className="error-line">{errorMessage}</p> : null}
 
-      <section className="subtitle-row">
-        <span>GuardianAI Agent Lab Suite v1 — Belief Attractors and Epistemic Drift</span>
-        <span>
-          Profile: {PROFILE_LABELS[selectedProfile]} | Objective: Structural epistemic drift detection | Temperature: {temperature.toFixed(2)}
-          {temperature === 0 ? " (deterministic)" : " (non-deterministic)"}
-        </span>
-      </section>
-
       <section className="control-band">
-        <article className="card run-card">
-          <h3>What This Measures</h3>
-          <div className="measure-grid">
-            {IS_PUBLIC_SIGNAL_MODE ? (
-              <>
-                <p className="tiny">
-                  <strong>Framing:</strong> GuardianAI observes structure, not truth content.
-                </p>
-                <p className="tiny">
-                  <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
-                </p>
-                <p className="tiny">
-                  <strong>Contract:</strong> fixed output schema with deterministic decoding.
-                </p>
-                <p className="tiny measure-full">
-                  <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, with DAI regime support.
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="tiny">
-                  <strong>GuardianAI V3 framing:</strong> structural observer only (content-agnostic, no truth scoring).
-                </p>
-                <p className="tiny">
-                  <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
-                </p>
-                <p className="tiny">
-                  <strong>Contract keys:</strong> <code>claim, stance, confidence, evidence_ids</code> with fixed key order.
-                </p>
-                <p className="tiny">
-                  <strong>Drift rule:</strong> commitment delta &gt; {STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence delta = 0 and depth delta = 0 for at least {STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns.
-                </p>
-                <p className="tiny">
-                  <strong>Triangle signals:</strong> P = artifact persistence, E = 1 - normalized template entropy, R = clamp(reinforcement delta, 0..1).
-                </p>
-                <p className="tiny">
-                  <strong>DAI formula:</strong> <code>DAI = (P * E * R)^(1/3)</code>. Geometric mean keeps DAI low unless all three are active.
-                </p>
-                <p className="tiny measure-full">
-                  <strong>DAI regimes:</strong> 0.00-0.20 noise, 0.20-0.50 attractor formation, 0.50-0.80 structural drift, 0.80-1.00 drift amplification.
-                </p>
-                <p className="tiny measure-full">
-                  <strong>Primary readout:</strong> Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO.
-                </p>
-              </>
-            )}
-          </div>
-        </article>
-
         <div className="run-workspace">
           <article className="card run-card run-controls-card">
+            <h3>Run Setup</h3>
             <div className="row-actions">
               <button onClick={runSelectedCondition} disabled={isRunning} className="primary">
                 Run Selected Condition
@@ -5120,20 +5069,36 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className="policy-inline">
+            <section className="overview-lines">
               <p className="tiny">
-                <strong>Quality gate:</strong> an early contract-compliance checkpoint can stop low-signal runs before full horizon.
+                <strong>Framing:</strong> GuardianAI observes structure, not truth content.
               </p>
               <p className="tiny">
-                <strong>Structural drift criterion:</strong>{" "}
+                <strong>Contract:</strong>{" "}
+                {IS_PUBLIC_SIGNAL_MODE ? (
+                  "fixed output schema with deterministic decoding."
+                ) : (
+                  <>
+                    fixed keys <code>claim, stance, confidence, evidence_ids</code> with deterministic decoding.
+                  </>
+                )}
+              </p>
+              <p className="tiny">
+                <strong>Primary readout:</strong>{" "}
                 {IS_PUBLIC_SIGNAL_MODE
-                  ? "observer evaluates commitment-vs-constraint divergence over time."
-                  : "commitment rises faster than constraint growth under stable reasoning depth."}
+                  ? "drift verdict from RAW vs SANITIZED divergence, with DAI regime support."
+                  : "Structural Epistemic Drift Check is isolated when RAW = YES and SANITIZED = NO."}
               </p>
-            </div>
+              <p className="tiny">
+                <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
+              </p>
+              <p className="tiny">
+                <strong>Quality gate:</strong> early contract-compliance checkpoint can stop low-signal runs before full horizon.
+              </p>
+            </section>
 
             <section className="latest-card live-stream-card">
-              <h4>Panel 1A - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
+              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
               <p className="tiny">
                 {liveTelemetryNewestFirst
                   ? "Newest first (turn N -&gt; 1), auto-updates each completed turn while run is active."
@@ -5216,63 +5181,30 @@ export default function HomePage() {
           </article>
 
           <article className="card run-card run-summary-card">
-            <h3>Summary</h3>
-            <p className="muted">This experiment measures whether commitment grows faster than constraint growth in recursive belief exchange.</p>
-            <p className="muted">
-              RAW = exact reinjection of model output. SANITIZED = canonicalized reinjection. DETECTED means RAW drift signal appears while SANITIZED does not.
-            </p>
-            <p className="muted">
-              Quality gate: an early checkpoint may pause long runs when the stream is not meeting baseline contract reliability.
-            </p>
+            <section className="latest-card live-snapshot-card">
+              <h4>Live Snapshot</h4>
+              <div className="live-snapshot-grid">
+                <p className="mono">State: {isRunning ? "RUNNING" : "IDLE"}</p>
+                <p className="mono">Phase: {runPhaseText}</p>
+                <p className="mono">
+                  Progress: {monitorTurnMax}/{turnBudget} ({liveTurnProgressPct.toFixed(1)}%)
+                </p>
+                <p className="mono">Latest agent: {monitorLatestTrace?.agent ?? "n/a"}</p>
+                <p className="mono">
+                  Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
+                </p>
+                <p className="mono">Cv/Pf/Ld latest: {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}</p>
+                <p className="mono">DAI latest: {liveDaiStatus}</p>
+                <p className="mono">Guardian: {guardianStatusLabel}</p>
+              </div>
+            </section>
 
             <section className="latest-card" ref={panel1MonitorRef}>
-              <h4>Panel 1B - Run Monitor</h4>
-              <p className="mono">Run state: {isRunning ? "RUNNING" : "IDLE"}</p>
-              <p className="mono">Phase: {runPhaseText}</p>
-              <p className="mono">Selected condition: {CONDITION_LABELS[selectedCondition]}</p>
-              <p className="mono">Monitor condition: {CONDITION_LABELS[monitorCondition]}</p>
-              <p className="mono">
-                Horizon / Temperature / Max tokens / Delay(ms): {turnBudget} / {temperature.toFixed(2)} / {llmMaxTokens} / {interTurnDelayMs}
-              </p>
+              <h4>Panel 1A - LLM Output (Turn Explorer)</h4>
               <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
               <p className="mono">Cv / Pf / Ld: {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}</p>
-              <p className="mono">Objective fail: {monitorTrace ? monitorTrace.objectiveFailure : "n/a"}</p>
-              <p className="mono">Structural drift verdict: {closure.label}</p>
-              <p className="mono">
-                {IS_PUBLIC_SIGNAL_MODE ? "DAI / regime: " : "DAI / ΔDAI / regime: "}
-                {monitorTrace
-                  ? IS_PUBLIC_SIGNAL_MODE
-                    ? `${asFixed(monitorTrace.dai, 3)} / ${monitorTrace.daiRegime ?? "n/a"}`
-                    : `${asFixed(monitorTrace.dai, 3)} / ${asFixed(monitorTrace.daiDelta, 4)} / ${monitorTrace.daiRegime ?? "n/a"}`
-                  : "n/a"}
-              </p>
-              {!IS_PUBLIC_SIGNAL_MODE ? (
-                <>
-                  <p className="mono">
-                    commitment / delta / constraint growth:{" "}
-                    {monitorTrace
-                      ? `${asFixed(monitorTrace.commitment, 3)} / ${asFixed(monitorTrace.commitmentDelta, 3)} / ${asFixed(monitorTrace.constraintGrowth, 3)}`
-                      : "n/a"}
-                  </p>
-                  <p className="mono">
-                    reasoning depth / depth delta / drift streak:{" "}
-                    {monitorTrace
-                      ? `${asFixed(monitorTrace.reasoningDepth, 3)} / ${asFixed(monitorTrace.depthDelta, 3)} / ${monitorTrace.driftStreak}`
-                      : "n/a"}
-                  </p>
-                  <p className="mono">
-                    contradiction / alt variance / elapsed(ms):{" "}
-                    {monitorTrace
-                      ? `${asFixed(monitorTrace.contradictionSignal, 3)} / ${asFixed(monitorTrace.alternativeVariance, 3)} / ${asFixed(
-                          monitorTrace.elapsedTimeMs,
-                          1
-                        )}`
-                      : "n/a"}
-                  </p>
-                </>
-              ) : null}
               <div className="trace-viewer-toolbar">
                 <button type="button" onClick={viewPreviousTrace} disabled={!canViewPrevTrace}>
                   Prev turn

@@ -297,7 +297,7 @@ button:disabled {
 .control-band {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
+  gap: 6px;
   align-items: stretch;
   border: none;
   background: transparent;
@@ -406,6 +406,19 @@ button:disabled {
 
 .run-summary-card .latest-card {
   margin-top: 4px;
+}
+
+.overview-lines {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f6faf7;
+  padding: 8px;
+  display: grid;
+  gap: 5px;
+}
+
+.overview-lines p {
+  margin: 0;
 }
 
 .measure-grid {
@@ -866,6 +879,21 @@ button:disabled {
   gap: 10px;
 }
 
+.live-snapshot-card {
+  border: 1px solid var(--line);
+  background: #f7faf8;
+}
+
+.live-snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+}
+
+.live-snapshot-grid p {
+  margin: 0;
+}
+
 .trace-viewer-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1181,6 +1209,10 @@ button:disabled {
 }
 
 @media (max-width: 1100px) {
+  .live-snapshot-grid {
+    grid-template-columns: 1fr;
+  }
+
   .run-workspace {
     grid-template-columns: 1fr;
   }
