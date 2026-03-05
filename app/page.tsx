@@ -5022,6 +5022,62 @@ export default function HomePage() {
                   : "commitment rises faster than constraint growth under stable reasoning depth."}
               </p>
             </div>
+
+            <section className="latest-card live-stream-card">
+              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
+              <p className="tiny">Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active.</p>
+              <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
+              {liveTelemetryRows.length > 0 ? (
+                <div className="telemetry-table-wrap">
+                  <table className="telemetry-table">
+                    <thead>
+                      <tr>
+                        <th>Turn</th>
+                        <th>Agent</th>
+                        <th>DAI</th>
+                        <th>Regime</th>
+                        {!IS_PUBLIC_SIGNAL_MODE ? (
+                          <>
+                            <th>dDAI</th>
+                            <th>Commit</th>
+                            <th>cDelta</th>
+                            <th>cGrow</th>
+                            <th>Depth</th>
+                            <th>dDepth</th>
+                          </>
+                        ) : null}
+                        <th>Parse</th>
+                        <th>State</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveTelemetryRows.map((trace) => (
+                        <tr key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}>
+                          <td>{trace.turnIndex}</td>
+                          <td>{trace.agent}</td>
+                          <td>{asFixed(trace.dai, 3)}</td>
+                          <td>{trace.daiRegime ?? "n/a"}</td>
+                          {!IS_PUBLIC_SIGNAL_MODE ? (
+                            <>
+                              <td>{asFixed(trace.daiDelta, 3)}</td>
+                              <td>{asFixed(trace.commitment, 3)}</td>
+                              <td>{asFixed(trace.commitmentDelta, 3)}</td>
+                              <td>{asFixed(trace.constraintGrowth, 3)}</td>
+                              <td>{asFixed(trace.reasoningDepth, 2)}</td>
+                              <td>{asFixed(trace.depthDelta, 2)}</td>
+                            </>
+                          ) : null}
+                          <td>{trace.parseOk}</td>
+                          <td>{trace.stateOk}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No telemetry yet. Start a run to stream per-turn signals."}</p>
+              )}
+            </section>
           </article>
 
           <article className="card run-card run-summary-card">
@@ -5098,76 +5154,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="body-grid">
-        <article className="panel live-panel">
-          <header className="monitor-header">
-            <div className="monitor-title-row">
-              <div>
-                <h3>Live Telemetry</h3>
-                <p className="muted">Turn-by-turn stream while the selected condition is running.</p>
-              </div>
-            </div>
-          </header>
-
-          <div className="turn-stream">
-            <section className="latest-card live-stream-card">
-              <h4>Panel 1B - Live Telemetry Stream ({CONDITION_LABELS[liveTraceCondition]})</h4>
-              <p className="tiny">Chronological (turn 1 -&gt; N), auto-updates each completed turn while run is active.</p>
-              <p className="tiny">Turns streamed: {liveTelemetryRows.length}</p>
-              {liveTelemetryRows.length > 0 ? (
-                <div className="telemetry-table-wrap">
-                  <table className="telemetry-table">
-                    <thead>
-                      <tr>
-                        <th>Turn</th>
-                        <th>Agent</th>
-                        <th>DAI</th>
-                        <th>Regime</th>
-                        {!IS_PUBLIC_SIGNAL_MODE ? (
-                          <>
-                            <th>dDAI</th>
-                            <th>Commit</th>
-                            <th>cDelta</th>
-                            <th>cGrow</th>
-                            <th>Depth</th>
-                            <th>dDepth</th>
-                          </>
-                        ) : null}
-                        <th>Parse</th>
-                        <th>State</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {liveTelemetryRows.map((trace) => (
-                        <tr key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}>
-                          <td>{trace.turnIndex}</td>
-                          <td>{trace.agent}</td>
-                          <td>{asFixed(trace.dai, 3)}</td>
-                          <td>{trace.daiRegime ?? "n/a"}</td>
-                          {!IS_PUBLIC_SIGNAL_MODE ? (
-                            <>
-                              <td>{asFixed(trace.daiDelta, 3)}</td>
-                              <td>{asFixed(trace.commitment, 3)}</td>
-                              <td>{asFixed(trace.commitmentDelta, 3)}</td>
-                              <td>{asFixed(trace.constraintGrowth, 3)}</td>
-                              <td>{asFixed(trace.reasoningDepth, 2)}</td>
-                              <td>{asFixed(trace.depthDelta, 2)}</td>
-                            </>
-                          ) : null}
-                          <td>{trace.parseOk}</td>
-                          <td>{trace.stateOk}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="muted">{isRunning ? "Waiting for first completed turn..." : "No telemetry yet. Start a run to stream per-turn signals."}</p>
-              )}
-            </section>
-          </div>
-        </article>
-
+      <section className="body-grid results-only-grid">
         <article className="panel results-panel">
           <header className="monitor-header">
             <div className="monitor-title-row">

@@ -400,6 +400,10 @@ button:disabled {
   align-content: start;
 }
 
+.run-controls-card .live-stream-card {
+  margin-top: 4px;
+}
+
 .run-summary-card .latest-card {
   margin-top: 4px;
 }
@@ -694,6 +698,11 @@ button:disabled {
   gap: 8px;
   height: clamp(380px, 52vh, 760px);
   min-height: 0;
+}
+
+.results-only-grid {
+  grid-template-columns: minmax(0, 1fr);
+  height: auto;
 }
 
 .panel {
