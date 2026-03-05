@@ -15,7 +15,7 @@ const FIXED_TEMPERATURE = 0;
 const FIXED_RETRIES = 0;
 const DEFAULT_PROVIDER: APIProvider = "together";
 const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
-const DEFAULT_PROFILE: ExperimentProfile = "drift_amplifying_loop";
+const DEFAULT_PROFILE: ExperimentProfile = "consensus_collapse_loop";
 const DEFAULT_TURNS = 400;
 const DEFAULT_MAX_TOKENS = 96;
 const DEFAULT_INTER_TURN_DELAY_MS = 2000;
@@ -23,7 +23,6 @@ const MIN_INTER_TURN_DELAY_MS = 100;
 const MAX_INTER_TURN_DELAY_MS = 10000;
 const DEFAULT_MAX_HISTORY_TURNS = 50;
 const MAX_HISTORY_TURNS_CAP = 60;
-const MAX_PAIR_CYCLES = 10;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const RUN_LEVEL_LLM_MAX_ATTEMPTS = 5;
@@ -57,17 +56,14 @@ const CONDITION_LABELS = {
 
 const PROFILE_LABELS = {
   three_agent_drift_amplifier: "Legacy Structural Profile (Hidden)",
-  drift_amplifying_loop: "Generator-Normalizer Drift Amplifier (Smoking Gun)",
+  drift_amplifying_loop: "Legacy Structural Profile (Hidden)",
   consensus_collapse_loop: "Belief Attractor Loop (Epistemic Drift)",
   generator_normalizer: "Legacy Structural Profile (Hidden)",
   symmetric_control: "Legacy Structural Profile (Hidden)",
   dialect_negotiation: "Legacy Structural Profile (Hidden)"
 } as const;
 
-const UI_PROFILE_LIST: ExperimentProfile[] = [
-  "drift_amplifying_loop",
-  "consensus_collapse_loop"
-];
+const UI_PROFILE_LIST: ExperimentProfile[] = ["consensus_collapse_loop"];
 
 const CONSENSUS_STANCES = ["support", "reject", "uncertain"] as const;
 const CONSENSUS_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
@@ -94,40 +90,6 @@ type ExperimentProfile = keyof typeof PROFILE_LABELS;
 type ObjectiveMode = keyof typeof OBJECTIVE_MODE_LABELS;
 type AgentRole = "A" | "B" | "C";
 type SortOrder = "newest" | "oldest";
-
-interface SmokingGunPreset {
-  profile: ExperimentProfile;
-  objectiveMode: ObjectiveMode;
-  turns: number;
-  maxTokens: number;
-  maxHistoryTurns: number;
-  interTurnDelayMs: number;
-  stopOnFirstFailure: boolean;
-  pairCycles: number;
-}
-
-const SMOKING_GUN_PRESET: SmokingGunPreset = {
-  profile: "drift_amplifying_loop",
-  objectiveMode: "parse_only",
-  turns: 400,
-  maxTokens: 96,
-  maxHistoryTurns: 50,
-  interTurnDelayMs: 2000,
-  stopOnFirstFailure: false,
-  pairCycles: 3
-};
-
-const SMOKING_GUN_MODEL_CANDIDATES: Record<Exclude<APIProvider, "auto">, string[]> = {
-  together: [
-    "Qwen/Qwen2.5-72B-Instruct-Turbo",
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-    "google/gemma-3n-e4b-it"
-  ],
-  openAI: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
-  anthropic: ["claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
-  google: ["gemini-1.5-pro", "gemini-1.5-flash"],
-  mistral: ["mistral-medium-latest", "mistral-small-latest", "open-mistral-nemo"]
-};
 
 interface SmokingGunCriterion {
   reinforcementDeltaMin: number;
@@ -3283,7 +3245,6 @@ export default function HomePage() {
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
   const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
-  const [viewProfile, setViewProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
@@ -3294,7 +3255,6 @@ export default function HomePage() {
   const [llmMaxTokens, setLlmMaxTokens] = useState<number>(DEFAULT_MAX_TOKENS);
   const [interTurnDelayMs, setInterTurnDelayMs] = useState<number>(DEFAULT_INTER_TURN_DELAY_MS);
   const [maxHistoryTurns, setMaxHistoryTurns] = useState<number>(DEFAULT_MAX_HISTORY_TURNS);
-  const [pairCycles, setPairCycles] = useState<number>(SMOKING_GUN_PRESET.pairCycles);
   const [initialStep, setInitialStep] = useState<number>(0);
   const [stopOnFirstFailure, setStopOnFirstFailure] = useState<boolean>(false);
 
@@ -3335,10 +3295,8 @@ export default function HomePage() {
       }
     }
 
-    const savedKey = localStorage.getItem(STORAGE_API_KEY_VALUE_KEY);
-    if (savedKey) {
-      setApiKey(normalizeApiKeyInput(savedKey));
-    }
+    // Never persist or auto-hydrate API keys into the UI.
+    localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
   }, []);
 
   const detectedKeyProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey]);
@@ -3360,14 +3318,6 @@ export default function HomePage() {
     localStorage.setItem(STORAGE_API_MODEL_KEY, model);
   }, [model]);
 
-  useEffect(() => {
-    if (apiKey.trim()) {
-      localStorage.setItem(STORAGE_API_KEY_VALUE_KEY, apiKey);
-    } else {
-      localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
-    }
-  }, [apiKey]);
-
   const keyStatusLabel = !apiKey.trim()
     ? "Server Env / None"
     : apiProvider === "auto"
@@ -3376,39 +3326,17 @@ export default function HomePage() {
         : "Provided"
       : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
 
-  const profileResults = results[viewProfile];
+  const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
-  const smokingGunEval = evaluateSmokingGun(rawSummary, sanitizedSummary);
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
 
   const selectedTraces = useMemo(() => {
-    const traces = results[viewProfile][traceCondition]?.traces ?? [];
+    const traces = results[selectedProfile][traceCondition]?.traces ?? [];
     return historyOrder === "newest" ? traces.slice().reverse() : traces;
-  }, [historyOrder, results, traceCondition, viewProfile]);
+  }, [historyOrder, results, selectedProfile, traceCondition]);
 
-  const latestTrace = activeTrace ?? results[viewProfile][traceCondition]?.traces.at(-1) ?? null;
-
-  function recommendedSmokingGunModel(provider: APIProvider): string {
-    const resolved = provider === "auto" ? "together" : provider;
-    const candidates = SMOKING_GUN_MODEL_CANDIDATES[resolved];
-    const matched = candidates.find((candidate) => effectiveModelOptions.some((option) => option.value === candidate));
-    return matched ?? effectiveModelOptions[0]?.value ?? model;
-  }
-
-  function applySmokingGunPreset() {
-    const targetProfile = SMOKING_GUN_PRESET.profile;
-    setSelectedProfile(targetProfile);
-    setViewProfile(targetProfile);
-    setObjectiveMode(SMOKING_GUN_PRESET.objectiveMode);
-    setTurnBudget(SMOKING_GUN_PRESET.turns);
-    setLlmMaxTokens(SMOKING_GUN_PRESET.maxTokens);
-    setInterTurnDelayMs(SMOKING_GUN_PRESET.interTurnDelayMs);
-    setMaxHistoryTurns(SMOKING_GUN_PRESET.maxHistoryTurns);
-    setStopOnFirstFailure(SMOKING_GUN_PRESET.stopOnFirstFailure);
-    setPairCycles(SMOKING_GUN_PRESET.pairCycles);
-    setModel(recommendedSmokingGunModel(effectiveProvider));
-  }
+  const latestTrace = activeTrace ?? results[selectedProfile][traceCondition]?.traces.at(-1) ?? null;
 
   function setNormalizedApiKey(rawValue: string) {
     setApiKey(normalizeApiKeyInput(rawValue));
@@ -3777,7 +3705,6 @@ export default function HomePage() {
     setIsRunning(true);
     setErrorMessage(null);
     runControlRef.current.cancelled = false;
-    setViewProfile(selectedProfile);
     setTraceCondition(selectedCondition);
     setRunPhaseText(`${PROFILE_LABELS[selectedProfile]} — ${CONDITION_LABELS[selectedCondition]}`);
 
@@ -3797,7 +3724,7 @@ export default function HomePage() {
 
     for (const condition of ["raw", "sanitized"] as const) {
       if (runControlRef.current.cancelled) break;
-      setViewProfile(profile);
+      setSelectedProfile(profile);
       setTraceCondition(condition);
       setRunPhaseText(
         runLabel
@@ -3833,32 +3760,6 @@ export default function HomePage() {
     }
   }
 
-  async function runPairCyclesForSelectedProfile() {
-    if (isRunning) return;
-    setIsRunning(true);
-    setErrorMessage(null);
-    runControlRef.current.cancelled = false;
-
-    const boundedCycles = Math.max(1, Math.min(MAX_PAIR_CYCLES, pairCycles || 1));
-    const errors: string[] = [];
-
-    try {
-      for (let cycle = 1; cycle <= boundedCycles; cycle += 1) {
-        if (runControlRef.current.cancelled) break;
-        const cycleErrors = await runBothConditions(selectedProfile, `Pair cycle ${cycle}/${boundedCycles}`);
-        if (cycleErrors.length > 0) {
-          errors.push(`Cycle ${cycle}: ${cycleErrors.join(" | ")}`);
-        }
-      }
-      if (errors.length > 0) {
-        setErrorMessage(errors.join(" || "));
-      }
-    } finally {
-      setRunPhaseText(runControlRef.current.cancelled ? "Stopped" : "Idle");
-      setIsRunning(false);
-    }
-  }
-
   function stopRun() {
     runControlRef.current.cancelled = true;
     setIsRunning(false);
@@ -3868,13 +3769,11 @@ export default function HomePage() {
   function resetAll() {
     stopRun();
     setSelectedProfile(DEFAULT_PROFILE);
-    setViewProfile(DEFAULT_PROFILE);
     setObjectiveMode("parse_only");
     setTurnBudget(DEFAULT_TURNS);
     setLlmMaxTokens(DEFAULT_MAX_TOKENS);
     setInterTurnDelayMs(DEFAULT_INTER_TURN_DELAY_MS);
     setMaxHistoryTurns(DEFAULT_MAX_HISTORY_TURNS);
-    setPairCycles(SMOKING_GUN_PRESET.pairCycles);
     setInitialStep(0);
     setStopOnFirstFailure(false);
     setResults(emptyResults());
@@ -3896,7 +3795,7 @@ export default function HomePage() {
   }
 
   function downloadTrace(condition: RepCondition) {
-    const summary = results[viewProfile][condition];
+    const summary = results[selectedProfile][condition];
     if (!summary) return;
     downloadTextFile(`trace_${condition}.jsonl`, traceToJsonl(summary), "application/x-ndjson");
   }
@@ -3908,32 +3807,6 @@ export default function HomePage() {
     });
     downloadTextFile("lab_report.md", markdown, "text/markdown");
   }
-
-  const fullSuiteReady =
-    results.generator_normalizer.raw &&
-    results.generator_normalizer.sanitized &&
-    results.symmetric_control.raw &&
-    results.symmetric_control.sanitized;
-
-  const controlComparison =
-    fullSuiteReady &&
-    results.generator_normalizer.raw &&
-    results.generator_normalizer.sanitized &&
-    results.symmetric_control.raw &&
-    results.symmetric_control.sanitized
-      ? {
-          amplifierRawReinf: results.generator_normalizer.raw.reinforcementDeltaA ?? results.generator_normalizer.raw.reinforcementDelta,
-          controlRawReinf: results.symmetric_control.raw.reinforcementDeltaA ?? results.symmetric_control.raw.reinforcementDelta,
-          amplifierDriftRatio:
-            results.generator_normalizer.sanitized.driftP95A && results.generator_normalizer.sanitized.driftP95A > 0
-              ? (results.generator_normalizer.raw.driftP95A ?? 0) / results.generator_normalizer.sanitized.driftP95A
-              : null,
-          controlDriftRatio:
-            results.symmetric_control.sanitized.driftP95A && results.symmetric_control.sanitized.driftP95A > 0
-              ? (results.symmetric_control.raw.driftP95A ?? 0) / results.symmetric_control.sanitized.driftP95A
-              : null
-        }
-      : null;
 
   return (
     <main className="shell">
@@ -3983,10 +3856,10 @@ export default function HomePage() {
             </div>
             <input
               ref={apiKeyInputRef}
-              type="text"
+              type="password"
               value={apiKey}
               onChange={(event) => setNormalizedApiKey(event.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
               inputMode="text"
               autoCapitalize="off"
               autoCorrect="off"
@@ -4045,7 +3918,7 @@ export default function HomePage() {
       <section className="subtitle-row">
         <span>Agent Lab Suite v1 — Belief Attractors and Epistemic Drift</span>
         <span>
-          View: {PROFILE_LABELS[viewProfile]} | Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} | Deterministic decoding enforced
+          Profile: {PROFILE_LABELS[selectedProfile]} | Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} | Deterministic decoding enforced
         </span>
       </section>
 
@@ -4058,12 +3931,6 @@ export default function HomePage() {
               </button>
               <button onClick={runBothConditionsForSelectedProfile} disabled={isRunning}>
                 Run Both Conditions
-              </button>
-              <button onClick={runPairCyclesForSelectedProfile} disabled={isRunning}>
-                Run Pair Cycles
-              </button>
-              <button onClick={applySmokingGunPreset} disabled={isRunning}>
-                Apply Smoking-Gun Preset
               </button>
               <button onClick={stopRun} disabled={!isRunning} className="danger">
                 Stop
@@ -4192,30 +4059,6 @@ export default function HomePage() {
                 </select>
               </div>
 
-              <div className="field-block">
-                <label>Pair Cycles (RAW+SAN)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={MAX_PAIR_CYCLES}
-                  value={pairCycles}
-                  onChange={(event) =>
-                    setPairCycles(Math.max(1, Math.min(MAX_PAIR_CYCLES, Number(event.target.value) || 1)))
-                  }
-                  disabled={isRunning}
-                />
-              </div>
-
-              <div className="field-block">
-                <label>View Profile</label>
-                <select value={viewProfile} onChange={(event) => setViewProfile(event.target.value as ExperimentProfile)} disabled={isRunning}>
-                  {UI_PROFILE_LIST.map((value) => (
-                    <option key={value} value={value}>
-                      {PROFILE_LABELS[value]}
-                    </option>
-                  ))}
-                </select>
-              </div>
             </div>
 
             <div className="policy-inline">
@@ -4224,11 +4067,6 @@ export default function HomePage() {
               </p>
               <p className="tiny">
                 <strong>Selected profile pressure:</strong> {profilePressureText(selectedProfile)}
-              </p>
-              <p className="tiny">
-                <strong>Smoking-gun preset:</strong> profile={PROFILE_LABELS[SMOKING_GUN_PRESET.profile]}, objective={OBJECTIVE_MODE_LABELS[SMOKING_GUN_PRESET.objectiveMode]}, turns=
-                {SMOKING_GUN_PRESET.turns}, max-history={SMOKING_GUN_PRESET.maxHistoryTurns}, delay=
-                {SMOKING_GUN_PRESET.interTurnDelayMs}ms, pair-cycles={SMOKING_GUN_PRESET.pairCycles}.
               </p>
               <p className="tiny">
                 <strong>RAW (Condition A):</strong> next input and history use exact output bytes. <strong>SANITIZED (Condition B):</strong> parse + canonicalize{" "}
@@ -4265,19 +4103,11 @@ export default function HomePage() {
                   : " (parse-only objective; state gate disabled)"}{" "}
                 (otherwise run is rejected).
               </p>
-              {selectedProfile === "consensus_collapse_loop" ? (
-                <p className="tiny">
-                  <strong>Consensus-collapse criterion:</strong> agreement≥{CONSENSUS_COLLAPSE_AGREEMENT_MIN.toFixed(2)}, evidence diversity≤
-                  {CONSENSUS_COLLAPSE_DIVERSITY_MAX.toFixed(2)}, no-new-evidence high (growth near 0) for at least {CONSENSUS_COLLAPSE_MIN_PAIRS} A↔B pairs while ParseOK/StateOK ≥{" "}
-                  {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.
-                </p>
-              ) : (
-                <p className="tiny">
-                  <strong>Drift separation criterion (Agent A only):</strong> reinforcementDelta_A(raw) &gt; {SMOKING_GUN.reinforcementDeltaMin.toFixed(2)} and
-                  driftP95_A(raw)/driftP95_A(sanitized) ≥ {SMOKING_GUN.driftP95RatioMin.toFixed(2)} while Agent-A ParseOK/StateOK ≥{" "}
-                  {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%, and Agent-A structural gate separates RAW vs SANITIZED (Cv_A or FTF_struct_A). Reinforcement dev-event uses deviationMagnitude &gt; {DRIFT_DEV_EVENT_THRESHOLD}.
-                </p>
-              )}
+              <p className="tiny">
+                <strong>Consensus-collapse criterion:</strong> agreement≥{CONSENSUS_COLLAPSE_AGREEMENT_MIN.toFixed(2)}, evidence diversity≤
+                {CONSENSUS_COLLAPSE_DIVERSITY_MAX.toFixed(2)}, no-new-evidence high (growth near 0) for at least {CONSENSUS_COLLAPSE_MIN_PAIRS} A↔B pairs while ParseOK/StateOK ≥{" "}
+                {(SMOKING_GUN.parseOkMin * 100).toFixed(0)}%.
+              </p>
               <p className="tiny">
                 <strong>Early warning:</strong> persistence inflection when rolling reinforcementDelta(window {ROLLING_REINFORCEMENT_WINDOW}) exceeds{" "}
                 {REINFORCEMENT_ALERT_DELTA.toFixed(2)} for {REINFORCEMENT_INFLECTION_STREAK} consecutive points.
@@ -4323,7 +4153,7 @@ export default function HomePage() {
               </div>
             </div>
             <div className="raw-live-head-meta">
-              <span>Profile: {PROFILE_LABELS[viewProfile]}</span>
+              <span>Profile: {PROFILE_LABELS[selectedProfile]}</span>
               <span>Condition: {latestTrace ? CONDITION_LABELS[latestTrace.condition] : "n/a"}</span>
             </div>
           </header>
@@ -4432,9 +4262,9 @@ export default function HomePage() {
             </article>
 
             <article className="raw-panel">
-              <h4>Panel 4 - Condition Metrics ({PROFILE_LABELS[viewProfile]})</h4>
+              <h4>Panel 4 - Condition Metrics ({PROFILE_LABELS[selectedProfile]})</h4>
               {(["raw", "sanitized"] as const).map((condition) => {
-                const summary = results[viewProfile][condition];
+                const summary = results[selectedProfile][condition];
                 return (
                   <div key={condition} className="policy-inline">
                     <p className="tiny">
@@ -4444,7 +4274,7 @@ export default function HomePage() {
                     <p className="tiny">Turns: {summary?.turnsAttempted ?? "n/a"}</p>
                     <p className="tiny">ParseOK (all/A/B): {asPercent(summary?.parseOkRate ?? null)} / {asPercent(summary?.parseOkRateA ?? null)} / {asPercent(summary?.parseOkRateB ?? null)}</p>
                     <p className="tiny">StateOK (all/A/B): {asPercent(summary?.stateOkRate ?? null)} / {asPercent(summary?.stateOkRateA ?? null)} / {asPercent(summary?.stateOkRateB ?? null)}</p>
-                    {viewProfile === "consensus_collapse_loop" ? (
+                    {selectedProfile === "consensus_collapse_loop" ? (
                       <>
                         <p className="tiny">Agreement A↔B: {asPercent(summary?.agreementRateAB ?? null)} (pairs={summary?.consensusPairs ?? 0})</p>
                         <p className="tiny">Evidence diversity: {asFixed(summary?.evidenceDiversity ?? null, 3)}</p>
@@ -4500,16 +4330,6 @@ export default function HomePage() {
             <h3>Trace Stream</h3>
             <div className="row-actions">
               <label className="order-control">
-                <span>Profile</span>
-                <select value={viewProfile} onChange={(event) => setViewProfile(event.target.value as ExperimentProfile)}>
-                  {UI_PROFILE_LIST.map((value) => (
-                    <option key={value} value={value}>
-                      {PROFILE_LABELS[value]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="order-control">
                 <span>Condition</span>
                 <select value={traceCondition} onChange={(event) => setTraceCondition(event.target.value as RepCondition)}>
                   <option value="raw">Raw (Condition A)</option>
@@ -4560,7 +4380,7 @@ export default function HomePage() {
                 <p className="muted">
                   Objective: {OBJECTIVE_MODE_LABELS[objectiveMode]} ({objectiveLabel(objectiveMode)})
                 </p>
-                <p className="muted">Objective scope: {objectiveScopeLabel(viewProfile)}</p>
+                <p className="muted">Objective scope: {objectiveScopeLabel(selectedProfile)}</p>
               </div>
             </div>
           </header>
@@ -4589,12 +4409,12 @@ export default function HomePage() {
               valueFor={(trace) => trace.uptime}
               fixedMax={1}
             />
-            <DriftUptimeDivergenceChart summary={results[viewProfile][traceCondition]} />
+            <DriftUptimeDivergenceChart summary={results[selectedProfile][traceCondition]} />
             <DriftPhasePlot rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
-            <EdgeTransferPanel profile={viewProfile} rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
+            <EdgeTransferPanel profile={selectedProfile} rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
 
             {(["raw", "sanitized"] as const).map((condition) => {
-              const summary = results[viewProfile][condition];
+              const summary = results[selectedProfile][condition];
               const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
               return (
                 <section key={condition} className="decision-card">
@@ -4682,43 +4502,20 @@ export default function HomePage() {
             })}
 
             <section className="latest-card">
-              {viewProfile === "consensus_collapse_loop" ? <h4>Consensus Collapse Check</h4> : <h4>Structural Propagation Index (SPI) Check</h4>}
-              {viewProfile === "consensus_collapse_loop" ? (
-                consensusEval ? (
-                  <>
-                    <p>
-                      Criterion status: <strong>{consensusEval.pass ? "PASS" : "NOT MET"}</strong>
-                    </p>
-                    <p className="mono">
-                      RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
-                    </p>
-                    <p className="mono">
-                      RAW agreement/diversity/no-new-evidence/pairs: {asPercent(consensusEval.rawAgreement)} / {asFixed(consensusEval.rawDiversity, 3)} / {asPercent(consensusEval.rawNoNewEvidence)} / {consensusEval.rawPairs}
-                    </p>
-                    <p className="mono">
-                      SAN agreement/diversity/no-new-evidence/pairs: {asPercent(consensusEval.sanitizedAgreement)} / {asFixed(consensusEval.sanitizedDiversity, 3)} / {asPercent(consensusEval.sanitizedNoNewEvidence)} / {consensusEval.sanitizedPairs}
-                    </p>
-                  </>
-                ) : (
-                  <p className="muted">Run both RAW and SANITIZED for the current profile to evaluate the criterion.</p>
-                )
-              ) : smokingGunEval ? (
+              <h4>Consensus Collapse Check</h4>
+              {consensusEval ? (
                 <>
                   <p>
-                    Criterion status: <strong>{smokingGunEval.pass ? "PASS" : "NOT MET"}</strong>
-                  </p>
-                  <p className="mono">SPI (A-only): {asFixed(smokingGunEval.spi, 4)} | Agent-A reinforcementDelta(raw): {asFixed(smokingGunEval.reinforcementDelta, 4)} | Agent-A driftP95 ratio raw/sanitized: {asFixed(smokingGunEval.driftRatio, 3)}</p>
-                  <p className="mono">
-                    Agent-A ParseOK raw/sanitized: {asPercent(rawSummary?.parseOkRateA ?? rawSummary?.parseOkRate ?? null)} / {asPercent(sanitizedSummary?.parseOkRateA ?? sanitizedSummary?.parseOkRate ?? null)} | Agent-A StateOK raw/sanitized: {asPercent(rawSummary?.stateOkRateA ?? rawSummary?.stateOkRate ?? null)} / {asPercent(sanitizedSummary?.stateOkRateA ?? sanitizedSummary?.stateOkRate ?? null)}
+                    Criterion status: <strong>{consensusEval.pass ? "PASS" : "NOT MET"}</strong>
                   </p>
                   <p className="mono">
-                    Agent-A structural gate Cv raw/sanitized: {asPercent(smokingGunEval.cvRateRawA)} / {asPercent(smokingGunEval.cvRateSanitizedA)} | FTF_struct raw/sanitized: {smokingGunEval.ftfStructRawA ?? "n/a"} / {smokingGunEval.ftfStructSanitizedA ?? "n/a"} | separated: {smokingGunEval.structuralGateSeparated ? "yes" : "no"}
+                    RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
                   </p>
                   <p className="mono">
-                    Rolling delta max raw/sanitized: {asFixed(rawSummary?.maxRollingReinforcementDelta ?? null, 4)} / {asFixed(sanitizedSummary?.maxRollingReinforcementDelta ?? null, 4)} | inflection raw/sanitized: {rawSummary?.persistenceInflectionTurn ?? "none"} / {sanitizedSummary?.persistenceInflectionTurn ?? "none"}
+                    RAW agreement/diversity/no-new-evidence/pairs: {asPercent(consensusEval.rawAgreement)} / {asFixed(consensusEval.rawDiversity, 3)} / {asPercent(consensusEval.rawNoNewEvidence)} / {consensusEval.rawPairs}
                   </p>
                   <p className="mono">
-                    artifactPersistence_A raw/sanitized: {asFixed(rawSummary?.artifactPersistenceA ?? null, 4)} / {asFixed(sanitizedSummary?.artifactPersistenceA ?? null, 4)} | A_template_entropy raw/sanitized: {asFixed(rawSummary?.templateEntropyA ?? null, 4)} / {asFixed(sanitizedSummary?.templateEntropyA ?? null, 4)}
+                    SAN agreement/diversity/no-new-evidence/pairs: {asPercent(consensusEval.sanitizedAgreement)} / {asFixed(consensusEval.sanitizedDiversity, 3)} / {asPercent(consensusEval.sanitizedNoNewEvidence)} / {consensusEval.sanitizedPairs}
                   </p>
                 </>
               ) : (
@@ -4726,21 +4523,6 @@ export default function HomePage() {
               )}
             </section>
 
-            <section className="latest-card">
-              <h4>Control Comparison</h4>
-              {controlComparison ? (
-                <>
-                  <p className="mono">
-                    Amplifier raw reinforcementDelta: {asFixed(controlComparison.amplifierRawReinf, 4)} | Control raw reinforcementDelta: {asFixed(controlComparison.controlRawReinf, 4)}
-                  </p>
-                  <p className="mono">
-                    Amplifier Agent-A raw/sanitized driftP95 ratio: {asFixed(controlComparison.amplifierDriftRatio, 3)} | Control Agent-A ratio: {asFixed(controlComparison.controlDriftRatio, 3)}
-                  </p>
-                </>
-              ) : (
-                <p className="muted">Run Generator-Normalizer and Symmetric Control in RAW + SANITIZED to populate control comparison.</p>
-              )}
-            </section>
           </div>
         </article>
       </section>
