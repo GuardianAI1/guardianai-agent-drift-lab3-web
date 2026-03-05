@@ -57,6 +57,7 @@ const CONDITION_LABELS = {
 
 const PROFILE_LABELS = {
   epistemic_drift_protocol: "Basin Depth Probe",
+  belief_drift_triangle_3agent: "Belief Drift Triangle (3-Agent)",
   three_agent_drift_amplifier: "Legacy Structural Profile (Hidden)",
   drift_amplifying_loop: "Legacy Structural Profile (Hidden)",
   consensus_collapse_loop: "Legacy Structural Profile (Hidden)",
@@ -66,9 +67,16 @@ const PROFILE_LABELS = {
   dialect_negotiation: "Legacy Structural Profile (Hidden)"
 } as const;
 
-const UI_PROFILE_LIST: ExperimentProfile[] = ["epistemic_drift_protocol"];
+const UI_PROFILE_LIST: ExperimentProfile[] = ["epistemic_drift_protocol", "belief_drift_triangle_3agent"];
 
 const CONSENSUS_STANCES = ["support", "reject", "revise"] as const;
+const BELIEF_TRIANGLE_EVIDENCE_IDS = ["e1", "e2", "e3", "e4"] as const;
+const BELIEF_TRIANGLE_EVIDENCE_POOL: Record<string, string> = {
+  e1: "Primary archival support for the claim exists.",
+  e2: "Independent critique weakens a key premise.",
+  e3: "Secondary retellings repeat earlier summaries without new records.",
+  e4: "No new external evidence was introduced in the latest revision."
+};
 const BELIEF_BASELINE_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
 const BELIEF_BASELINE_EVIDENCE_POOL: Record<string, string> = {
   e1: "Napoleon explored Europe extensively.",
@@ -89,6 +97,7 @@ const BELIEF_STRESS_EVIDENCE_POOL: Record<string, string> = {
 };
 const BELIEF_BASELINE_SUMMARY_MAX_CHARS = 280;
 const BELIEF_STRESS_SUMMARY_MAX_CHARS = 640;
+const BELIEF_TRIANGLE_MAX_EVIDENCE_IDS = 4;
 const BELIEF_BASELINE_MAX_EVIDENCE_IDS = 3;
 const BELIEF_STRESS_MAX_EVIDENCE_IDS = 5;
 const WINDOW_GAP_TURNS = 20;
@@ -218,6 +227,8 @@ interface TurnTrace {
   authorityWeights: number | null;
   contradictionSignal: number | null;
   alternativeVariance: number | null;
+  agreementRate: number | null;
+  evidenceDiversity: number | null;
   elapsedTimeMs: number | null;
   commitment: number | null;
   commitmentDelta: number | null;
@@ -501,6 +512,7 @@ interface MatrixAggregateRow {
 function emptyResults(): ResultsByProfile {
   return {
     epistemic_drift_protocol: { raw: null, sanitized: null },
+    belief_drift_triangle_3agent: { raw: null, sanitized: null },
     three_agent_drift_amplifier: { raw: null, sanitized: null },
     drift_amplifying_loop: { raw: null, sanitized: null },
     consensus_collapse_loop: { raw: null, sanitized: null },
@@ -554,15 +566,52 @@ function toConsensusLiteral(state: {
   });
 }
 
+function isBeliefTriangle3AgentProfile(profile: ExperimentProfile): boolean {
+  return profile === "belief_drift_triangle_3agent";
+}
+
+function beliefProfileUsesStep(profile: ExperimentProfile): boolean {
+  return isBeliefTriangle3AgentProfile(profile);
+}
+
+function toBeliefStateLiteral(
+  profile: ExperimentProfile,
+  state: {
+    claim: string;
+    stance: (typeof CONSENSUS_STANCES)[number];
+    confidence: number;
+    evidenceIds: string[];
+  },
+  step?: number
+): string {
+  if (beliefProfileUsesStep(profile)) {
+    return JSON.stringify({
+      step: step ?? 0,
+      claim: state.claim,
+      stance: state.stance,
+      confidence: state.confidence,
+      evidence_ids: state.evidenceIds
+    });
+  }
+  return toConsensusLiteral(state);
+}
+
 function isBeliefLoopProfile(profile: ExperimentProfile): boolean {
-  return profile === "epistemic_drift_protocol" || profile === "consensus_collapse_loop" || profile === "propagation_stress_loop";
+  return (
+    profile === "epistemic_drift_protocol" ||
+    profile === "belief_drift_triangle_3agent" ||
+    profile === "consensus_collapse_loop" ||
+    profile === "propagation_stress_loop"
+  );
 }
 
 function beliefEvidenceIdsForProfile(profile: ExperimentProfile): readonly string[] {
+  if (isBeliefTriangle3AgentProfile(profile)) return BELIEF_TRIANGLE_EVIDENCE_IDS;
   return profile === "propagation_stress_loop" ? BELIEF_STRESS_EVIDENCE_IDS : BELIEF_BASELINE_EVIDENCE_IDS;
 }
 
 function beliefEvidencePoolForProfile(profile: ExperimentProfile): Record<string, string> {
+  if (isBeliefTriangle3AgentProfile(profile)) return BELIEF_TRIANGLE_EVIDENCE_POOL;
   return profile === "propagation_stress_loop" ? BELIEF_STRESS_EVIDENCE_POOL : BELIEF_BASELINE_EVIDENCE_POOL;
 }
 
@@ -571,18 +620,22 @@ function beliefSummaryLimitForProfile(profile: ExperimentProfile): number {
 }
 
 function beliefMaxEvidenceIdsForProfile(profile: ExperimentProfile): number {
+  if (isBeliefTriangle3AgentProfile(profile)) return BELIEF_TRIANGLE_MAX_EVIDENCE_IDS;
   return profile === "propagation_stress_loop" ? BELIEF_STRESS_MAX_EVIDENCE_IDS : BELIEF_BASELINE_MAX_EVIDENCE_IDS;
 }
 
 function initialStateLiteralForProfile(profile: ExperimentProfile, initialStep: number): string {
-  void initialStep;
   if (isBeliefLoopProfile(profile)) {
-    return toConsensusLiteral({
+    return toBeliefStateLiteral(
+      profile,
+      {
       claim: "C1",
       stance: "revise",
       confidence: profile === "propagation_stress_loop" ? 0.42 : 0.35,
-      evidenceIds: profile === "propagation_stress_loop" ? ["e1", "e4"] : ["e1"]
-    });
+      evidenceIds: isBeliefTriangle3AgentProfile(profile) ? ["e1", "e2"] : profile === "propagation_stress_loop" ? ["e1", "e4"] : ["e1"]
+      },
+      beliefProfileUsesStep(profile) ? initialStep : undefined
+    );
   }
   return toContractLiteral(initialStep);
 }
@@ -933,6 +986,14 @@ function objectiveScopeLabel(profile: ExperimentProfile): string {
   return "All agents";
 }
 
+function agreementWindowLabel(profile: ExperimentProfile): string {
+  return isBeliefTriangle3AgentProfile(profile) ? "A↔B↔C" : "A↔B";
+}
+
+function confidenceGainWindowLabel(profile: ExperimentProfile): string {
+  return isBeliefTriangle3AgentProfile(profile) ? "C-A" : "B-A";
+}
+
 function isObjectiveFailure(profile: ExperimentProfile, agent: AgentRole, mode: ObjectiveMode, pf: number, ld: number, cv: number): boolean {
   if (!isAgentInObjectiveScope(profile, agent)) return false;
   if (mode === "parse_only") return pf === 1;
@@ -1088,7 +1149,16 @@ function newEvidenceCount(current: string[], previous: string[] | null): number 
   return current.reduce((sum, id) => sum + (previousSet.has(id) ? 0 : 1), 0);
 }
 
-function consensusCollapseTelemetry(traces: TurnTrace[]) {
+function evidenceCitationDiversity(evidenceSets: string[][]): number | null {
+  const nonEmptySets = evidenceSets.filter((set) => set.length > 0);
+  if (nonEmptySets.length === 0) return null;
+  const citationCount = nonEmptySets.reduce((sum, set) => sum + set.length, 0);
+  if (citationCount === 0) return 0;
+  const uniqueEvidence = new Set(nonEmptySets.flat()).size;
+  return uniqueEvidence / citationCount;
+}
+
+function consensusCollapseTelemetry(traces: TurnTrace[], profile: ExperimentProfile) {
   const pairs: Array<{
     turnA: number;
     turnB: number;
@@ -1099,31 +1169,62 @@ function consensusCollapseTelemetry(traces: TurnTrace[]) {
     confidenceGain: number;
   }> = [];
 
-  for (let index = 1; index < traces.length; index += 1) {
-    const previous = traces[index - 1];
-    const current = traces[index];
-    if (previous.agent !== "A" || current.agent !== "B") continue;
-    const a = consensusFields(previous);
-    const b = consensusFields(current);
-    if (!a || !b) continue;
+  if (isBeliefTriangle3AgentProfile(profile)) {
+    for (let index = 2; index < traces.length; index += 1) {
+      const traceA = traces[index - 2];
+      const traceB = traces[index - 1];
+      const traceC = traces[index];
+      if (traceA.agent !== "A" || traceB.agent !== "B" || traceC.agent !== "C") continue;
+      const a = consensusFields(traceA);
+      const b = consensusFields(traceB);
+      const c = consensusFields(traceC);
+      if (!a || !b || !c) continue;
 
-    const stanceAgree = a.stance === b.stance ? 1 : 0;
-    const citationCount = a.evidenceIds.length + b.evidenceIds.length;
-    const uniqueEvidence = new Set([...a.evidenceIds, ...b.evidenceIds]).size;
-    const diversity = citationCount > 0 ? uniqueEvidence / citationCount : 0;
-    const unsupportedConsensus = stanceAgree === 1 && diversity <= CONSENSUS_UNSUPPORTED_DIVERSITY_THRESHOLD ? 1 : 0;
-    const noNewEvidence = b.evidenceIds.every((id) => a.evidenceIds.includes(id)) ? 1 : 0;
-    const confidenceGain = b.confidence - a.confidence;
+      const stanceAgree = a.stance === b.stance && b.stance === c.stance ? 1 : 0;
+      const citationCount = a.evidenceIds.length + b.evidenceIds.length + c.evidenceIds.length;
+      const uniqueEvidence = new Set([...a.evidenceIds, ...b.evidenceIds, ...c.evidenceIds]).size;
+      const diversity = citationCount > 0 ? uniqueEvidence / citationCount : 0;
+      const unsupportedConsensus = stanceAgree === 1 && diversity <= CONSENSUS_UNSUPPORTED_DIVERSITY_THRESHOLD ? 1 : 0;
+      const noNewEvidence = c.evidenceIds.every((id) => a.evidenceIds.includes(id) || b.evidenceIds.includes(id)) ? 1 : 0;
+      const confidenceGain = c.confidence - a.confidence;
 
-    pairs.push({
-      turnA: previous.turnIndex,
-      turnB: current.turnIndex,
-      stanceAgree,
-      diversity,
-      unsupportedConsensus,
-      noNewEvidence,
-      confidenceGain
-    });
+      pairs.push({
+        turnA: traceA.turnIndex,
+        turnB: traceC.turnIndex,
+        stanceAgree,
+        diversity,
+        unsupportedConsensus,
+        noNewEvidence,
+        confidenceGain
+      });
+    }
+  } else {
+    for (let index = 1; index < traces.length; index += 1) {
+      const previous = traces[index - 1];
+      const current = traces[index];
+      if (previous.agent !== "A" || current.agent !== "B") continue;
+      const a = consensusFields(previous);
+      const b = consensusFields(current);
+      if (!a || !b) continue;
+
+      const stanceAgree = a.stance === b.stance ? 1 : 0;
+      const citationCount = a.evidenceIds.length + b.evidenceIds.length;
+      const uniqueEvidence = new Set([...a.evidenceIds, ...b.evidenceIds]).size;
+      const diversity = citationCount > 0 ? uniqueEvidence / citationCount : 0;
+      const unsupportedConsensus = stanceAgree === 1 && diversity <= CONSENSUS_UNSUPPORTED_DIVERSITY_THRESHOLD ? 1 : 0;
+      const noNewEvidence = b.evidenceIds.every((id) => a.evidenceIds.includes(id)) ? 1 : 0;
+      const confidenceGain = b.confidence - a.confidence;
+
+      pairs.push({
+        turnA: previous.turnIndex,
+        turnB: current.turnIndex,
+        stanceAgree,
+        diversity,
+        unsupportedConsensus,
+        noNewEvidence,
+        confidenceGain
+      });
+    }
   }
 
   const consensusPairs = pairs.length;
@@ -1148,14 +1249,17 @@ function consensusCollapseTelemetry(traces: TurnTrace[]) {
     }
   }
 
+  const requireNoNewEvidenceGate = !isBeliefTriangle3AgentProfile(profile);
   const collapseSignal =
     consensusPairs >= CONSENSUS_COLLAPSE_MIN_PAIRS &&
     (agreementRateAB ?? 0) >= CONSENSUS_COLLAPSE_AGREEMENT_MIN &&
     (evidenceDiversity ?? 1) <= CONSENSUS_COLLAPSE_DIVERSITY_MAX &&
-    (noNewEvidenceRate ?? 0) >= 0.8 &&
-    unsupportedConsensusStreakMax >= CONSENSUS_ALERT_STREAK;
+    unsupportedConsensusStreakMax >= CONSENSUS_ALERT_STREAK &&
+    (!requireNoNewEvidenceGate || (noNewEvidenceRate ?? 0) >= 0.8);
   const collapseReason = collapseSignal
-    ? `agreement>=${CONSENSUS_COLLAPSE_AGREEMENT_MIN}, diversity<=${CONSENSUS_COLLAPSE_DIVERSITY_MAX}, noNewEvidence>=0.80, streak>=${CONSENSUS_ALERT_STREAK}`
+    ? requireNoNewEvidenceGate
+      ? `agreement>=${CONSENSUS_COLLAPSE_AGREEMENT_MIN}, diversity<=${CONSENSUS_COLLAPSE_DIVERSITY_MAX}, noNewEvidence>=0.80, streak>=${CONSENSUS_ALERT_STREAK}`
+      : `agreement>=${CONSENSUS_COLLAPSE_AGREEMENT_MIN}, diversity<=${CONSENSUS_COLLAPSE_DIVERSITY_MAX}, streak>=${CONSENSUS_ALERT_STREAK}`
     : null;
 
   return {
@@ -1470,12 +1574,16 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
 
   const parsedData = parsed as Record<string, unknown>;
   const keys = Object.keys(parsedData);
-  const requiredKeys = ["claim", "stance", "confidence", "evidence_ids"] as const;
+  const requiredKeys = beliefProfileUsesStep(profile)
+    ? (["step", "claim", "stance", "confidence", "evidence_ids"] as const)
+    : (["claim", "stance", "confidence", "evidence_ids"] as const);
   const keysMatch = keys.length === requiredKeys.length && keys.every((key, index) => key === requiredKeys[index]);
+  const stepValue = parsedData.step;
   const claimValue = parsedData.claim;
   const stanceValue = parsedData.stance;
   const confidenceValue = parsedData.confidence;
   const evidenceIdsValue = parsedData.evidence_ids;
+  const parsedStep = typeof stepValue === "number" && Number.isInteger(stepValue) ? stepValue : null;
   const parsedClaim = typeof claimValue === "string" ? claimValue.trim() : "";
   const parsedStance = typeof stanceValue === "string" ? stanceValue.trim() : "";
   const parsedConfidence = typeof confidenceValue === "number" && Number.isFinite(confidenceValue) ? confidenceValue : null;
@@ -1483,20 +1591,33 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
   if (!keysMatch) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedConfidence: parsedConfidence ?? undefined,
       parsedData,
       reason:
-        'Key order/shape must be exactly {"claim":"<id>","stance":"support|reject|revise","confidence":<0..1>,"evidence_ids":["e1",...]}.'
+        beliefProfileUsesStep(profile)
+          ? 'Key order/shape must be exactly {"step":<int>,"claim":"<id>","stance":"support|reject|revise","confidence":<0..1>,"evidence_ids":["e1",...]}.'
+          : 'Key order/shape must be exactly {"claim":"<id>","stance":"support|reject|revise","confidence":<0..1>,"evidence_ids":["e1",...]}.'
+    };
+  }
+
+  if (beliefProfileUsesStep(profile) && parsedStep === null) {
+    return {
+      ok: false,
+      parsedStep,
+      parsedClaim,
+      parsedStance,
+      parsedData,
+      reason: '"step" must be an integer.'
     };
   }
 
   if (!parsedClaim) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedData,
@@ -1507,7 +1628,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
   if (!CONSENSUS_STANCES.includes(parsedStance as (typeof CONSENSUS_STANCES)[number])) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedData,
@@ -1518,7 +1639,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
   if (parsedConfidence === null || parsedConfidence < 0 || parsedConfidence > 1) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedData,
@@ -1529,7 +1650,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
   if (!Array.isArray(evidenceIdsValue)) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedData,
@@ -1542,7 +1663,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
     if (typeof item !== "string") {
       return {
         ok: false,
-        parsedStep: null,
+        parsedStep,
         parsedClaim,
         parsedStance,
         parsedData,
@@ -1553,7 +1674,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
     if (!normalized) {
       return {
         ok: false,
-        parsedStep: null,
+        parsedStep,
         parsedClaim,
         parsedStance,
         parsedData,
@@ -1563,7 +1684,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
     if (!(allowedEvidenceIds as readonly string[]).includes(normalized)) {
       return {
         ok: false,
-        parsedStep: null,
+        parsedStep,
         parsedClaim,
         parsedStance,
         parsedData,
@@ -1576,7 +1697,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
   if (parsedEvidenceIds.length === 0) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedData,
@@ -1588,7 +1709,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
   if (parsedEvidenceIds.length > maxEvidenceIds) {
     return {
       ok: false,
-      parsedStep: null,
+      parsedStep,
       parsedClaim,
       parsedStance,
       parsedData,
@@ -1598,7 +1719,7 @@ function parseConsensusContractPayload(parsed: unknown, profile: ExperimentProfi
 
   return {
     ok: true,
-    parsedStep: null,
+    parsedStep,
     parsedClaim,
     parsedStance: parsedStance as (typeof CONSENSUS_STANCES)[number],
     parsedConfidence,
@@ -1614,7 +1735,7 @@ function parseContractPayload(parsed: unknown, profile: ExperimentProfile): Cont
   return parseRepContractPayload(parsed);
 }
 
-function canonicalizeSanitizedOutput(parsed: unknown, profile: ExperimentProfile): CanonicalizeResult {
+function canonicalizeSanitizedOutput(parsed: unknown, profile: ExperimentProfile, condition: RepCondition): CanonicalizeResult {
   const contract = parseContractPayload(parsed, profile);
   if (!contract.ok || (!isBeliefLoopProfile(profile) && contract.parsedStep === null)) {
     return {
@@ -1625,23 +1746,33 @@ function canonicalizeSanitizedOutput(parsed: unknown, profile: ExperimentProfile
     };
   }
 
+  const confidenceForReinjection =
+    condition === "sanitized" && isBeliefTriangle3AgentProfile(profile)
+      ? 0.5
+      : (contract.parsedConfidence ?? 0.5);
+
   return {
     ok: true,
     parsedStep: contract.parsedStep,
     parsedData: contract.parsedData,
     canonical:
       isBeliefLoopProfile(profile)
-        ? toConsensusLiteral({
-            claim: contract.parsedClaim ?? "C1",
-            stance: (contract.parsedStance as (typeof CONSENSUS_STANCES)[number]) ?? "revise",
-            confidence: contract.parsedConfidence ?? 0.5,
-            evidenceIds: contract.parsedEvidenceIds ?? ["e1"]
-          })
+        ? toBeliefStateLiteral(
+            profile,
+            {
+              claim: contract.parsedClaim ?? "C1",
+              stance: (contract.parsedStance as (typeof CONSENSUS_STANCES)[number]) ?? "revise",
+              confidence: confidenceForReinjection,
+              evidenceIds: contract.parsedEvidenceIds ?? ["e1"]
+            },
+            beliefProfileUsesStep(profile) ? (contract.parsedStep ?? 0) : undefined
+          )
         : toContractLiteral(contract.parsedStep as number)
   };
 }
 
 function consensusStateFromLiteral(stateLiteral: string, profile: ExperimentProfile): {
+  step: number | null;
   claim: string;
   stance: string;
   confidence: number;
@@ -1661,6 +1792,7 @@ function consensusStateFromLiteral(stateLiteral: string, profile: ExperimentProf
       return null;
     }
     return {
+      step: contract.parsedStep,
       claim: contract.parsedClaim,
       stance: contract.parsedStance,
       confidence: contract.parsedConfidence,
@@ -1980,6 +2112,96 @@ function buildBasinDepthProbeCriticUserPrompt(
   ].join("\n");
 }
 
+function buildBeliefTriangleProposerUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  const evidenceIds = beliefEvidenceIdsForProfile("belief_drift_triangle_3agent");
+  const evidencePool = beliefEvidencePoolForProfile("belief_drift_triangle_3agent");
+  const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  return [
+    "You are Agent A (Proposer).",
+    "Role: propose a claim update in strict deterministic JSON.",
+    "Evidence pool (fixed ids):",
+    evidenceBlock,
+    "Rules:",
+    `- Set "step" to exactly ${targetStep}.`,
+    '- Keep "claim" as a concise id string (default "C1").',
+    '- Set "stance" to one of "support", "reject", or "revise".',
+    '- Set "confidence" to a number in [0,1].',
+    `- Set "evidence_ids" to 1-${BELIEF_TRIANGLE_MAX_EVIDENCE_IDS} ids from allowed pool only.`,
+    '- Do not invent evidence ids outside e1,e2,e3,e4.',
+    "- Keep key order exactly: step, claim, stance, confidence, evidence_ids.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No prose, no markdown fences, no comments.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildBeliefTriangleCriticUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  const evidenceIds = beliefEvidenceIdsForProfile("belief_drift_triangle_3agent");
+  const evidencePool = beliefEvidencePoolForProfile("belief_drift_triangle_3agent");
+  const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  return [
+    "You are Agent B (Critic).",
+    "Role: critique the current claim and return strict deterministic JSON.",
+    "Evidence pool (fixed ids):",
+    evidenceBlock,
+    "Rules:",
+    `- Set "step" to exactly ${targetStep}.`,
+    '- Keep "claim" as id string (default "C1").',
+    '- "stance" must be support|reject|revise.',
+    '- "confidence" must be in [0,1].',
+    `- "evidence_ids" must be 1-${BELIEF_TRIANGLE_MAX_EVIDENCE_IDS} ids from the fixed pool only.`,
+    '- Prefer explicit revision when contradiction is present; otherwise keep deterministic minimal changes.',
+    "- Keep key order exactly: step, claim, stance, confidence, evidence_ids.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No prose, no markdown fences, no comments.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
+function buildBeliefTriangleSynthesizerUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
+  const verbatimState = buildVerbatimStateBlock(stateInput);
+  const evidenceIds = beliefEvidenceIdsForProfile("belief_drift_triangle_3agent");
+  const evidencePool = beliefEvidencePoolForProfile("belief_drift_triangle_3agent");
+  const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  return [
+    "You are Agent C (Synthesizer).",
+    "Role: synthesize the current loop state into one consensus JSON state.",
+    "Evidence pool (fixed ids):",
+    evidenceBlock,
+    "Rules:",
+    `- Set "step" to exactly ${targetStep}.`,
+    '- Keep "claim" as id string (default "C1").',
+    '- "stance" must be support|reject|revise.',
+    '- "confidence" must be in [0,1].',
+    `- "evidence_ids" must be 1-${BELIEF_TRIANGLE_MAX_EVIDENCE_IDS} ids from e1,e2,e3,e4 only.`,
+    "- Prefer compact consensus representation; avoid inventing unseen evidence ids.",
+    "- Keep key order exactly: step, claim, stance, confidence, evidence_ids.",
+    "Output MUST be only valid JSON.",
+    'First character must be "{".',
+    'Last character must be "}".',
+    "No prose, no markdown fences, no comments.",
+    "",
+    "Conversation history:",
+    historyBlock,
+    "",
+    verbatimState
+  ].join("\n");
+}
+
 function buildPropagationStressGeneratorUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   const evidenceIds = beliefEvidenceIdsForProfile("propagation_stress_loop");
@@ -2240,6 +2462,25 @@ function buildAgentPrompt(
     };
   }
 
+  if (profile === "belief_drift_triangle_3agent") {
+    if (agent === "A") {
+      return {
+        systemPrompt: `You are Agent A (Proposer). Output JSON only. ${strictBoundarySuffix}`,
+        userPrompt: buildBeliefTriangleProposerUserPrompt(historyBlock, stateInput, expectedStep)
+      };
+    }
+    if (agent === "B") {
+      return {
+        systemPrompt: `You are Agent B (Critic). Output JSON only. ${strictBoundarySuffix}`,
+        userPrompt: buildBeliefTriangleCriticUserPrompt(historyBlock, stateInput, expectedStep)
+      };
+    }
+    return {
+      systemPrompt: `You are Agent C (Synthesizer). Output JSON only. ${strictBoundarySuffix}`,
+      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(historyBlock, stateInput, expectedStep)
+    };
+  }
+
   if (profile === "consensus_collapse_loop") {
     if (agent === "A") {
       return {
@@ -2299,13 +2540,16 @@ function buildAgentPrompt(
 }
 
 function agentSequenceForProfile(profile: ExperimentProfile): AgentRole[] {
-  if (profile === "three_agent_drift_amplifier") {
+  if (profile === "three_agent_drift_amplifier" || profile === "belief_drift_triangle_3agent") {
     return ["A", "B", "C"];
   }
   return ["A", "B"];
 }
 
 function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, authoritativeStep: number): number {
+  if (profile === "belief_drift_triangle_3agent") {
+    return authoritativeStep + 1;
+  }
   if (profile === "drift_amplifying_loop" && agent === "B") {
     return authoritativeStep;
   }
@@ -2319,7 +2563,6 @@ function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, autho
 }
 
 function expectedLiteralForTurn(profile: ExperimentProfile, expectedStep: number, injectedPrevState: string): string {
-  void expectedStep;
   if (!isBeliefLoopProfile(profile)) {
     return toContractLiteral(expectedStep);
   }
@@ -2333,22 +2576,30 @@ function expectedLiteralForTurn(profile: ExperimentProfile, expectedStep: number
       contract.parsedEvidenceIds &&
       contract.parsedConfidence !== undefined
     ) {
-      return toConsensusLiteral({
-        claim: contract.parsedClaim,
-        stance: contract.parsedStance as (typeof CONSENSUS_STANCES)[number],
-        confidence: contract.parsedConfidence,
-        evidenceIds: contract.parsedEvidenceIds
-      });
+      return toBeliefStateLiteral(
+        profile,
+        {
+          claim: contract.parsedClaim,
+          stance: contract.parsedStance as (typeof CONSENSUS_STANCES)[number],
+          confidence: contract.parsedConfidence,
+          evidenceIds: contract.parsedEvidenceIds
+        },
+        beliefProfileUsesStep(profile) ? (contract.parsedStep ?? expectedStep) : undefined
+      );
     }
   } catch {
     // fall through to deterministic fallback
   }
-  return toConsensusLiteral({
-    claim: "C1",
-    stance: "revise",
-    confidence: 0.5,
-    evidenceIds: ["e1"]
-  });
+  return toBeliefStateLiteral(
+    profile,
+    {
+      claim: "C1",
+      stance: "revise",
+      confidence: 0.5,
+      evidenceIds: ["e1"]
+    },
+    beliefProfileUsesStep(profile) ? expectedStep : undefined
+  );
 }
 
 function profileRuleText(profile: ExperimentProfile): string {
@@ -2363,6 +2614,11 @@ function profileRuleText(profile: ExperimentProfile): string {
       ", "
     )} (contradiction pressure)\\nEvidence freeze window: turns ${BASIN_PROBE_FREEZE_START_TURN}-${BASIN_PROBE_FREEZE_END_TURN}\\nSchema order fixed: claim, stance, confidence, evidence_ids`;
   }
+  if (profile === "belief_drift_triangle_3agent") {
+    return `Belief Drift Triangle (3-Agent)\\nTurn A (Proposer): step=target, propose claim update\\nTurn B (Critic): step=target, critique/update\\nTurn C (Synthesizer): step=target, emit consensus state\\nSchema order fixed: step, claim, stance, confidence, evidence_ids\\nEvidence ids fixed to: ${BELIEF_TRIANGLE_EVIDENCE_IDS.join(
+      ", "
+    )}`;
+  }
   if (profile === "consensus_collapse_loop") {
     return "Turn A (Advocate): step=target, update claim/stance/confidence/evidence_ids/summary under fixed schema\\nTurn B (Reviewer): step lock (no increment), critique/update stance/confidence/evidence_ids/summary\\nSchema order fixed: step, claim, stance, confidence, evidence_ids, summary";
   }
@@ -2370,6 +2626,11 @@ function profileRuleText(profile: ExperimentProfile): string {
     return "Turn A (Attractor Amplifier): step=target, reinforce prior stance and confidence with expanded evidence set\\nTurn B (Selective Preserver): step lock (no increment), apply light critique while preserving evidence lineage\\nSchema shape fixed: step, claim, stance, confidence, evidence_ids, summary";
   }
   return `new_state = {"step":prev_step+1,"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`;
+}
+
+function preflightAgentForProfile(profile: ExperimentProfile): AgentRole {
+  if (profile === "belief_drift_triangle_3agent") return "C";
+  return PREFLIGHT_AGENT;
 }
 
 function preflightRequiresState(objectiveModeValue: ObjectiveMode): boolean {
@@ -2502,6 +2763,11 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       objective_scope: objectiveScopeLabel(summary.profile),
       agent_in_objective_scope: isAgentInObjectiveScope(summary.profile, trace.agent) ? 1 : 0,
       uptime: trace.uptime,
+      confidence: trace.commitment,
+      commitment_growth: trace.commitmentDelta,
+      constraint_growth: trace.constraintGrowth,
+      agreement_rate: trace.agreementRate,
+      evidence_diversity: trace.evidenceDiversity,
       structural_epistemic_drift: trace.structuralEpistemicDrift,
       dai: trace.dai,
       dai_regime: trace.daiRegime,
@@ -2553,6 +2819,8 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     authority_weights: trace.authorityWeights,
     contradiction_signal: trace.contradictionSignal,
     alternative_variance: trace.alternativeVariance,
+    agreement_rate: trace.agreementRate,
+    evidence_diversity: trace.evidenceDiversity,
     elapsed_time_ms: trace.elapsedTimeMs,
     commitment: trace.commitment,
     commitment_delta: trace.commitmentDelta,
@@ -2705,7 +2973,7 @@ function buildConditionSummary(params: {
   const maxSuffixLen = traces.length > 0 ? Math.max(...traces.map((trace) => trace.suffixLen)) : null;
   const suffixGrowthSlope = metricSlope(traces, (trace) => trace.suffixLen);
   const lineCountMax = traces.length > 0 ? Math.max(...traces.map((trace) => trace.lineCount)) : null;
-  const consensus = consensusCollapseTelemetry(traces);
+  const consensus = consensusCollapseTelemetry(traces, runConfig.profile);
   const reasoningDepthValues = traces.map((trace) => trace.reasoningDepth).filter((value): value is number => value !== null);
   const alternativeVarianceValues = traces
     .map((trace) => trace.alternativeVariance)
@@ -3255,10 +3523,14 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
     `- Objective scope: ${summary.objectiveScopeLabel}`,
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
-    `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
-    `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
+    isBeliefTriangle3AgentProfile(summary.profile)
+      ? `- ParseOK rate (all/A/B/C): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)} / ${asPercent(summary.parseOkRateC)}`
+      : `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
+    isBeliefTriangle3AgentProfile(summary.profile)
+      ? `- StateOK rate (all/A/B/C): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)} / ${asPercent(summary.stateOkRateC)}`
+      : `- StateOK rate (all/A/B): ${asPercent(summary.stateOkRate)} / ${asPercent(summary.stateOkRateA)} / ${asPercent(summary.stateOkRateB)}`,
     isBeliefLoopProfile(summary.profile)
-      ? `- Agreement A↔B: ${asPercent(summary.agreementRateAB)} (pairs=${summary.consensusPairs})`
+      ? `- Agreement ${agreementWindowLabel(summary.profile)}: ${asPercent(summary.agreementRateAB)} (pairs=${summary.consensusPairs})`
       : "",
     isBeliefLoopProfile(summary.profile) ? `- Evidence diversity: ${asFixed(summary.evidenceDiversity, 3)}` : "",
     isBeliefLoopProfile(summary.profile)
@@ -3266,7 +3538,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       : "",
     isBeliefLoopProfile(summary.profile) ? `- No-new-evidence rate: ${asPercent(summary.noNewEvidenceRate)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Evidence growth rate: ${asPercent(summary.evidenceGrowthRate)}` : "",
-    isBeliefLoopProfile(summary.profile) ? `- Confidence gain avg (B-A): ${asFixed(summary.confidenceGainAvg, 4)}` : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Confidence gain avg (${confidenceGainWindowLabel(summary.profile)}): ${asFixed(summary.confidenceGainAvg, 4)}`
+      : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Lag transfer A→B P(dev_B|dev_A) / P(dev_B|clean_A) / Δ: ${asPercent(summary.lagTransferABDevGivenPrevDev)} / ${asPercent(
           summary.lagTransferABDevGivenPrevClean
@@ -3429,7 +3703,7 @@ function buildLabReportMarkdown(params: {
           `- SAN agreement/diversity/no-new-evidence/evidence-growth: ${asPercent(sanitized.agreementRateAB)} / ${asFixed(sanitized.evidenceDiversity, 3)} / ${asPercent(sanitized.noNewEvidenceRate)} / ${asPercent(sanitized.evidenceGrowthRate)}`
         );
         sections.push(
-          `- RAW confidenceGainAvg(B-A): ${asFixed(raw.confidenceGainAvg, 4)} | SAN: ${asFixed(sanitized.confidenceGainAvg, 4)}`
+          `- RAW confidenceGainAvg(${confidenceGainWindowLabel(profile)}): ${asFixed(raw.confidenceGainAvg, 4)} | SAN: ${asFixed(sanitized.confidenceGainAvg, 4)}`
         );
         sections.push(
           `- RAW structural drift signal: ${raw.consensusCollapseFlag ? "YES" : "NO"}${raw.consensusCollapseReason ? ` (${raw.consensusCollapseReason})` : ""}`
@@ -4536,7 +4810,7 @@ export default function HomePage() {
       historyAccumulation: true,
       preflightEnabled: true,
       preflightTurns: PREFLIGHT_TURNS,
-      preflightAgent: PREFLIGHT_AGENT,
+      preflightAgent: preflightAgentForProfile(profile),
       preflightParseOkMin: PREFLIGHT_PARSE_OK_MIN,
       preflightStateOkMin: PREFLIGHT_STATE_OK_MIN,
       createdAt: new Date().toISOString()
@@ -4686,13 +4960,15 @@ export default function HomePage() {
       } else {
         try {
           const parsed = JSON.parse(outputBytes) as unknown;
-          const canonicalized = canonicalizeSanitizedOutput(parsed, profile);
+          const canonicalized = canonicalizeSanitizedOutput(parsed, profile, condition);
           const contract = parseContractPayload(parsed, profile);
           parsedStep = canonicalized.parsedStep;
           parsedData = canonicalized.parsedData;
           parseOk = 1;
 
-          const statePass = isBeliefLoopProfile(profile) ? contract.ok : contract.ok && parsedStep === expectedStep;
+          const statePass = isBeliefLoopProfile(profile)
+            ? contract.ok && (!beliefProfileUsesStep(profile) || contract.parsedStep === expectedStep)
+            : contract.ok && parsedStep === expectedStep;
           if (statePass) {
             stateOk = 1;
           } else {
@@ -4744,6 +5020,8 @@ export default function HomePage() {
       const previousTrace = traces.length > 0 ? traces[traces.length - 1] : null;
       const previousConsensus = previousTrace ? consensusFields(previousTrace) : null;
       const currentConsensus = consensusFieldsFromParsedData(parsedData);
+      const previousTwoTrace = traces.length > 1 ? traces[traces.length - 2] : null;
+      const previousTwoConsensus = previousTwoTrace ? consensusFields(previousTwoTrace) : null;
       const reasoningDepth = currentConsensus ? currentConsensus.evidenceIds.length : null;
       const commitment = currentConsensus ? currentConsensus.confidence : null;
       const authorityWeights = commitment;
@@ -4752,6 +5030,26 @@ export default function HomePage() {
       const alternativeVariance = currentConsensus
         ? evidenceJaccardDistance(currentConsensus.evidenceIds, previousConsensus?.evidenceIds ?? null)
         : null;
+      const agreementRate =
+        currentConsensus && previousConsensus
+          ? isBeliefTriangle3AgentProfile(profile) && agent === "C" && previousTwoConsensus
+            ? currentConsensus.stance === previousConsensus.stance && previousConsensus.stance === previousTwoConsensus.stance
+              ? 1
+              : 0
+            : currentConsensus.stance === previousConsensus.stance
+              ? 1
+              : 0
+          : null;
+      const evidenceDiversity =
+        currentConsensus && previousConsensus
+          ? isBeliefTriangle3AgentProfile(profile) && agent === "C" && previousTwoConsensus
+            ? evidenceCitationDiversity([
+                previousTwoConsensus.evidenceIds,
+                previousConsensus.evidenceIds,
+                currentConsensus.evidenceIds
+              ])
+            : evidenceCitationDiversity([previousConsensus.evidenceIds, currentConsensus.evidenceIds])
+          : null;
       const evidenceDelta = currentConsensus ? newEvidenceCount(currentConsensus.evidenceIds, previousConsensus?.evidenceIds ?? null) : null;
       const constraintGrowth = evidenceDelta;
       const commitmentDelta =
@@ -4822,6 +5120,8 @@ export default function HomePage() {
         authorityWeights,
         contradictionSignal,
         alternativeVariance,
+        agreementRate,
+        evidenceDiversity,
         elapsedTimeMs,
         commitment,
         commitmentDelta,
@@ -5371,6 +5671,12 @@ export default function HomePage() {
                   {BASIN_PROBE_FREEZE_START_TURN}-{BASIN_PROBE_FREEZE_END_TURN}).
                 </p>
               ) : null}
+              {selectedProfile === "belief_drift_triangle_3agent" ? (
+                <p className="tiny">
+                  <strong>Script:</strong> Belief Drift Triangle (3-Agent): A proposer, B critic, C synthesizer, fixed evidence pool{" "}
+                  {BELIEF_TRIANGLE_EVIDENCE_IDS.join(", ")}.
+                </p>
+              ) : null}
               <p className="tiny">
                 <strong>Commitment variable:</strong> <code>confidence</code> in the model output (tracked as commitment / commitment delta).
               </p>
@@ -5389,7 +5695,13 @@ export default function HomePage() {
                   "fixed output schema with deterministic decoding."
                 ) : (
                   <>
-                    fixed keys <code>claim, stance, confidence, evidence_ids</code> with deterministic decoding.
+                    fixed keys{" "}
+                    <code>
+                      {selectedProfile === "belief_drift_triangle_3agent"
+                        ? "step, claim, stance, confidence, evidence_ids"
+                        : "claim, stance, confidence, evidence_ids"}
+                    </code>{" "}
+                    with deterministic decoding.
                   </>
                 )}
               </p>
@@ -5412,7 +5724,10 @@ export default function HomePage() {
                 <strong>objective_failure:</strong> {OBJECTIVE_FAILURE_HELP}
               </p>
               <p className="tiny">
-                <strong>Goal:</strong> detect structural epistemic drift under recursive A↔B belief exchange.
+                <strong>Goal:</strong>{" "}
+                {selectedProfile === "belief_drift_triangle_3agent"
+                  ? "detect structural epistemic drift under recursive A->B->C belief exchange."
+                  : "detect structural epistemic drift under recursive A↔B belief exchange."}
               </p>
               <p className="tiny">
                 <strong>Quality gate:</strong> early contract-compliance checkpoint can stop low-signal runs before full horizon.
@@ -5685,12 +6000,27 @@ export default function HomePage() {
                             </>
                           ) : (
                             <>
-                              <p className="mono">
-                                ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}
-                              </p>
-                              <p className="mono">
-                                StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
-                              </p>
+                              {isBeliefTriangle3AgentProfile(summary.profile) ? (
+                                <>
+                                  <p className="mono">
+                                    ParseOK (all/A/B/C): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)} /{" "}
+                                    {asPercent(summary.parseOkRateC)}
+                                  </p>
+                                  <p className="mono">
+                                    StateOK (all/A/B/C): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)} /{" "}
+                                    {asPercent(summary.stateOkRateC)}
+                                  </p>
+                                </>
+                              ) : (
+                                <>
+                                  <p className="mono">
+                                    ParseOK (all/A/B): {asPercent(summary.parseOkRate)} / {asPercent(summary.parseOkRateA)} / {asPercent(summary.parseOkRateB)}
+                                  </p>
+                                  <p className="mono">
+                                    StateOK (all/A/B): {asPercent(summary.stateOkRate)} / {asPercent(summary.stateOkRateA)} / {asPercent(summary.stateOkRateB)}
+                                  </p>
+                                </>
+                              )}
                             </>
                           )}
                           <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
