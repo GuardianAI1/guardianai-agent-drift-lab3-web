@@ -29,6 +29,7 @@ const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
+const GUARDIAN_OBSERVE_MAX_ATTEMPTS = 2;
 const DRIFT_DEV_EVENT_THRESHOLD = 8;
 const EARLY_WINDOW_TURNS = 40;
 const ROLLING_REINFORCEMENT_WINDOW = 20;
@@ -5891,7 +5892,24 @@ export default function HomePage() {
         elapsedTime: params.elapsedTimeMs !== null ? params.elapsedTimeMs / 1000 : null,
         externalRefresh: params.externalRefresh
       })
-    }, { maxAttempts: 1 });
+    }, { maxAttempts: GUARDIAN_OBSERVE_MAX_ATTEMPTS });
+  }
+
+  async function pingGuardianObserver(): Promise<boolean> {
+    try {
+      await requestJSON<{ ok?: boolean }>(
+        "/api/guardian/constraint",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: "{\"probe\":\"observer\"}" })
+        },
+        { maxAttempts: 2 }
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function runCondition(
@@ -5942,6 +5960,8 @@ export default function HomePage() {
     let failed = false;
     let failureReason: string | undefined;
     let guardianAvailableThisRun = guardianEnabled;
+    let guardianRetryAfterTurn = 1;
+    let guardianConsecutiveFailures = 0;
 
     setResults((prev) => setConditionResult(prev, profile, condition, null));
     setLiveTraceCondition(condition);
@@ -6175,7 +6195,7 @@ export default function HomePage() {
       const driftStreak = driftRuleSatisfied === 1 ? (previousTrace?.driftStreak ?? 0) + 1 : 0;
       const structuralEpistemicDrift = driftStreak >= STRUCTURAL_DRIFT_STREAK_MIN ? 1 : 0;
 
-      if (guardianEnabled && guardianAvailableThisRun) {
+      if (guardianEnabled && guardianAvailableThisRun && turn >= guardianRetryAfterTurn) {
         try {
           const guardianObservation = await requestGuardianObservation({
             runId: runConfig.runId,
@@ -6197,13 +6217,19 @@ export default function HomePage() {
           guardianRevisionMode = guardianObservation.triangleCircleMode ?? null;
           guardianTrajectoryState = guardianObservation.triangleSpiralMode ?? null;
           guardianTemporalResistanceDetected = guardianObservation.triangleInvariantViolation ?? null;
+          guardianConsecutiveFailures = 0;
           setGuardianRuntimeState((prev) => (prev === "connected" ? prev : "connected"));
         } catch (error) {
           guardianObserveError = error instanceof Error ? "Observer unavailable." : "Observer unavailable.";
-          guardianAvailableThisRun = false;
+          guardianConsecutiveFailures += 1;
+          guardianRetryAfterTurn = turn + Math.min(30, Math.max(2, guardianConsecutiveFailures * 2));
           setGuardianRuntimeState("degraded");
-          setRunPhaseText(`${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Observer unavailable (fail-open)`);
+          setRunPhaseText(
+            `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Observer unavailable (retry at turn ${guardianRetryAfterTurn})`
+          );
         }
+      } else if (guardianEnabled && guardianAvailableThisRun) {
+        guardianObserveError = `Observer retry pending (turn ${guardianRetryAfterTurn}).`;
       } else if (guardianEnabled) {
         guardianObserveError = "Observer unavailable.";
       }
@@ -6387,6 +6413,10 @@ export default function HomePage() {
     setRunPhaseText(`${PROFILE_LABELS[selectedProfile]} — ${CONDITION_LABELS[selectedCondition]}`);
 
     try {
+      if (guardianEnabled) {
+        const guardianReady = await pingGuardianObserver();
+        setGuardianRuntimeState(guardianReady ? "connected" : "degraded");
+      }
       const summary = await runCondition(selectedProfile, selectedCondition);
       setResults((prev) => setConditionResult(prev, selectedProfile, selectedCondition, summary));
     } catch (error) {
@@ -6428,6 +6458,10 @@ export default function HomePage() {
     runControlRef.current.cancelled = false;
 
     try {
+      if (guardianEnabled) {
+        const guardianReady = await pingGuardianObserver();
+        setGuardianRuntimeState(guardianReady ? "connected" : "degraded");
+      }
       const errors = await runBothConditions(selectedProfile);
       if (errors.length > 0) {
         setErrorMessage(errors.join(" | "));
@@ -6453,6 +6487,10 @@ export default function HomePage() {
     const collectedRows: MatrixTrialRow[] = [];
 
     try {
+      if (guardianEnabled) {
+        const guardianReady = await pingGuardianObserver();
+        setGuardianRuntimeState(guardianReady ? "connected" : "degraded");
+      }
       for (const matrixModel of models) {
         if (runControlRef.current.cancelled) break;
         for (let replicate = 1; replicate <= replicates; replicate += 1) {
