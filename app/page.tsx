@@ -134,6 +134,17 @@ const BASIN_PROBE_FREEZE_END_TURN = 140;
 const LOCK_IN_SCORE_THRESHOLD = 0.02;
 const LOCK_IN_STREAK_MIN = 5;
 const LOCK_IN_CONSTRAINT_EPSILON = 0;
+const LOCK_IN_CYCLE_WINDOW = 3;
+const LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD = 0.18;
+const LOCK_IN_CYCLE_CONFIRM_WINDOWS = 3;
+const TRAJECTORY_TSI_EPSILON = 0.01;
+const TRAJECTORY_REINFORCEMENT_DELTA_MIN = 0.005;
+const TRAJECTORY_BASIN_FORMATION_DELTA_MIN = 0.02;
+const TRAJECTORY_BASIN_FORMATION_CONSTRAINT_MAX = 0.001;
+const TRAJECTORY_BASIN_STABILIZATION_DELTA_MAX = 0.005;
+const TRAJECTORY_BASIN_STABILIZATION_CONFIDENCE_MIN = 0.95;
+const TRAJECTORY_BASIN_AGREEMENT_MIN = 0.95;
+const BELIEF_BASIN_DEPTH_SCORE_MAX = 0.6;
 const HARD_FAILURE_METRIC_HELP = "Cv = contract byte mismatch (output != expected), Pf = parse failure, Ld = logic/state failure.";
 const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
 const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
@@ -371,6 +382,9 @@ interface EdgeTransferStats {
   delta: number | null;
 }
 
+type TrajectoryStatus = "exploration" | "reinforcement" | "basin_formation" | "basin_stabilization";
+type BasinState = "open" | "forming" | "stabilized";
+
 interface ConditionSummary {
   runConfig: RunConfig;
   profile: ExperimentProfile;
@@ -444,6 +458,17 @@ interface ConditionSummary {
   lockInScoreLatest: number | null;
   lockInScorePeak: number | null;
   lockInPositiveStreakMax: number;
+  trajectoryStabilityIndexLatest: number | null;
+  trajectoryStabilityIndexPeak: number | null;
+  trajectoryStatusLatest: TrajectoryStatus | null;
+  basinStateLatest: BasinState | null;
+  cycleReinforcement3Latest: number | null;
+  cycleReinforcement3Peak: number | null;
+  firstBasinFormationTurn: number | null;
+  firstBasinStabilizationTurn: number | null;
+  beliefBasinDepth: number | null;
+  beliefBasinStrengthScore: number | null;
+  beliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
   structuralEpistemicDriftFlag: number;
   structuralEpistemicDriftReason: string | null;
   daiLatest: number | null;
@@ -597,6 +622,28 @@ interface ConsensusEval {
   sanitizedLockInScoreLatest: number | null;
   rawLockInScorePeak: number | null;
   sanitizedLockInScorePeak: number | null;
+  rawTrajectoryStabilityIndexLatest: number | null;
+  sanitizedTrajectoryStabilityIndexLatest: number | null;
+  rawTrajectoryStabilityIndexPeak: number | null;
+  sanitizedTrajectoryStabilityIndexPeak: number | null;
+  rawTrajectoryStatusLatest: TrajectoryStatus | null;
+  sanitizedTrajectoryStatusLatest: TrajectoryStatus | null;
+  rawBasinStateLatest: BasinState | null;
+  sanitizedBasinStateLatest: BasinState | null;
+  rawCycleReinforcement3Latest: number | null;
+  sanitizedCycleReinforcement3Latest: number | null;
+  rawCycleReinforcement3Peak: number | null;
+  sanitizedCycleReinforcement3Peak: number | null;
+  rawFirstBasinFormationTurn: number | null;
+  sanitizedFirstBasinFormationTurn: number | null;
+  rawFirstBasinStabilizationTurn: number | null;
+  sanitizedFirstBasinStabilizationTurn: number | null;
+  rawBeliefBasinDepth: number | null;
+  sanitizedBeliefBasinDepth: number | null;
+  rawBeliefBasinStrengthScore: number | null;
+  sanitizedBeliefBasinStrengthScore: number | null;
+  rawBeliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
+  sanitizedBeliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
   rawDaiLatest: number | null;
   sanitizedDaiLatest: number | null;
   rawDaiDeltaLatest: number | null;
@@ -1520,22 +1567,40 @@ function computeLockInTelemetry(traces: TurnTrace[]): LockInTelemetry {
   let scorePeak: number | null = null;
   let streak = 0;
   let positiveStreakMax = 0;
+  let positiveCycleStreak = 0;
+  const lockInHistory: number[] = [];
 
   for (const trace of traces) {
     if (trace.commitmentDelta === null || trace.constraintGrowth === null) continue;
     const score = trace.commitmentDelta - trace.constraintGrowth;
     scoreLatest = score;
     scorePeak = scorePeak === null ? score : Math.max(scorePeak, score);
+    lockInHistory.push(score);
 
     const positive = score > LOCK_IN_SCORE_THRESHOLD && trace.constraintGrowth <= LOCK_IN_CONSTRAINT_EPSILON;
     if (positive) {
       streak += 1;
       if (streak > positiveStreakMax) positiveStreakMax = streak;
-      if (onsetTurn === null && streak >= LOCK_IN_STREAK_MIN) {
-        onsetTurn = trace.turnIndex;
-      }
     } else {
       streak = 0;
+    }
+
+    if (lockInHistory.length >= LOCK_IN_CYCLE_WINDOW) {
+      const recent = lockInHistory.slice(-LOCK_IN_CYCLE_WINDOW);
+      const cycleReinforcement = recent.reduce((sum, value) => sum + value, 0);
+      const positiveCycle = cycleReinforcement > LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD;
+      if (positiveCycle) {
+        positiveCycleStreak += 1;
+        if (
+          onsetTurn === null &&
+          positiveCycleStreak >= LOCK_IN_CYCLE_CONFIRM_WINDOWS &&
+          streak >= LOCK_IN_STREAK_MIN
+        ) {
+          onsetTurn = trace.turnIndex;
+        }
+      } else {
+        positiveCycleStreak = 0;
+      }
     }
   }
 
@@ -1545,6 +1610,195 @@ function computeLockInTelemetry(traces: TurnTrace[]): LockInTelemetry {
     scorePeak,
     positiveStreakMax
   };
+}
+
+interface TrajectoryUiTelemetry {
+  tsiLatest: number | null;
+  tsiPeak: number | null;
+  statusLatest: TrajectoryStatus | null;
+  basinStateLatest: BasinState | null;
+  cycleReinforcement3Latest: number | null;
+  cycleReinforcement3Peak: number | null;
+  firstBasinFormationTurn: number | null;
+  firstBasinStabilizationTurn: number | null;
+  beliefBasinDepth: number | null;
+  beliefBasinStrengthScore: number | null;
+  beliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
+}
+
+function basinStateFromTrajectoryStatus(status: TrajectoryStatus | null): BasinState | null {
+  if (status === null) return null;
+  if (status === "exploration") return "open";
+  if (status === "basin_stabilization") return "stabilized";
+  return "forming";
+}
+
+function basinStateLabel(state: BasinState | null): string {
+  switch (state) {
+    case "open":
+      return "open";
+    case "forming":
+      return "forming";
+    case "stabilized":
+      return "stabilized";
+    default:
+      return "n/a";
+  }
+}
+
+function classifyTrajectoryStatus(params: {
+  commitment: number | null;
+  commitmentDelta: number | null;
+  constraintGrowth: number | null;
+  agreementRate: number | null;
+  hasSeenBasinFormation: boolean;
+}): TrajectoryStatus {
+  const { commitment, commitmentDelta, constraintGrowth, agreementRate, hasSeenBasinFormation } = params;
+  const delta = commitmentDelta ?? 0;
+  const growth = constraintGrowth ?? 0;
+  const agreement = agreementRate ?? 0;
+  const stabilizationCandidate =
+    hasSeenBasinFormation &&
+    commitment !== null &&
+    commitment >= TRAJECTORY_BASIN_STABILIZATION_CONFIDENCE_MIN &&
+    Math.abs(delta) <= TRAJECTORY_BASIN_STABILIZATION_DELTA_MAX &&
+    agreement >= TRAJECTORY_BASIN_AGREEMENT_MIN;
+  if (stabilizationCandidate) return "basin_stabilization";
+  if (delta >= TRAJECTORY_BASIN_FORMATION_DELTA_MIN && growth <= TRAJECTORY_BASIN_FORMATION_CONSTRAINT_MAX && agreement >= TRAJECTORY_BASIN_AGREEMENT_MIN) {
+    return "basin_formation";
+  }
+  if (delta >= TRAJECTORY_REINFORCEMENT_DELTA_MIN) return "reinforcement";
+  return "exploration";
+}
+
+function beliefBasinStrengthBand(score: number | null, stabilized: boolean): "weak" | "forming" | "deep" | "locked" | null {
+  if (score === null) return null;
+  if (stabilized && score >= 0.75) return "locked";
+  if (score >= 0.75) return "deep";
+  if (score >= 0.45) return "forming";
+  return "weak";
+}
+
+function computeTrajectoryUiTelemetry(traces: TurnTrace[]): TrajectoryUiTelemetry {
+  let tsiLatest: number | null = null;
+  let tsiPeak: number | null = null;
+  let statusLatest: TrajectoryStatus | null = null;
+  let basinStateLatest: BasinState | null = null;
+  let cycleReinforcement3Latest: number | null = null;
+  let cycleReinforcement3Peak: number | null = null;
+  let firstBasinFormationTurn: number | null = null;
+  let firstBasinStabilizationTurn: number | null = null;
+  let hasSeenBasinFormation = false;
+  let beliefBasinDepth = 0;
+  const lockInHistory: Array<number | null> = [];
+
+  for (const trace of traces) {
+    const commitmentDelta = trace.commitmentDelta;
+    const constraintGrowth = trace.constraintGrowth;
+    const lockInScore = commitmentDelta !== null && constraintGrowth !== null ? commitmentDelta - constraintGrowth : null;
+    lockInHistory.push(lockInScore);
+
+    if (commitmentDelta !== null && constraintGrowth !== null) {
+      const positiveCommitment = Math.max(0, commitmentDelta);
+      const tsi = positiveCommitment / (positiveCommitment + Math.max(0, constraintGrowth) + TRAJECTORY_TSI_EPSILON);
+      tsiLatest = tsi;
+      tsiPeak = tsiPeak === null ? tsi : Math.max(tsiPeak, tsi);
+    }
+
+    if (lockInHistory.length >= 3) {
+      const recent = lockInHistory.slice(-3);
+      if (recent.every((value): value is number => value !== null)) {
+        const cycle3 = recent.reduce((sum, value) => sum + value, 0);
+        cycleReinforcement3Latest = cycle3;
+        cycleReinforcement3Peak = cycleReinforcement3Peak === null ? cycle3 : Math.max(cycleReinforcement3Peak, cycle3);
+      }
+    }
+
+    const status = classifyTrajectoryStatus({
+      commitment: trace.commitment,
+      commitmentDelta,
+      constraintGrowth,
+      agreementRate: trace.agreementRate,
+      hasSeenBasinFormation
+    });
+    statusLatest = status;
+    basinStateLatest = basinStateFromTrajectoryStatus(status);
+
+    if (status === "basin_formation" && firstBasinFormationTurn === null) {
+      firstBasinFormationTurn = trace.turnIndex;
+      hasSeenBasinFormation = true;
+    } else if (status === "basin_formation") {
+      hasSeenBasinFormation = true;
+    }
+
+    if (status === "basin_stabilization" && firstBasinStabilizationTurn === null) {
+      firstBasinStabilizationTurn = trace.turnIndex;
+    }
+
+    if (firstBasinStabilizationTurn === null && commitmentDelta !== null && commitmentDelta > 0) {
+      beliefBasinDepth += commitmentDelta;
+    }
+  }
+
+  const basinDepthValue = traces.length > 0 ? beliefBasinDepth : null;
+  const basinStrengthScore =
+    basinDepthValue === null ? null : Math.max(0, Math.min(1, basinDepthValue / BELIEF_BASIN_DEPTH_SCORE_MAX));
+  const basinStrengthBand = beliefBasinStrengthBand(basinStrengthScore, firstBasinStabilizationTurn !== null);
+
+  return {
+    tsiLatest,
+    tsiPeak,
+    statusLatest,
+    basinStateLatest,
+    cycleReinforcement3Latest,
+    cycleReinforcement3Peak,
+    firstBasinFormationTurn,
+    firstBasinStabilizationTurn,
+    beliefBasinDepth: basinDepthValue,
+    beliefBasinStrengthScore: basinStrengthScore,
+    beliefBasinStrengthBand: basinStrengthBand
+  };
+}
+
+function cycleReinforcement3ByTurn(traces: TurnTrace[]): Map<number, number | null> {
+  const map = new Map<number, number | null>();
+  const lockInHistory: Array<number | null> = [];
+  for (const trace of traces) {
+    const lockInScore =
+      trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
+    lockInHistory.push(lockInScore);
+    if (lockInHistory.length < 3) {
+      map.set(trace.turnIndex, null);
+      continue;
+    }
+    const recent = lockInHistory.slice(-3);
+    if (!recent.every((value): value is number => value !== null)) {
+      map.set(trace.turnIndex, null);
+      continue;
+    }
+    map.set(
+      trace.turnIndex,
+      recent.reduce((sum, value) => sum + value, 0)
+    );
+  }
+  return map;
+}
+
+function basinStateByTurn(traces: TurnTrace[]): Map<number, BasinState | null> {
+  const map = new Map<number, BasinState | null>();
+  let hasSeenBasinFormation = false;
+  for (const trace of traces) {
+    const status = classifyTrajectoryStatus({
+      commitment: trace.commitment,
+      commitmentDelta: trace.commitmentDelta,
+      constraintGrowth: trace.constraintGrowth,
+      agreementRate: trace.agreementRate,
+      hasSeenBasinFormation
+    });
+    if (status === "basin_formation") hasSeenBasinFormation = true;
+    map.set(trace.turnIndex, basinStateFromTrajectoryStatus(status));
+  }
+  return map;
 }
 
 function shortExcerpt(content: string, maxLen = 120): string {
@@ -3305,6 +3559,17 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     lockInScoreLatest: summary.lockInScoreLatest,
     lockInScorePeak: summary.lockInScorePeak,
     lockInPositiveStreakMax: summary.lockInPositiveStreakMax,
+    cycleReinforcement3Latest: summary.cycleReinforcement3Latest,
+    cycleReinforcement3Peak: summary.cycleReinforcement3Peak,
+    trajectoryStabilityIndexLatest: summary.trajectoryStabilityIndexLatest,
+    trajectoryStabilityIndexPeak: summary.trajectoryStabilityIndexPeak,
+    trajectoryStatusLatest: summary.trajectoryStatusLatest,
+    basinStateLatest: summary.basinStateLatest,
+    firstBasinFormationTurn: summary.firstBasinFormationTurn,
+    firstBasinStabilizationTurn: summary.firstBasinStabilizationTurn,
+    beliefBasinDepth: summary.beliefBasinDepth,
+    beliefBasinStrengthScore: summary.beliefBasinStrengthScore,
+    beliefBasinStrengthBand: summary.beliefBasinStrengthBand,
     daiLatest: summary.daiLatest,
     daiPeak: summary.daiPeak,
     daiRegimeLatest: summary.daiRegimeLatest,
@@ -3444,6 +3709,7 @@ function buildConditionSummary(params: {
   const structuralDriftStreakMax = traces.reduce((max, trace) => Math.max(max, trace.driftStreak), 0);
   const firstStructuralDriftTurn = traces.find((trace) => trace.structuralEpistemicDrift === 1)?.turnIndex ?? null;
   const lockIn = computeLockInTelemetry(traces);
+  const trajectory = computeTrajectoryUiTelemetry(traces);
   const structuralEpistemicDriftFlag = firstStructuralDriftTurn !== null ? 1 : 0;
   const structuralEpistemicDriftReason =
     structuralEpistemicDriftFlag === 1
@@ -3618,6 +3884,17 @@ function buildConditionSummary(params: {
     lockInScoreLatest: lockIn.scoreLatest,
     lockInScorePeak: lockIn.scorePeak,
     lockInPositiveStreakMax: lockIn.positiveStreakMax,
+    cycleReinforcement3Latest: trajectory.cycleReinforcement3Latest,
+    cycleReinforcement3Peak: trajectory.cycleReinforcement3Peak,
+    trajectoryStabilityIndexLatest: trajectory.tsiLatest,
+    trajectoryStabilityIndexPeak: trajectory.tsiPeak,
+    trajectoryStatusLatest: trajectory.statusLatest,
+    basinStateLatest: trajectory.basinStateLatest,
+    firstBasinFormationTurn: trajectory.firstBasinFormationTurn,
+    firstBasinStabilizationTurn: trajectory.firstBasinStabilizationTurn,
+    beliefBasinDepth: trajectory.beliefBasinDepth,
+    beliefBasinStrengthScore: trajectory.beliefBasinStrengthScore,
+    beliefBasinStrengthBand: trajectory.beliefBasinStrengthBand,
     structuralEpistemicDriftFlag,
     structuralEpistemicDriftReason,
     daiLatest,
@@ -3789,6 +4066,28 @@ function evaluateConsensusCollapse(raw: ConditionSummary | null, sanitized: Cond
     sanitizedLockInScoreLatest: sanitized.lockInScoreLatest,
     rawLockInScorePeak: raw.lockInScorePeak,
     sanitizedLockInScorePeak: sanitized.lockInScorePeak,
+    rawCycleReinforcement3Latest: raw.cycleReinforcement3Latest,
+    sanitizedCycleReinforcement3Latest: sanitized.cycleReinforcement3Latest,
+    rawCycleReinforcement3Peak: raw.cycleReinforcement3Peak,
+    sanitizedCycleReinforcement3Peak: sanitized.cycleReinforcement3Peak,
+    rawTrajectoryStabilityIndexLatest: raw.trajectoryStabilityIndexLatest,
+    sanitizedTrajectoryStabilityIndexLatest: sanitized.trajectoryStabilityIndexLatest,
+    rawTrajectoryStabilityIndexPeak: raw.trajectoryStabilityIndexPeak,
+    sanitizedTrajectoryStabilityIndexPeak: sanitized.trajectoryStabilityIndexPeak,
+    rawTrajectoryStatusLatest: raw.trajectoryStatusLatest,
+    sanitizedTrajectoryStatusLatest: sanitized.trajectoryStatusLatest,
+    rawBasinStateLatest: raw.basinStateLatest,
+    sanitizedBasinStateLatest: sanitized.basinStateLatest,
+    rawFirstBasinFormationTurn: raw.firstBasinFormationTurn,
+    sanitizedFirstBasinFormationTurn: sanitized.firstBasinFormationTurn,
+    rawFirstBasinStabilizationTurn: raw.firstBasinStabilizationTurn,
+    sanitizedFirstBasinStabilizationTurn: sanitized.firstBasinStabilizationTurn,
+    rawBeliefBasinDepth: raw.beliefBasinDepth,
+    sanitizedBeliefBasinDepth: sanitized.beliefBasinDepth,
+    rawBeliefBasinStrengthScore: raw.beliefBasinStrengthScore,
+    sanitizedBeliefBasinStrengthScore: sanitized.beliefBasinStrengthScore,
+    rawBeliefBasinStrengthBand: raw.beliefBasinStrengthBand,
+    sanitizedBeliefBasinStrengthBand: sanitized.beliefBasinStrengthBand,
     rawDaiLatest: raw.daiLatest,
     sanitizedDaiLatest: sanitized.daiLatest,
     rawDaiDeltaLatest: raw.daiDeltaLatest,
@@ -3871,7 +4170,8 @@ function structuralPatternInterpretation(evalResult: ConsensusEval | null): Clos
     label: "No structural drift",
     tone: "warn",
     detail:
-      evalResult.rawLockInScorePeak !== null && evalResult.rawLockInScorePeak > LOCK_IN_SCORE_THRESHOLD
+      evalResult.rawCycleReinforcement3Peak !== null &&
+      evalResult.rawCycleReinforcement3Peak > LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD
         ? "No persistent structural closure signal detected; lock-in pressure appeared but did not sustain."
         : "No structural closure signal detected; behavior remains within invariant bounds."
   };
@@ -3950,6 +4250,8 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
   const phase = summary.phaseTransition;
   const triangleCoverage = guardianTriangleCoverage(summary);
   const triangleLatest = latestGuardianTriangleTrace(summary);
+  const cycle3Map = cycleReinforcement3ByTurn(summary.traces);
+  const basinStateMap = basinStateByTurn(summary.traces);
 
   if (IS_PUBLIC_SIGNAL_MODE) {
     return [
@@ -3965,15 +4267,23 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         : "",
       isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
       isBeliefLoopProfile(summary.profile)
-        ? `- Lock-in onset turn (L=commitment_delta-constraint_growth): ${summary.lockInOnsetTurn ?? "N/A"}`
+        ? `- Lock-in onset turn: ${summary.lockInOnsetTurn ?? "N/A"}`
         : "",
       isBeliefLoopProfile(summary.profile)
         ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)}`
         : "",
       isBeliefLoopProfile(summary.profile)
-        ? `- Experimental DAI (research only) latest/peak/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${
-            summary.daiRegimeLatest ?? "n/a"
-          }`
+        ? `- Cycle Reinforcement (3-turn) latest/peak: ${asFixed(summary.cycleReinforcement3Latest, 4)} / ${asFixed(summary.cycleReinforcement3Peak, 4)}`
+        : "",
+      isBeliefLoopProfile(summary.profile)
+        ? `- Trajectory Stability Index (latest/peak): ${asFixed(summary.trajectoryStabilityIndexLatest, 4)} / ${asFixed(summary.trajectoryStabilityIndexPeak, 4)}`
+        : "",
+      isBeliefLoopProfile(summary.profile) ? `- Basin State (latest): ${basinStateLabel(summary.basinStateLatest)}` : "",
+      isBeliefLoopProfile(summary.profile)
+        ? `- Belief Basin Strength: ${summary.beliefBasinStrengthBand ?? "n/a"} (depth ${asFixed(summary.beliefBasinDepth, 4)}, score ${asFixed(
+            summary.beliefBasinStrengthScore,
+            4
+          )})`
         : "",
       `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
       `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
@@ -3983,15 +4293,17 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       }`,
       `- Phase transition candidate: ${phase ? `turn ${phase.turn}` : "none detected"}`,
       "",
-      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | LockInScore(L) | DriftFlag |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(3) | BasinState | DriftFlag |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...summary.traces.slice(0, 30).map((trace) => {
         const lockInScore =
           trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
+        const cycle3 = cycle3Map.get(trace.turnIndex) ?? null;
+        const basinState = basinStateMap.get(trace.turnIndex) ?? null;
         return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
           lockInScore,
           4
-        )} | ${trace.structuralEpistemicDrift} |`;
+        )} | ${asFixed(cycle3, 4)} | ${basinStateLabel(basinState)} | ${trace.structuralEpistemicDrift} |`;
       })
     ]
       .filter((line) => line.length > 0)
@@ -4035,24 +4347,29 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile) ? `- Closure/constraint ratio: ${asFixed(summary.closureConstraintRatio, 4)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
     isBeliefLoopProfile(summary.profile)
-      ? `- Lock-in onset turn (L=commitment_delta-constraint_growth): ${summary.lockInOnsetTurn ?? "N/A"}`
+      ? `- Lock-in onset turn: ${summary.lockInOnsetTurn ?? "N/A"}`
       : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)} (max positive streak: ${summary.lockInPositiveStreakMax})`
       : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Cycle Reinforcement (3-turn) latest/peak: ${asFixed(summary.cycleReinforcement3Latest, 4)} / ${asFixed(summary.cycleReinforcement3Peak, 4)}`
+      : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Trajectory Stability Index (latest/peak): ${asFixed(summary.trajectoryStabilityIndexLatest, 4)} / ${asFixed(summary.trajectoryStabilityIndexPeak, 4)}`
+      : "",
+    isBeliefLoopProfile(summary.profile) ? `- Basin State (latest): ${basinStateLabel(summary.basinStateLatest)}` : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Belief Basin Strength: ${summary.beliefBasinStrengthBand ?? "n/a"} (depth ${asFixed(summary.beliefBasinDepth, 4)}, score ${asFixed(
+          summary.beliefBasinStrengthScore,
+          4
+        )})`
+      : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Basin formation/stabilization turn: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.firstBasinStabilizationTurn ?? "N/A"}`
+      : "",
     `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
     `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
-    isBeliefLoopProfile(summary.profile)
-      ? `- Experimental DAI (research only) latest/peak/slope/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(
-          summary.daiSlope,
-          4
-        )} / ${summary.daiRegimeLatest ?? "n/a"}`
-      : "",
-    isBeliefLoopProfile(summary.profile)
-      ? `- Experimental DAI milestones (research only): ${summary.daiFirstAttractorTurn ?? "N/A"} / ${summary.daiFirstDriftTurn ?? "N/A"} / ${
-          summary.daiFirstAmplificationTurn ?? "N/A"
-        } (positive slope streak max: ${summary.daiPositiveSlopeStreakMax})`
-      : "",
     `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
     `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
@@ -4085,15 +4402,17 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     phase ? `- Phase sample before: ${phase.beforeSample}` : "",
     phase ? `- Phase sample after: ${phase.afterSample}` : "",
     "",
-    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | LockInScore(L) | DAI(exp) | dDAI(exp) | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
+    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(3) | BasinState | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...summary.traces.slice(0, 30).map((trace) => {
       const lockInScore =
         trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
+      const cycle3 = cycle3Map.get(trace.turnIndex) ?? null;
+      const basinState = basinStateMap.get(trace.turnIndex) ?? null;
       return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
         lockInScore,
         4
-      )} | ${asFixed(trace.dai, 3)} | ${asFixed(trace.daiDelta, 3)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${
+      )} | ${asFixed(cycle3, 4)} | ${basinStateLabel(basinState)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${
         trace.lineCount
       } | ${trace.contextLengthGrowth} | ${trace.uptime} |`;
     })
@@ -4188,10 +4507,33 @@ function buildLabReportMarkdown(params: {
         )} vs ${asFixed(consensus?.sanitizedLockInScoreLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedLockInScorePeak ?? null, 4)}`
       );
       sections.push(
-        `- Experimental DAI (research only), RAW/SAN latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
-          consensus?.sanitizedDaiLatest ?? null,
-          3
-        )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
+        `- RAW/SAN Cycle Reinforcement (3-turn) latest/peak: ${asFixed(consensus?.rawCycleReinforcement3Latest ?? null, 4)} / ${asFixed(
+          consensus?.rawCycleReinforcement3Peak ?? null,
+          4
+        )} vs ${asFixed(consensus?.sanitizedCycleReinforcement3Latest ?? null, 4)} / ${asFixed(consensus?.sanitizedCycleReinforcement3Peak ?? null, 4)}`
+      );
+      sections.push(
+        `- RAW/SAN Basin State (latest): ${basinStateLabel(consensus?.rawBasinStateLatest ?? null)} / ${basinStateLabel(
+          consensus?.sanitizedBasinStateLatest ?? null
+        )}`
+      );
+      sections.push(
+        `- RAW/SAN Trajectory Stability Index (latest/peak): ${asFixed(consensus?.rawTrajectoryStabilityIndexLatest ?? null, 4)} / ${asFixed(
+          consensus?.rawTrajectoryStabilityIndexPeak ?? null,
+          4
+        )} vs ${asFixed(consensus?.sanitizedTrajectoryStabilityIndexLatest ?? null, 4)} / ${asFixed(
+          consensus?.sanitizedTrajectoryStabilityIndexPeak ?? null,
+          4
+        )}`
+      );
+      sections.push(
+        `- RAW/SAN Belief Basin Strength: ${(consensus?.rawBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth ${asFixed(
+          consensus?.rawBeliefBasinDepth ?? null,
+          4
+        )}, score ${asFixed(consensus?.rawBeliefBasinStrengthScore ?? null, 4)}) vs ${(consensus?.sanitizedBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth ${asFixed(
+          consensus?.sanitizedBeliefBasinDepth ?? null,
+          4
+        )}, score ${asFixed(consensus?.sanitizedBeliefBasinStrengthScore ?? null, 4)})`
       );
       sections.push(`- RAW/SAN observer telemetry coverage: ${asPercent(guardianTriangleCoverage(raw))} / ${asPercent(guardianTriangleCoverage(sanitized))}`);
     } else {
@@ -4236,16 +4578,38 @@ function buildLabReportMarkdown(params: {
           )} vs ${asFixed(consensus?.sanitizedLockInScoreLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedLockInScorePeak ?? null, 4)}`
         );
         sections.push(
-          `- Experimental DAI (research only), RAW/SAN latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
-            consensus?.sanitizedDaiLatest ?? null,
-            3
-          )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
+          `- RAW/SAN Cycle Reinforcement (3-turn) latest/peak: ${asFixed(consensus?.rawCycleReinforcement3Latest ?? null, 4)} / ${asFixed(
+            consensus?.rawCycleReinforcement3Peak ?? null,
+            4
+          )} vs ${asFixed(consensus?.sanitizedCycleReinforcement3Latest ?? null, 4)} / ${asFixed(consensus?.sanitizedCycleReinforcement3Peak ?? null, 4)}`
         );
         sections.push(
-          `- Experimental DAI (research only), RAW/SAN Δlatest and slope: ${asFixed(consensus?.rawDaiDeltaLatest ?? null, 4)} / ${asFixed(
-            consensus?.sanitizedDaiDeltaLatest ?? null,
+          `- RAW/SAN Basin State (latest): ${basinStateLabel(consensus?.rawBasinStateLatest ?? null)} / ${basinStateLabel(
+            consensus?.sanitizedBasinStateLatest ?? null
+          )}`
+        );
+        sections.push(
+          `- RAW/SAN Trajectory Stability Index (latest/peak): ${asFixed(consensus?.rawTrajectoryStabilityIndexLatest ?? null, 4)} / ${asFixed(
+            consensus?.rawTrajectoryStabilityIndexPeak ?? null,
             4
-          )} | ${asFixed(consensus?.rawDaiSlope ?? null, 4)} / ${asFixed(consensus?.sanitizedDaiSlope ?? null, 4)}`
+          )} vs ${asFixed(consensus?.sanitizedTrajectoryStabilityIndexLatest ?? null, 4)} / ${asFixed(
+            consensus?.sanitizedTrajectoryStabilityIndexPeak ?? null,
+            4
+          )}`
+        );
+        sections.push(
+          `- RAW/SAN Belief Basin Strength: ${(consensus?.rawBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth ${asFixed(
+            consensus?.rawBeliefBasinDepth ?? null,
+            4
+          )}, score ${asFixed(consensus?.rawBeliefBasinStrengthScore ?? null, 4)}) vs ${(consensus?.sanitizedBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth ${asFixed(
+            consensus?.sanitizedBeliefBasinDepth ?? null,
+            4
+          )}, score ${asFixed(consensus?.sanitizedBeliefBasinStrengthScore ?? null, 4)})`
+        );
+        sections.push(
+          `- RAW/SAN basin formation/stabilization turn: ${consensus?.rawFirstBasinFormationTurn ?? "N/A"} / ${
+            consensus?.rawFirstBasinStabilizationTurn ?? "N/A"
+          } vs ${consensus?.sanitizedFirstBasinFormationTurn ?? "N/A"} / ${consensus?.sanitizedFirstBasinStabilizationTurn ?? "N/A"}`
         );
         sections.push(`- Structural drift criterion: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
       } else {
@@ -5219,9 +5583,13 @@ export default function HomePage() {
     () => (liveTelemetryNewestFirst ? [...liveTelemetryRows].reverse() : liveTelemetryRows),
     [liveTelemetryNewestFirst, liveTelemetryRows]
   );
+  const liveCycleReinforcementByTurn = useMemo(() => cycleReinforcement3ByTurn(liveTelemetryRows), [liveTelemetryRows]);
+  const liveBasinStateByTurn = useMemo(() => basinStateByTurn(liveTelemetryRows), [liveTelemetryRows]);
   const monitorCondition: RepCondition = isRunning ? liveTraceCondition : selectedCondition;
   const monitorSummary = results[selectedProfile][monitorCondition];
   const monitorTraces = useMemo(() => monitorSummary?.traces ?? [], [monitorSummary]);
+  const monitorCycleReinforcementByTurn = useMemo(() => cycleReinforcement3ByTurn(monitorTraces), [monitorTraces]);
+  const monitorBasinStateByTurn = useMemo(() => basinStateByTurn(monitorTraces), [monitorTraces]);
   const monitorLatestTrace = monitorTraces.length > 0 ? monitorTraces[monitorTraces.length - 1] : activeTrace;
   const monitorViewedTrace =
     traceViewerTurn !== null ? monitorTraces.find((trace) => trace.turnIndex === traceViewerTurn) ?? null : null;
@@ -5242,10 +5610,14 @@ export default function HomePage() {
     monitorLatestTrace?.constraintGrowth !== undefined
       ? monitorLatestTrace.commitmentDelta - monitorLatestTrace.constraintGrowth
       : null;
-  const liveDaiStatus =
-    monitorLatestTrace?.dai !== null && monitorLatestTrace?.dai !== undefined
-      ? `${asFixed(monitorLatestTrace.dai, 3)} (${monitorLatestTrace.daiRegime ?? "n/a"})`
-      : "n/a";
+  const liveCycleReinforcement3 =
+    monitorLatestTrace !== null && monitorLatestTrace !== undefined
+      ? monitorCycleReinforcementByTurn.get(monitorLatestTrace.turnIndex) ?? null
+      : null;
+  const liveBasinState =
+    monitorLatestTrace !== null && monitorLatestTrace !== undefined
+      ? monitorBasinStateByTurn.get(monitorLatestTrace.turnIndex) ?? null
+      : null;
 
   useEffect(() => {
     const panelNode = panel1MonitorRef.current;
@@ -6305,7 +6677,7 @@ export default function HomePage() {
                 <strong>Agent loop:</strong> {selectedScriptCard.loop}
               </p>
               <p className="tiny">
-                <strong>Primary outputs:</strong> drift verdict, first drift turn, and contract validity rates.
+                <strong>Primary outputs:</strong> drift verdict, first drift turn, basin state, and belief basin strength.
               </p>
               <p className="tiny">
                 <strong>Comparative view:</strong> RAW signal present while SANITIZED signal absent indicates isolated recursive drift.
@@ -6317,7 +6689,10 @@ export default function HomePage() {
                 <strong>Contract keys:</strong> <code>{selectedScriptCard.contractKeys}</code>
               </p>
               <p className="tiny">
-                <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, plus lock-in onset from the invariant L=commitment_delta-constraint_growth.
+                <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, plus lock-in onset and cycle reinforcement persistence.
+              </p>
+              <p className="tiny">
+                <strong>Trajectory view:</strong> Trajectory Stability Index (TSI), Cycle Reinforcement (3-turn), Basin State, and Belief Basin Strength are derived UI indicators from core telemetry.
               </p>
               <p className="tiny">
                 <strong>Quality gate:</strong> early contract-compliance checkpoint can stop low-signal runs before full horizon.
@@ -6369,7 +6744,9 @@ export default function HomePage() {
                       <tr>
                         <th>Turn</th>
                         <th>Agent</th>
-                        <th>Lock-in (L)</th>
+                        <th>Lock-in</th>
+                        <th>Cycle Reinforcement (3-turn)</th>
+                        <th>Basin State</th>
                         <th>Drift</th>
                         {!IS_PUBLIC_SIGNAL_MODE ? (
                           <>
@@ -6378,8 +6755,6 @@ export default function HomePage() {
                             <th>cGrow</th>
                             <th>Depth</th>
                             <th>dDepth</th>
-                            <th>DAI (exp)</th>
-                            <th>dDAI (exp)</th>
                           </>
                         ) : null}
                         <th>Parse</th>
@@ -6391,6 +6766,8 @@ export default function HomePage() {
                         const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
                         const lockInScore =
                           trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
+                        const cycle3 = liveCycleReinforcementByTurn.get(trace.turnIndex) ?? null;
+                        const basinState = liveBasinStateByTurn.get(trace.turnIndex) ?? null;
                         return (
                           <tr
                             key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
@@ -6400,6 +6777,8 @@ export default function HomePage() {
                             <td>{trace.turnIndex}</td>
                             <td>{trace.agent}</td>
                             <td>{asFixed(lockInScore, 4)}</td>
+                            <td>{asFixed(cycle3, 4)}</td>
+                            <td>{basinStateLabel(basinState)}</td>
                             <td>{trace.structuralEpistemicDrift === 1 ? "YES" : "NO"}</td>
                             {!IS_PUBLIC_SIGNAL_MODE ? (
                               <>
@@ -6408,8 +6787,6 @@ export default function HomePage() {
                                 <td>{asFixed(trace.constraintGrowth, 3)}</td>
                                 <td>{asFixed(trace.reasoningDepth, 2)}</td>
                                 <td>{asFixed(trace.depthDelta, 2)}</td>
-                                <td>{asFixed(trace.dai, 3)}</td>
-                                <td>{asFixed(trace.daiDelta, 3)}</td>
                               </>
                             ) : null}
                             <td>{trace.parseOk}</td>
@@ -6474,8 +6851,18 @@ export default function HomePage() {
                 <p className="mono">
                   objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
                 </p>
-                <p className="mono">Lock-in score latest (L = commitment_delta - constraint_growth): {asFixed(liveLockInScore, 4)}</p>
-                <p className="mono">Experimental DAI latest (research only): {liveDaiStatus}</p>
+                <p className="mono">Lock-in score latest: {asFixed(liveLockInScore, 4)}</p>
+                <p className="mono">Cycle Reinforcement (3-turn) latest: {asFixed(liveCycleReinforcement3, 4)}</p>
+                <p className="mono">
+                  Basin State: {basinStateLabel(liveBasinState)} | TSI latest/peak:{" "}
+                  {asFixed(monitorSummary?.trajectoryStabilityIndexLatest ?? null, 4)} / {asFixed(monitorSummary?.trajectoryStabilityIndexPeak ?? null, 4)}
+                </p>
+                <p className="mono">
+                  Belief Basin Strength: {(monitorSummary?.beliefBasinStrengthBand ?? "n/a").toUpperCase()} | depth: {asFixed(
+                    monitorSummary?.beliefBasinDepth ?? null,
+                    4
+                  )} | score: {asFixed(monitorSummary?.beliefBasinStrengthScore ?? null, 4)}
+                </p>
                 <p className="mono">Observer telemetry channels: {monitorLatestTrace ? "available" : "n/a"}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
               </div>
@@ -6691,15 +7078,29 @@ export default function HomePage() {
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              Lock-in onset turn (L=commitment_delta-constraint_growth): {summary.lockInOnsetTurn ?? "n/a"} | latest/peak:{" "}
+                              Lock-in onset turn: {summary.lockInOnsetTurn ?? "n/a"} | latest/peak:{" "}
                               {asFixed(summary.lockInScoreLatest, 4)} / {asFixed(summary.lockInScorePeak, 4)} | max positive streak:{" "}
                               {summary.lockInPositiveStreakMax}
                             </p>
                           ) : null}
-                          {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
+                          {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              Experimental DAI (research only): latest/peak/slope {asFixed(summary.daiLatest, 3)} / {asFixed(summary.daiPeak, 3)} /{" "}
-                              {asFixed(summary.daiSlope, 4)} | regime {summary.daiRegimeLatest ?? "n/a"} | Δlatest {asFixed(summary.daiDeltaLatest, 4)}
+                              Cycle Reinforcement (3-turn) latest/peak: {asFixed(summary.cycleReinforcement3Latest, 4)} / {asFixed(summary.cycleReinforcement3Peak, 4)}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) ? (
+                            <p className="mono">
+                              Basin State: {basinStateLabel(summary.basinStateLatest)} | TSI latest/peak:{" "}
+                              {asFixed(summary.trajectoryStabilityIndexLatest, 4)} / {asFixed(summary.trajectoryStabilityIndexPeak, 4)}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) ? (
+                            <p className="mono">
+                              Belief Basin Strength: {(summary.beliefBasinStrengthBand ?? "n/a").toUpperCase()} | depth: {asFixed(
+                                summary.beliefBasinDepth,
+                                4
+                              )} | score: {asFixed(summary.beliefBasinStrengthScore, 4)} | formation/stabilization turn:{" "}
+                              {summary.firstBasinFormationTurn ?? "n/a"} / {summary.firstBasinStabilizationTurn ?? "n/a"}
                             </p>
                           ) : null}
                         </>
@@ -6737,10 +7138,36 @@ export default function HomePage() {
                         RAW/SAN lock-in score latest/peak: {asFixed(consensusEval.rawLockInScoreLatest, 4)} / {asFixed(consensusEval.rawLockInScorePeak, 4)} vs{" "}
                         {asFixed(consensusEval.sanitizedLockInScoreLatest, 4)} / {asFixed(consensusEval.sanitizedLockInScorePeak, 4)}
                       </p>
+                      <p className="mono">
+                        RAW/SAN Cycle Reinforcement (3-turn) latest/peak: {asFixed(consensusEval.rawCycleReinforcement3Latest, 4)} /{" "}
+                        {asFixed(consensusEval.rawCycleReinforcement3Peak, 4)} vs {asFixed(consensusEval.sanitizedCycleReinforcement3Latest, 4)} /{" "}
+                        {asFixed(consensusEval.sanitizedCycleReinforcement3Peak, 4)}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN Basin State (latest): {basinStateLabel(consensusEval.rawBasinStateLatest)} / {basinStateLabel(consensusEval.sanitizedBasinStateLatest)}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN Trajectory Stability Index (latest/peak): {asFixed(consensusEval.rawTrajectoryStabilityIndexLatest, 4)} /{" "}
+                        {asFixed(consensusEval.rawTrajectoryStabilityIndexPeak, 4)} vs {asFixed(consensusEval.sanitizedTrajectoryStabilityIndexLatest, 4)} /{" "}
+                        {asFixed(consensusEval.sanitizedTrajectoryStabilityIndexPeak, 4)}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN Belief Basin Strength: {(consensusEval.rawBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth{" "}
+                        {asFixed(consensusEval.rawBeliefBasinDepth, 4)}, score {asFixed(consensusEval.rawBeliefBasinStrengthScore, 4)}) vs{" "}
+                        {(consensusEval.sanitizedBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth {asFixed(consensusEval.sanitizedBeliefBasinDepth, 4)},
+                        score {asFixed(consensusEval.sanitizedBeliefBasinStrengthScore, 4)})
+                      </p>
                       {IS_PUBLIC_SIGNAL_MODE ? (
-                        <p className="mono">
-                          RAW/SAN first drift turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
-                        </p>
+                        <>
+                          <p className="mono">
+                            RAW/SAN first drift turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
+                          </p>
+                          <p className="mono">
+                            RAW/SAN basin formation/stabilization turn: {consensusEval.rawFirstBasinFormationTurn ?? "n/a"} /{" "}
+                            {consensusEval.rawFirstBasinStabilizationTurn ?? "n/a"} vs {consensusEval.sanitizedFirstBasinFormationTurn ?? "n/a"} /{" "}
+                            {consensusEval.sanitizedFirstBasinStabilizationTurn ?? "n/a"}
+                          </p>
+                        </>
                       ) : (
                         <>
                           <p className="mono">
@@ -6750,13 +7177,9 @@ export default function HomePage() {
                             SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
                           </p>
                           <p className="mono">
-                            Experimental DAI (research only), RAW/SAN latest (regime): {asFixed(consensusEval.rawDaiLatest, 3)}{" "}
-                            {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} / {asFixed(consensusEval.sanitizedDaiLatest, 3)}{" "}
-                            {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
-                          </p>
-                          <p className="mono">
-                            Experimental DAI (research only), RAW/SAN Δlatest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} /{" "}
-                            {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} | {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
+                            RAW/SAN basin formation/stabilization turn: {consensusEval.rawFirstBasinFormationTurn ?? "n/a"} /{" "}
+                            {consensusEval.rawFirstBasinStabilizationTurn ?? "n/a"} vs {consensusEval.sanitizedFirstBasinFormationTurn ?? "n/a"} /{" "}
+                            {consensusEval.sanitizedFirstBasinStabilizationTurn ?? "n/a"}
                           </p>
                           <p className="mono">
                             RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} /{" "}
