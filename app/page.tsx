@@ -5169,13 +5169,7 @@ export default function HomePage() {
         ? providerOptions.find((item) => item.value === detectedKeyProvider)?.label ?? "Detected"
         : "Provided"
       : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
-  const guardianStatusLabel = !guardianEnabled
-    ? "Disabled"
-    : guardianRuntimeState === "connected"
-      ? "Connected"
-      : guardianRuntimeState === "degraded"
-        ? "Degraded"
-        : "Unknown";
+  const guardianStatusLabel = guardianEnabled && guardianRuntimeState === "connected" ? "Connected" : "Not Connected";
   const guardianStatusDotClass = !guardianEnabled ? "warn" : guardianRuntimeState === "connected" ? "good" : guardianRuntimeState === "degraded" ? "bad" : "warn";
 
   const profileResults = results[selectedProfile];
@@ -6172,7 +6166,7 @@ export default function HomePage() {
               </div>
               <div className="status-line">
                 <span className={`dot ${guardianStatusDotClass}`} />
-                <span>Guardian Link {guardianStatusLabel}</span>
+                <span>Guardian {guardianStatusLabel}</span>
               </div>
             </div>
           </div>
@@ -6190,9 +6184,6 @@ export default function HomePage() {
             <button onClick={generateLabReport}>Generate Lab Report</button>
           </div>
           <div className="row-actions">
-            <button onClick={downloadActiveScriptSpec}>Download Active Script</button>
-          </div>
-          <div className="row-actions">
             <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
               Website
             </a>
@@ -6201,6 +6192,7 @@ export default function HomePage() {
             </a>
             <button onClick={() => setShowProtocol(true)}>Protocol</button>
             <button onClick={() => setShowSpec(true)}>Observer Spec + Access</button>
+            <button onClick={downloadActiveScriptSpec}>Download Active Script</button>
           </div>
         </div>
       </section>
