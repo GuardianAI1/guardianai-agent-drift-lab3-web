@@ -57,9 +57,9 @@ const CONDITION_LABELS = {
 } as const;
 
 const PROFILE_LABELS = {
-  belief_drift_triangle_3agent: "Canonical Drift Run (3-Agent Triangle)",
-  triangle_echo_chamber_3agent: "Echo Chamber Escalation (3-Agent)",
-  triangle_evidence_freeze_3agent: "Evidence Freeze Escalation (3-Agent)",
+  belief_drift_triangle_3agent: "Canonical Drift Run (3-Agent)",
+  triangle_echo_chamber_3agent: "Echo Chamber Stress (3-Agent)",
+  triangle_evidence_freeze_3agent: "Evidence Freeze Stress (3-Agent)",
   triangle_synth_pressure_3agent: "Synthesizer Pressure (3-Agent)",
   epistemic_drift_protocol: "Basin Depth Probe (AB Baseline)",
   three_agent_drift_amplifier: "Legacy Structural Profile (Hidden)",
@@ -183,7 +183,7 @@ interface TriangleScriptConfig {
 
 const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig> = {
   belief_drift_triangle_3agent: {
-    title: "Canonical Drift Run (3-Agent Triangle)",
+    title: "Canonical Drift Run (3-Agent)",
     claim: TRIANGLE_FIXED_CLAIM,
     stance: TRIANGLE_FIXED_STANCE,
     fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
@@ -191,12 +191,11 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
     freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
-    objective: "Canonical structural drift run for publication/comparison.",
-    summary:
-      "Forced A→B→C consensus lock with confidence ratchet and frozen evidence to test authority growth without constraint growth."
+    objective: "Canonical recursive drift benchmark for publication/comparison.",
+    summary: "Deterministic A→B→C loop with fixed-state reinjection and reproducible escalation pressure."
   },
   triangle_echo_chamber_3agent: {
-    title: "Echo Chamber Escalation (3-Agent)",
+    title: "Echo Chamber Stress (3-Agent)",
     claim: TRIANGLE_FIXED_CLAIM,
     stance: "support",
     fixedEvidenceIds: ["e1"],
@@ -205,10 +204,10 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
     objective: "Stress rapid agreement lock under minimal evidence diversity.",
-    summary: "All turns force support stance on one evidence id, accelerating confidence inflation under an echo-chamber constraint."
+    summary: "All turns force aligned stance with fixed evidence to maximize recursive reinforcement."
   },
   triangle_evidence_freeze_3agent: {
-    title: "Evidence Freeze Escalation (3-Agent)",
+    title: "Evidence Freeze Stress (3-Agent)",
     claim: TRIANGLE_FIXED_CLAIM,
     stance: TRIANGLE_FIXED_STANCE,
     fixedEvidenceIds: ["e1", "e2"],
@@ -216,9 +215,8 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     escalationCap: 0.96,
     freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
-    objective: "Isolate inflation under permanent evidence freeze with slower authority cap.",
-    summary:
-      "Evidence ids are fixed from turn 1; confidence still ratchets each turn to probe closure pressure under bounded commitment."
+    objective: "Isolate escalation behavior under permanent evidence freeze with bounded cap.",
+    summary: "Evidence ids are frozen from turn 1 while confidence remains deterministic and monotonic."
   },
   triangle_synth_pressure_3agent: {
     title: "Synthesizer Pressure (3-Agent)",
@@ -229,9 +227,8 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
     freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
-    objective: "Amplify C-agent summary pressure to surface faster divergence between RAW and SANITIZED recursion.",
-    summary:
-      "Keeps triangle contract fixed but uses a stronger confidence ratchet to accelerate authority-support imbalance under recursion."
+    objective: "Amplify C-agent summary pressure to surface faster RAW/SAN divergence.",
+    summary: "Same deterministic contract with stronger synthesizer weighting for faster recursive lock-in."
   }
 };
 
@@ -2918,8 +2915,8 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
       summary: config.summary,
       loop: 'A (proposer) -> B (critic) -> C (synthesizer) on one locked claim state per turn.',
       contractKeys: "step, claim, stance, confidence, evidence_ids",
-      commitmentVariable: "confidence (authority / commitment growth)",
-      constraintVariable: "evidence_ids growth (new ids introduced turn-to-turn)"
+      commitmentVariable: "commitment score",
+      constraintVariable: "constraint update count"
     };
   }
 
@@ -2931,8 +2928,8 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
         "A/B loop probes basin stability under contradiction shocks and checks whether structural updates recover to a stable attractor.",
       loop: "A (probe proposer) -> B (probe critic) with deterministic schema lock.",
       contractKeys: "claim, stance, confidence, evidence_ids",
-      commitmentVariable: "confidence (commitment / closure pressure)",
-      constraintVariable: "evidence_ids growth (new evidence admitted)"
+      commitmentVariable: "commitment score",
+      constraintVariable: "constraint update count"
     };
   }
 
@@ -2942,14 +2939,38 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
     summary: "Deterministic recursive contract run.",
     loop: "Recursive agent loop under fixed schema.",
     contractKeys: "profile-dependent JSON contract",
-    commitmentVariable: "confidence",
-    constraintVariable: "evidence_ids growth"
+    commitmentVariable: "commitment score",
+    constraintVariable: "constraint update count"
   };
+}
+
+function publicScriptTextForProfile(profile: ExperimentProfile): string {
+  if (isBeliefTriangle3AgentProfile(profile)) {
+    return [
+      "Deterministic 3-agent recursive loop.",
+      "Agents A/B/C exchange one fixed-schema state per turn.",
+      "Run compares RAW reinjection versus SANITIZED reinjection.",
+      "Output schema remains fixed; run tracks drift telemetry and validity checks."
+    ].join("\n");
+  }
+  if (profile === "epistemic_drift_protocol") {
+    return [
+      "Deterministic 2-agent baseline loop.",
+      "A/B exchange fixed-schema states under controlled perturbations.",
+      "Run compares RAW reinjection versus SANITIZED reinjection.",
+      "Output schema remains fixed; run tracks drift telemetry and validity checks."
+    ].join("\n");
+  }
+  return [
+    "Deterministic recursive loop.",
+    "Fixed output schema and contract validation.",
+    "Run compares RAW reinjection versus SANITIZED reinjection."
+  ].join("\n");
 }
 
 function scriptDownloadBody(profile: ExperimentProfile): string {
   const copy = scriptCardCopyForProfile(profile);
-  const rule = profileRuleText(profile);
+  const rule = IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(profile) : profileRuleText(profile);
   return [
     `# ${copy.title}`,
     "",
@@ -2961,7 +2982,7 @@ function scriptDownloadBody(profile: ExperimentProfile): string {
     `- Commitment variable: ${copy.commitmentVariable}`,
     `- Constraint variable: ${copy.constraintVariable}`,
     "",
-    "## Runtime Contract",
+    IS_PUBLIC_SIGNAL_MODE ? "## Runtime Outline (Public)" : "## Runtime Contract",
     "```text",
     rule,
     "```"
@@ -3891,28 +3912,21 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       isBeliefLoopProfile(summary.profile)
         ? `- DAI latest/peak/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${summary.daiRegimeLatest ?? "n/a"}`
         : "",
-      `- Guardian triangle telemetry coverage: ${asPercent(triangleCoverage)}`,
-      `- Guardian latest V / ΔV / circle / spiral / invariant: ${asFixed(triangleLatest?.guardianEnergyV ?? null, 3)} / ${asFixed(
-        triangleLatest?.guardianAuthorityTrend ?? null,
-        3
-      )} / ${triangleLatest?.guardianRevisionMode ?? "n/a"} / ${triangleLatest?.guardianTrajectoryState ?? "n/a"} / ${
-        triangleLatest?.guardianTemporalResistanceDetected ?? "n/a"
-      }`,
+      `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
+      `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
       `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
       `- FTF_total/parse/logic/struct: ${summary.ftfTotal ?? "N/A"} / ${summary.ftfParse ?? "N/A"} / ${summary.ftfLogic ?? "N/A"} / ${
         summary.ftfStruct ?? "N/A"
       }`,
       `- Phase transition candidate: ${phase ? `turn ${phase.turn}` : "none detected"}`,
       "",
-      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | Regime | V | ΔV | Circle | Spiral |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | Regime |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...summary.traces.slice(0, 30).map((trace) => {
         return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
           trace.dai,
           3
-        )} | ${trace.daiRegime ?? "n/a"} | ${asFixed(trace.guardianEnergyV, 3)} | ${asFixed(trace.guardianAuthorityTrend, 3)} | ${
-          trace.guardianRevisionMode ?? "n/a"
-        } | ${trace.guardianTrajectoryState ?? "n/a"} |`;
+        )} | ${trace.daiRegime ?? "n/a"} |`;
       })
     ]
       .filter((line) => line.length > 0)
@@ -3960,13 +3974,8 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           summary.daiRegimeLatest ?? "n/a"
         }`
       : "",
-    `- Guardian triangle telemetry coverage: ${asPercent(triangleCoverage)}`,
-    `- Guardian latest V / ΔV / circle / spiral / invariant: ${asFixed(triangleLatest?.guardianEnergyV ?? null, 3)} / ${asFixed(
-      triangleLatest?.guardianAuthorityTrend ?? null,
-      3
-    )} / ${triangleLatest?.guardianRevisionMode ?? "n/a"} / ${triangleLatest?.guardianTrajectoryState ?? "n/a"} / ${
-      triangleLatest?.guardianTemporalResistanceDetected ?? "n/a"
-    }`,
+    `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
+    `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
     isBeliefLoopProfile(summary.profile)
       ? `- DAI first attractor/drift/amplification turn: ${summary.daiFirstAttractorTurn ?? "N/A"} / ${summary.daiFirstDriftTurn ?? "N/A"} / ${
           summary.daiFirstAmplificationTurn ?? "N/A"
@@ -4047,10 +4056,11 @@ function buildLabReportMarkdown(params: {
         "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding (temperature = 0.00).",
         "",
         "## Structural Epistemic Drift Criterion",
+        "Primary invariant: authority must decay unless refreshed by external constraint.",
         `Drift is flagged when commitment growth persists without support growth for at least ${STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns while ParseOK/StateOK remain >= ${(
           STRUCTURAL_GUARDRAIL.parseOkMin * 100
         ).toFixed(0)}%.`,
-        `Belief Drift Triangle (3-Agent): commitment_delta > ${TRIANGLE_DRIFT_COMMITMENT_DELTA_MIN.toFixed(
+        `3-agent canonical profile: commitment_delta > ${TRIANGLE_DRIFT_COMMITMENT_DELTA_MIN.toFixed(
           2
         )}, evidence_delta = 0, depth_delta <= ${TRIANGLE_DRIFT_DEPTH_EPSILON.toFixed(2)}.`,
         `Other profiles: commitment_delta > ${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)}, evidence_delta = 0, depth_delta = 0.`,
@@ -4089,8 +4099,6 @@ function buildLabReportMarkdown(params: {
     } else if (IS_PUBLIC_SIGNAL_MODE) {
       const consensus = evaluateConsensusCollapse(raw, sanitized);
       const interpretation = structuralPatternInterpretation(consensus);
-      const rawTriangleLatest = latestGuardianTriangleTrace(raw);
-      const sanitizedTriangleLatest = latestGuardianTriangleTrace(sanitized);
       sections.push(`- Final interpretation: ${interpretation.label} — ${interpretation.detail}`);
       sections.push(`- Drift verdict: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
       sections.push(`- RAW signal: ${consensus?.rawSignal ? "YES" : "NO"} | SAN signal: ${consensus?.sanitizedSignal ? "YES" : "NO"}`);
@@ -4103,20 +4111,7 @@ function buildLabReportMarkdown(params: {
           3
         )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
       );
-      sections.push(
-        `- RAW/SAN Guardian triangle coverage: ${asPercent(guardianTriangleCoverage(raw))} / ${asPercent(guardianTriangleCoverage(sanitized))}`
-      );
-      sections.push(
-        `- RAW/SAN Guardian latest V / ΔV / circle / spiral: ${asFixed(rawTriangleLatest?.guardianEnergyV ?? null, 3)} / ${asFixed(
-          rawTriangleLatest?.guardianAuthorityTrend ?? null,
-          3
-        )} / ${rawTriangleLatest?.guardianRevisionMode ?? "n/a"} / ${rawTriangleLatest?.guardianTrajectoryState ?? "n/a"} | ${asFixed(
-          sanitizedTriangleLatest?.guardianEnergyV ?? null,
-          3
-        )} / ${asFixed(sanitizedTriangleLatest?.guardianAuthorityTrend ?? null, 3)} / ${
-          sanitizedTriangleLatest?.guardianRevisionMode ?? "n/a"
-        } / ${sanitizedTriangleLatest?.guardianTrajectoryState ?? "n/a"}`
-      );
+      sections.push(`- RAW/SAN observer telemetry coverage: ${asPercent(guardianTriangleCoverage(raw))} / ${asPercent(guardianTriangleCoverage(sanitized))}`);
     } else {
       if (isBeliefLoopProfile(profile)) {
         const consensus = evaluateConsensusCollapse(raw, sanitized);
@@ -5097,6 +5092,24 @@ export default function HomePage() {
   const sanitizedSummary = profileResults.sanitized;
   const selectedScriptCard = useMemo(() => scriptCardCopyForProfile(selectedProfile), [selectedProfile]);
   const protocolDocBody = useMemo(() => {
+    if (IS_PUBLIC_SIGNAL_MODE) {
+      return [
+        "Agent Drift Lab Protocol (Public)",
+        "",
+        `Selected script: ${selectedScriptCard.title}`,
+        `Objective: ${selectedScriptCard.objective}`,
+        `Loop: ${selectedScriptCard.loop}`,
+        "Invariant: authority must decay unless refreshed by external constraint.",
+        "",
+        "Public scope:",
+        "- Deterministic recursive state exchange.",
+        "- RAW vs SANITIZED reinjection comparison.",
+        "- Structural telemetry only (no semantic scoring).",
+        "",
+        "Runtime outline:",
+        publicScriptTextForProfile(selectedProfile)
+      ].join("\n");
+    }
     return [
       `Agent Drift Lab Protocol`,
       ``,
@@ -6089,7 +6102,7 @@ export default function HomePage() {
               GitHub
             </a>
             <button onClick={() => setShowProtocol(true)}>Protocol</button>
-            <button onClick={() => setShowSpec(true)}>Guardian Core Spec + Access</button>
+            <button onClick={() => setShowSpec(true)}>Observer Spec + Access</button>
           </div>
         </div>
       </section>
@@ -6184,7 +6197,10 @@ export default function HomePage() {
                 <strong>Framing:</strong> GuardianAI observes structure, not truth content.
               </p>
               <p className="tiny">
-                <strong>Core question:</strong> Does a system become more confident or closed without its supporting constraints/evidence increasing?
+                <strong>Public framing:</strong> compare structural behavior under RAW reinjection vs SANITIZED reinjection.
+              </p>
+              <p className="tiny">
+                <strong>Invariant:</strong> authority must decay unless refreshed by external constraint.
               </p>
               <p className="tiny">
                 <strong>Selected script:</strong> {selectedScriptCard.title}
@@ -6199,13 +6215,13 @@ export default function HomePage() {
                 <strong>Agent loop:</strong> {selectedScriptCard.loop}
               </p>
               <p className="tiny">
-                <strong>Commitment variable:</strong> <code>{selectedScriptCard.commitmentVariable}</code>.
+                <strong>Primary outputs:</strong> drift verdict, first drift turn, and contract validity rates.
               </p>
               <p className="tiny">
-                <strong>Constraint variable:</strong> <code>{selectedScriptCard.constraintVariable}</code>.
+                <strong>Comparative view:</strong> RAW signal present while SANITIZED signal absent indicates isolated recursive drift.
               </p>
               <p className="tiny">
-                <strong>Measurement:</strong> track both variables over turns; if commitment rises while constraints stay flat, closure pressure is increasing.
+                <strong>Telemetry scope:</strong> behavior-only telemetry and deterministic contract checks.
               </p>
               <p className="tiny">
                 <strong>Contract keys:</strong> <code>{selectedScriptCard.contractKeys}</code>
@@ -6221,7 +6237,7 @@ export default function HomePage() {
             <section className="latest-card script-contract-card">
               <h4>Script Contract (selected)</h4>
               <p className="tiny">Runtime script definition for the currently selected dropdown item.</p>
-              <pre className="raw-pre script-spec-pre">{profileRuleText(selectedProfile)}</pre>
+              <pre className="raw-pre script-spec-pre">{IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(selectedProfile) : profileRuleText(selectedProfile)}</pre>
               {selectedProfile === "epistemic_drift_protocol" ? (
                 <p className="tiny">
                   Baseline note: Basin Depth Probe is kept for attractor comparison against the canonical 3-agent drift scripts.
@@ -6348,9 +6364,16 @@ export default function HomePage() {
                 <p className="mono">
                   Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
                 </p>
-                <p className="mono">Commitment latest (confidence): {asFixed(monitorLatestTrace?.commitment ?? null, 3)}</p>
-                <p className="mono">Constraint growth latest (new evidence): {asFixed(monitorLatestTrace?.constraintGrowth ?? null, 3)}</p>
-                <p className="mono">Commitment delta latest: {asFixed(monitorLatestTrace?.commitmentDelta ?? null, 3)}</p>
+                <p className="mono">
+                  {IS_PUBLIC_SIGNAL_MODE ? "Drift score latest" : "Commitment latest (confidence)"}: {asFixed(monitorLatestTrace?.commitment ?? null, 3)}
+                </p>
+                <p className="mono">
+                  {IS_PUBLIC_SIGNAL_MODE ? "Support score latest" : "Constraint growth latest (new evidence)"}:{" "}
+                  {asFixed(monitorLatestTrace?.constraintGrowth ?? null, 3)}
+                </p>
+                <p className="mono">
+                  {IS_PUBLIC_SIGNAL_MODE ? "Drift score delta latest" : "Commitment delta latest"}: {asFixed(monitorLatestTrace?.commitmentDelta ?? null, 3)}
+                </p>
                 <p className="mono">
                   Hard failures latest (Cv/Pf/Ld = Contract/Parse/Logic): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}
                 </p>
@@ -6358,14 +6381,7 @@ export default function HomePage() {
                   objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
                 </p>
                 <p className="mono">DAI latest: {liveDaiStatus}</p>
-                <p className="mono">Guardian V latest: {asFixed(monitorLatestTrace?.guardianEnergyV ?? null, 3)}</p>
-                <p className="mono">Guardian ΔV latest: {asFixed(monitorLatestTrace?.guardianAuthorityTrend ?? null, 3)}</p>
-                <p className="mono">
-                  Guardian circle/spiral:{" "}
-                  {monitorLatestTrace
-                    ? `${monitorLatestTrace.guardianRevisionMode ?? "n/a"} / ${monitorLatestTrace.guardianTrajectoryState ?? "n/a"}`
-                    : "n/a"}
-                </p>
+                <p className="mono">Observer telemetry channels: {monitorLatestTrace ? "available" : "n/a"}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
               </div>
             </section>
@@ -6379,12 +6395,7 @@ export default function HomePage() {
                 Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
               </p>
               <p className="mono">objective_failure (viewed turn 0/1): {monitorTrace ? monitorTrace.objectiveFailure : "n/a"}</p>
-              <p className="mono">Guardian V (viewed turn): {asFixed(monitorTrace?.guardianEnergyV ?? null, 3)}</p>
-              <p className="mono">Guardian ΔV (viewed turn): {asFixed(monitorTrace?.guardianAuthorityTrend ?? null, 3)}</p>
-              <p className="mono">
-                Guardian modes (circle/spiral):{" "}
-                {monitorTrace ? `${monitorTrace.guardianRevisionMode ?? "n/a"} / ${monitorTrace.guardianTrajectoryState ?? "n/a"}` : "n/a"}
-              </p>
+              <p className="mono">Observer channels (viewed turn): {monitorTrace ? "available" : "n/a"}</p>
               <div className="trace-viewer-toolbar">
                 <button type="button" onClick={viewPreviousTrace} disabled={!canViewPrevTrace}>
                   Prev turn
@@ -6499,7 +6510,7 @@ export default function HomePage() {
               <h4>Results</h4>
               <p className="tiny">Condition cards and structural epistemic drift check.</p>
               <p className="tiny">
-                <strong>Read this as:</strong> commitment rising faster than constraint/evidence growth over multiple turns = closure pressure.
+                <strong>Read this as:</strong> reproducible structural drift signal in RAW with no matching signal in SANITIZED.
               </p>
               <div className="results-stack">
                 {(["raw", "sanitized"] as const).map((condition) => {
@@ -6668,7 +6679,7 @@ export default function HomePage() {
       </section>
 
       {showProtocol ? <SectionDocModal title="Agent Drift Protocol" body={protocolDocBody} onClose={() => setShowProtocol(false)} /> : null}
-      {showSpec ? <SectionDocModal title="GuardianAI Core Specification + Access" body={guardianSpecText} onClose={() => setShowSpec(false)} /> : null}
+      {showSpec ? <SectionDocModal title="Observer Specification + Access" body={guardianSpecText} onClose={() => setShowSpec(false)} /> : null}
     </main>
   );
 }
