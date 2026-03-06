@@ -182,7 +182,8 @@ const BASIN_STABILIZATION_DELTA_EPSILON = 0.01;
 const BASIN_STABILIZATION_STREAK_MIN = 2;
 const BASIN_CYCLE_REINFORCEMENT_MIN = 0.15;
 const HARD_FAILURE_METRIC_HELP = "Cv = contract byte mismatch (output != expected), Pf = parse failure, Ld = logic/state failure.";
-const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
+const HARD_FAILURE_RATE_HELP =
+  "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better). In parse-only mode, Cv and Ld stay diagnostic.";
 const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
 const OBJECTIVE_FAILURE_HELP = "objective_failure = 1 when selected objective mode fails on a turn; 0 otherwise.";
 
@@ -3545,6 +3546,35 @@ function preflightGateStatus(params: {
   };
 }
 
+function cvDiagnosticNoteForObjective(mode: ObjectiveMode): string {
+  return mode === "parse_only" ? " (Cv/Ld diagnostic only in parse-only mode)" : "";
+}
+
+function lockInOnsetDisplay(turn: number | null, peak: number | null): string {
+  if (turn !== null) return String(turn);
+  if (peak !== null && Number.isFinite(peak) && peak > LOCK_IN_SCORE_THRESHOLD) {
+    return "N/A (threshold not reached)";
+  }
+  return "N/A";
+}
+
+function isPreflightStoppedRun(summary: ConditionSummary): boolean {
+  if (!summary.failed || summary.preflightPassed !== false) return false;
+  const reason = `${summary.failureReason ?? ""} ${summary.preflightReason ?? ""}`.toLowerCase();
+  return reason.includes("preflight rejected");
+}
+
+function preflightStopTurn(summary: ConditionSummary): number | null {
+  const source = `${summary.failureReason ?? ""} ${summary.preflightReason ?? ""}`;
+  const match = source.match(/preflight rejected(?: at)? turn\s+(\d+)/i);
+  if (match) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  const configuredTurn = Math.min(summary.runConfig.preflightTurns, summary.turnsConfigured);
+  return configuredTurn > 0 ? configuredTurn : null;
+}
+
 function downloadTextFile(filename: string, content: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -4459,7 +4489,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         : "",
       isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
       isBeliefLoopProfile(summary.profile)
-        ? `- Lock-in onset turn: ${summary.lockInOnsetTurn ?? "N/A"}`
+        ? `- Lock-in onset turn: ${lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)}`
         : "",
       isBeliefLoopProfile(summary.profile)
         ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)}`
@@ -4485,7 +4515,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         : "",
       `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
       `- Observer status (latest): ${observerStatus}`,
-      `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
+      `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}${cvDiagnosticNoteForObjective(summary.objectiveMode)}`,
       `- FTF_total/parse/logic/struct: ${summary.ftfTotal ?? "N/A"} / ${summary.ftfParse ?? "N/A"} / ${summary.ftfLogic ?? "N/A"} / ${
         summary.ftfStruct ?? "N/A"
       }`,
@@ -4544,7 +4574,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile) ? `- Closure/constraint ratio: ${asFixed(summary.closureConstraintRatio, 4)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
     isBeliefLoopProfile(summary.profile)
-      ? `- Lock-in onset turn: ${summary.lockInOnsetTurn ?? "N/A"}`
+      ? `- Lock-in onset turn: ${lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)}`
       : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)} (max positive streak: ${summary.lockInPositiveStreakMax})`
@@ -4573,7 +4603,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       : "",
     `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
     `- Observer status (latest): ${observerStatus}`,
-    `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
+    `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}${cvDiagnosticNoteForObjective(summary.objectiveMode)}`,
     `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
     `- FTF_parse: ${summary.ftfParse ?? "N/A"}`,
@@ -4698,7 +4728,10 @@ function buildLabReportMarkdown(params: {
         `- RAW/SAN first drift turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
       );
       sections.push(
-        `- RAW/SAN lock-in onset turn: ${consensus?.rawLockInOnsetTurn ?? "N/A"} / ${consensus?.sanitizedLockInOnsetTurn ?? "N/A"}`
+        `- RAW/SAN lock-in onset turn: ${lockInOnsetDisplay(consensus?.rawLockInOnsetTurn ?? null, consensus?.rawLockInScorePeak ?? null)} / ${lockInOnsetDisplay(
+          consensus?.sanitizedLockInOnsetTurn ?? null,
+          consensus?.sanitizedLockInScorePeak ?? null
+        )}`
       );
       sections.push(
         `- RAW/SAN lock-in score latest/peak: ${asFixed(consensus?.rawLockInScoreLatest ?? null, 4)} / ${asFixed(
@@ -4774,7 +4807,10 @@ function buildLabReportMarkdown(params: {
           )}`
         );
         sections.push(
-          `- RAW/SAN lock-in onset turn: ${consensus?.rawLockInOnsetTurn ?? "N/A"} / ${consensus?.sanitizedLockInOnsetTurn ?? "N/A"}`
+          `- RAW/SAN lock-in onset turn: ${lockInOnsetDisplay(consensus?.rawLockInOnsetTurn ?? null, consensus?.rawLockInScorePeak ?? null)} / ${lockInOnsetDisplay(
+            consensus?.sanitizedLockInOnsetTurn ?? null,
+            consensus?.sanitizedLockInScorePeak ?? null
+          )}`
         );
         sections.push(
           `- RAW/SAN lock-in score latest/peak: ${asFixed(consensus?.rawLockInScoreLatest ?? null, 4)} / ${asFixed(
@@ -6944,7 +6980,9 @@ export default function HomePage() {
                 <strong>Trajectory view:</strong> Trajectory Stability Index (TSI), Cycle Reinforcement (3-turn), Basin State, and Belief Basin Strength are derived UI indicators from core telemetry.
               </p>
               <p className="tiny">
-                <strong>Quality gate:</strong> early contract-compliance checkpoint can stop low-signal runs before full horizon.
+                <strong>Quality gate:</strong> preflight checks Agent {preflightAgentForProfile(selectedProfile)} at turn{" "}
+                {Math.min(PREFLIGHT_TURNS, turnBudget)}. If ParseOK/StateOK is below {asPercent(PREFLIGHT_PARSE_OK_MIN)} /{" "}
+                {asPercent(PREFLIGHT_STATE_OK_MIN)}, the run stops early by design.
               </p>
             </section>
 
@@ -7096,6 +7134,7 @@ export default function HomePage() {
                 </p>
                 <p className="mono">
                   Hard failures latest (Cv/Pf/Ld = Contract/Parse/Logic): {monitorLatestTrace ? `${monitorLatestTrace.cv} / ${monitorLatestTrace.pf} / ${monitorLatestTrace.ld}` : "n/a"}
+                  {cvDiagnosticNoteForObjective(monitorSummary?.objectiveMode ?? objectiveMode)}
                 </p>
                 <p className="mono">
                   objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
@@ -7114,6 +7153,7 @@ export default function HomePage() {
                 </p>
                 <p className="mono">Observer telemetry channels: {monitorLatestTrace ? "available" : "n/a"}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
+                <p className="tiny">Guardian gate states are observer advisories and do not auto-stop a run.</p>
               </div>
             </section>
 
@@ -7122,9 +7162,10 @@ export default function HomePage() {
               <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
-              <p className="mono">
-                Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
-              </p>
+                <p className="mono">
+                  Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
+                  {cvDiagnosticNoteForObjective(monitorSummary?.objectiveMode ?? objectiveMode)}
+                </p>
               <p className="mono">objective_failure (viewed turn 0/1): {monitorTrace ? monitorTrace.objectiveFailure : "n/a"}</p>
               <p className="mono">Observer channels (viewed turn): {monitorTrace ? "available" : "n/a"}</p>
               <div className="trace-viewer-toolbar">
@@ -7228,7 +7269,10 @@ export default function HomePage() {
             <section className="latest-card">
               <h4>Panel 1B - LLM Output (Model vs Contract)</h4>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
-              <p className="mono">Contract match (Cv): {monitorTrace ? (monitorTrace.cv === 0 ? "MATCH" : "MISMATCH") : "n/a"}</p>
+              <p className="mono">
+                Contract match (Cv): {monitorTrace ? (monitorTrace.cv === 0 ? "MATCH" : "MISMATCH") : "n/a"}
+                {cvDiagnosticNoteForObjective(monitorSummary?.objectiveMode ?? objectiveMode)}
+              </p>
               <p className="tiny">Output (model)</p>
               <pre className="raw-pre">{monitorTrace?.outputBytes ?? "[no output yet]"}</pre>
               <p className="tiny">Expected (contract)</p>
@@ -7248,6 +7292,8 @@ export default function HomePage() {
                   const summary = results[selectedProfile][condition];
                   const statusClass = !summary ? "warn" : summary.failed ? "bad" : "good";
                   const panelLabel = condition === "raw" ? "Panel 3" : "Panel 4";
+                  const preflightStopped = summary ? isPreflightStoppedRun(summary) : false;
+                  const preflightTurn = summary && preflightStopped ? preflightStopTurn(summary) : null;
                   return (
                     <section key={condition} className="decision-card">
                       <div className="decision-top">
@@ -7262,6 +7308,20 @@ export default function HomePage() {
                           <p className="mono">
                             Turns attempted/configured: {summary.turnsAttempted}/{summary.turnsConfigured}
                           </p>
+                          {preflightStopped ? (
+                            <div className="preflight-stop-alert" role="alert" aria-live="polite">
+                              <p className="preflight-stop-title">
+                                Quality gate stopped this run{preflightTurn ? ` at turn ${preflightTurn}` : ""}.
+                              </p>
+                              <p className="preflight-stop-body">
+                                Why: preflight check on Agent {summary.runConfig.preflightAgent} failed minimum contract reliability
+                                ({asPercent(summary.runConfig.preflightParseOkMin)} ParseOK / {asPercent(summary.runConfig.preflightStateOkMin)} StateOK).
+                              </p>
+                              <p className="preflight-stop-body">
+                                This is expected behavior to prevent spending the full horizon on low-signal runs.
+                              </p>
+                            </div>
+                          ) : null}
                           {IS_PUBLIC_SIGNAL_MODE ? (
                             <>
                               <p className="mono">ParseOK (all): {asPercent(summary.parseOkRate)}</p>
@@ -7293,9 +7353,12 @@ export default function HomePage() {
                             </>
                           )}
                           <p className="mono">Preflight: {summary.preflightPassed === null ? "n/a" : summary.preflightPassed ? "PASS" : "FAIL"}</p>
-                          {summary.failed ? <p className="mono">Run stop reason (failureReason): {summary.failureReason ?? "n/a"}</p> : null}
+                          {summary.failed ? (
+                            <p className="mono">{preflightStopped ? "Quality gate stop reason" : "Run stop reason (failureReason)"}: {summary.failureReason ?? "n/a"}</p>
+                          ) : null}
                           <p className="mono">
                             Hard failures rate (Cv/Pf/Ld = Contract/Parse/Logic): {asPercent(summary.cvRate)} / {asPercent(summary.pfRate)} / {asPercent(summary.ldRate)}
+                            {cvDiagnosticNoteForObjective(summary.objectiveMode)}
                           </p>
                           <p className="mono">
                             FTF_total/parse/logic/struct: {summary.ftfTotal ?? "n/a"}/{summary.ftfParse ?? "n/a"}/{summary.ftfLogic ?? "n/a"}/{summary.ftfStruct ?? "n/a"}
@@ -7327,7 +7390,7 @@ export default function HomePage() {
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              Lock-in onset turn: {summary.lockInOnsetTurn ?? "n/a"} | latest/peak:{" "}
+                              Lock-in onset turn: {lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)} | latest/peak:{" "}
                               {asFixed(summary.lockInScoreLatest, 4)} / {asFixed(summary.lockInScorePeak, 4)} | max positive streak:{" "}
                               {summary.lockInPositiveStreakMax}
                             </p>
@@ -7386,7 +7449,8 @@ export default function HomePage() {
                         RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
                       </p>
                       <p className="mono">
-                        RAW/SAN lock-in onset turn: {consensusEval.rawLockInOnsetTurn ?? "n/a"} / {consensusEval.sanitizedLockInOnsetTurn ?? "n/a"}
+                        RAW/SAN lock-in onset turn: {lockInOnsetDisplay(consensusEval.rawLockInOnsetTurn, consensusEval.rawLockInScorePeak)} /{" "}
+                        {lockInOnsetDisplay(consensusEval.sanitizedLockInOnsetTurn, consensusEval.sanitizedLockInScorePeak)}
                       </p>
                       <p className="mono">
                         RAW/SAN lock-in score latest/peak: {asFixed(consensusEval.rawLockInScoreLatest, 4)} / {asFixed(consensusEval.rawLockInScorePeak, 4)} vs{" "}

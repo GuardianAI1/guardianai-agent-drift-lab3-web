@@ -1083,6 +1083,30 @@ button:disabled {
   line-height: 1.35;
 }
 
+.preflight-stop-alert {
+  margin: 2px 0 4px;
+  border: 2px solid #e6bc81;
+  border-radius: 10px;
+  background: #fff1db;
+  color: #7a3c0b;
+  padding: 10px 12px;
+  display: grid;
+  gap: 5px;
+}
+
+.preflight-stop-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.preflight-stop-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .monitor-header {
   display: grid;
   gap: 8px;
