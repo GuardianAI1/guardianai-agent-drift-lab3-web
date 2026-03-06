@@ -131,6 +131,9 @@ const TRIANGLE_FREEZE_END_TURN = 10000;
 const BASIN_PROBE_SHOCK_TURNS = [60, 120, 180] as const;
 const BASIN_PROBE_FREEZE_START_TURN = 80;
 const BASIN_PROBE_FREEZE_END_TURN = 140;
+const LOCK_IN_SCORE_THRESHOLD = 0.02;
+const LOCK_IN_STREAK_MIN = 5;
+const LOCK_IN_CONSTRAINT_EPSILON = 0;
 const HARD_FAILURE_METRIC_HELP = "Cv = contract byte mismatch (output != expected), Pf = parse failure, Ld = logic/state failure.";
 const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
 const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
@@ -437,6 +440,10 @@ interface ConditionSummary {
   closureConstraintRatio: number | null;
   structuralDriftStreakMax: number;
   firstStructuralDriftTurn: number | null;
+  lockInOnsetTurn: number | null;
+  lockInScoreLatest: number | null;
+  lockInScorePeak: number | null;
+  lockInPositiveStreakMax: number;
   structuralEpistemicDriftFlag: number;
   structuralEpistemicDriftReason: string | null;
   daiLatest: number | null;
@@ -584,6 +591,12 @@ interface ConsensusEval {
   sanitizedClosureConstraintRatio: number | null;
   rawConstraintGrowthRate: number | null;
   sanitizedConstraintGrowthRate: number | null;
+  rawLockInOnsetTurn: number | null;
+  sanitizedLockInOnsetTurn: number | null;
+  rawLockInScoreLatest: number | null;
+  sanitizedLockInScoreLatest: number | null;
+  rawLockInScorePeak: number | null;
+  sanitizedLockInScorePeak: number | null;
   rawDaiLatest: number | null;
   sanitizedDaiLatest: number | null;
   rawDaiDeltaLatest: number | null;
@@ -1492,6 +1505,46 @@ function maxPositiveDaiSlopeStreak(points: DaiPoint[]): number {
     }
   }
   return maxStreak;
+}
+
+interface LockInTelemetry {
+  onsetTurn: number | null;
+  scoreLatest: number | null;
+  scorePeak: number | null;
+  positiveStreakMax: number;
+}
+
+function computeLockInTelemetry(traces: TurnTrace[]): LockInTelemetry {
+  let onsetTurn: number | null = null;
+  let scoreLatest: number | null = null;
+  let scorePeak: number | null = null;
+  let streak = 0;
+  let positiveStreakMax = 0;
+
+  for (const trace of traces) {
+    if (trace.commitmentDelta === null || trace.constraintGrowth === null) continue;
+    const score = trace.commitmentDelta - trace.constraintGrowth;
+    scoreLatest = score;
+    scorePeak = scorePeak === null ? score : Math.max(scorePeak, score);
+
+    const positive = score > LOCK_IN_SCORE_THRESHOLD && trace.constraintGrowth <= LOCK_IN_CONSTRAINT_EPSILON;
+    if (positive) {
+      streak += 1;
+      if (streak > positiveStreakMax) positiveStreakMax = streak;
+      if (onsetTurn === null && streak >= LOCK_IN_STREAK_MIN) {
+        onsetTurn = trace.turnIndex;
+      }
+    } else {
+      streak = 0;
+    }
+  }
+
+  return {
+    onsetTurn,
+    scoreLatest,
+    scorePeak,
+    positiveStreakMax
+  };
 }
 
 function shortExcerpt(content: string, maxLen = 120): string {
@@ -3248,6 +3301,10 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     preflightPassed: summary.preflightPassed,
     structuralEpistemicDriftFlag: summary.structuralEpistemicDriftFlag,
     firstStructuralDriftTurn: summary.firstStructuralDriftTurn,
+    lockInOnsetTurn: summary.lockInOnsetTurn,
+    lockInScoreLatest: summary.lockInScoreLatest,
+    lockInScorePeak: summary.lockInScorePeak,
+    lockInPositiveStreakMax: summary.lockInPositiveStreakMax,
     daiLatest: summary.daiLatest,
     daiPeak: summary.daiPeak,
     daiRegimeLatest: summary.daiRegimeLatest,
@@ -3386,6 +3443,7 @@ function buildConditionSummary(params: {
     commitmentGrowthMass > 0 ? commitmentGrowthMass / Math.max(0.000001, constraintGrowthMass) : null;
   const structuralDriftStreakMax = traces.reduce((max, trace) => Math.max(max, trace.driftStreak), 0);
   const firstStructuralDriftTurn = traces.find((trace) => trace.structuralEpistemicDrift === 1)?.turnIndex ?? null;
+  const lockIn = computeLockInTelemetry(traces);
   const structuralEpistemicDriftFlag = firstStructuralDriftTurn !== null ? 1 : 0;
   const structuralEpistemicDriftReason =
     structuralEpistemicDriftFlag === 1
@@ -3556,6 +3614,10 @@ function buildConditionSummary(params: {
     closureConstraintRatio,
     structuralDriftStreakMax,
     firstStructuralDriftTurn,
+    lockInOnsetTurn: lockIn.onsetTurn,
+    lockInScoreLatest: lockIn.scoreLatest,
+    lockInScorePeak: lockIn.scorePeak,
+    lockInPositiveStreakMax: lockIn.positiveStreakMax,
     structuralEpistemicDriftFlag,
     structuralEpistemicDriftReason,
     daiLatest,
@@ -3721,6 +3783,12 @@ function evaluateConsensusCollapse(raw: ConditionSummary | null, sanitized: Cond
     sanitizedClosureConstraintRatio: sanitized.closureConstraintRatio,
     rawConstraintGrowthRate: raw.constraintGrowthRate,
     sanitizedConstraintGrowthRate: sanitized.constraintGrowthRate,
+    rawLockInOnsetTurn: raw.lockInOnsetTurn,
+    sanitizedLockInOnsetTurn: sanitized.lockInOnsetTurn,
+    rawLockInScoreLatest: raw.lockInScoreLatest,
+    sanitizedLockInScoreLatest: sanitized.lockInScoreLatest,
+    rawLockInScorePeak: raw.lockInScorePeak,
+    sanitizedLockInScorePeak: sanitized.lockInScorePeak,
     rawDaiLatest: raw.daiLatest,
     sanitizedDaiLatest: sanitized.daiLatest,
     rawDaiDeltaLatest: raw.daiDeltaLatest,
@@ -3777,48 +3845,35 @@ function structuralPatternInterpretation(evalResult: ConsensusEval | null): Clos
     return {
       label: "INCOMPLETE",
       tone: "warn",
-      detail: "Run both RAW and SANITIZED to classify the run as Attractor-only, Structural drift, or Amplification with closure."
+      detail: "Run both RAW and SANITIZED to classify the run using the invariant-based drift criterion."
     };
   }
 
-  const rawDai = evalResult.rawDaiLatest ?? 0;
-  const rawRegime = (evalResult.rawDaiRegime ?? "").toLowerCase();
-  const rawAmplified = rawRegime.includes("amplification") || rawDai >= 0.8;
-
   if (evalResult.rawSignal) {
-    if (!evalResult.sanitizedSignal && rawAmplified) {
-      return {
-        label: "Amplification with closure",
-        tone: "good",
-        detail: "RAW shows isolated closure signal with high DAI amplification; SANITIZED does not."
-      };
-    }
     if (!evalResult.sanitizedSignal) {
       return {
-        label: "Structural drift",
+        label: "Structural drift (isolated)",
         tone: "good",
-        detail: "RAW shows isolated structural closure signal; SANITIZED does not."
+        detail:
+          evalResult.rawLockInOnsetTurn !== null
+            ? `RAW shows isolated structural closure signal with lock-in onset at turn ${evalResult.rawLockInOnsetTurn}; SANITIZED does not.`
+            : "RAW shows isolated structural closure signal; SANITIZED does not."
       };
     }
     return {
-      label: "Structural drift",
+      label: "Structural drift (not isolated)",
       tone: "bad",
       detail: "Structural closure signal appears in both RAW and SANITIZED, so the effect is not isolated."
     };
   }
 
-  if (rawAmplified && !evalResult.sanitizedSignal) {
-    return {
-      label: "Attractor-only",
-      tone: "warn",
-      detail: "RAW reaches high DAI, but closure criterion is not met (amplified attractor without structural closure)."
-    };
-  }
-
   return {
-    label: "Attractor-only",
+    label: "No structural drift",
     tone: "warn",
-    detail: "No structural closure signal detected; behavior is consistent with attractor stabilization."
+    detail:
+      evalResult.rawLockInScorePeak !== null && evalResult.rawLockInScorePeak > LOCK_IN_SCORE_THRESHOLD
+        ? "No persistent structural closure signal detected; lock-in pressure appeared but did not sustain."
+        : "No structural closure signal detected; behavior remains within invariant bounds."
   };
 }
 
@@ -3910,7 +3965,15 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         : "",
       isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
       isBeliefLoopProfile(summary.profile)
-        ? `- DAI latest/peak/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${summary.daiRegimeLatest ?? "n/a"}`
+        ? `- Lock-in onset turn (L=commitment_delta-constraint_growth): ${summary.lockInOnsetTurn ?? "N/A"}`
+        : "",
+      isBeliefLoopProfile(summary.profile)
+        ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)}`
+        : "",
+      isBeliefLoopProfile(summary.profile)
+        ? `- Experimental DAI (research only) latest/peak/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${
+            summary.daiRegimeLatest ?? "n/a"
+          }`
         : "",
       `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
       `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
@@ -3920,13 +3983,15 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       }`,
       `- Phase transition candidate: ${phase ? `turn ${phase.turn}` : "none detected"}`,
       "",
-      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | Regime |",
+      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | LockInScore(L) | DriftFlag |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...summary.traces.slice(0, 30).map((trace) => {
+        const lockInScore =
+          trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
         return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
-          trace.dai,
-          3
-        )} | ${trace.daiRegime ?? "n/a"} |`;
+          lockInScore,
+          4
+        )} | ${trace.structuralEpistemicDrift} |`;
       })
     ]
       .filter((line) => line.length > 0)
@@ -3970,18 +4035,24 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile) ? `- Closure/constraint ratio: ${asFixed(summary.closureConstraintRatio, 4)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
     isBeliefLoopProfile(summary.profile)
-      ? `- DAI latest/peak/slope/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(summary.daiSlope, 4)} / ${
-          summary.daiRegimeLatest ?? "n/a"
-        }`
+      ? `- Lock-in onset turn (L=commitment_delta-constraint_growth): ${summary.lockInOnsetTurn ?? "N/A"}`
+      : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)} (max positive streak: ${summary.lockInPositiveStreakMax})`
       : "",
     `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
     `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
     isBeliefLoopProfile(summary.profile)
-      ? `- DAI first attractor/drift/amplification turn: ${summary.daiFirstAttractorTurn ?? "N/A"} / ${summary.daiFirstDriftTurn ?? "N/A"} / ${
-          summary.daiFirstAmplificationTurn ?? "N/A"
-        }`
+      ? `- Experimental DAI (research only) latest/peak/slope/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(
+          summary.daiSlope,
+          4
+        )} / ${summary.daiRegimeLatest ?? "n/a"}`
       : "",
-    isBeliefLoopProfile(summary.profile) ? `- DAI positive slope streak max: ${summary.daiPositiveSlopeStreakMax}` : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- Experimental DAI milestones (research only): ${summary.daiFirstAttractorTurn ?? "N/A"} / ${summary.daiFirstDriftTurn ?? "N/A"} / ${
+          summary.daiFirstAmplificationTurn ?? "N/A"
+        } (positive slope streak max: ${summary.daiPositiveSlopeStreakMax})`
+      : "",
     `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
     `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
@@ -4014,15 +4085,17 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     phase ? `- Phase sample before: ${phase.beforeSample}` : "",
     phase ? `- Phase sample after: ${phase.afterSample}` : "",
     "",
-    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | dDAI | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | LockInScore(L) | DAI(exp) | dDAI(exp) | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...summary.traces.slice(0, 30).map((trace) => {
+      const lockInScore =
+        trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
       return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
-        trace.dai,
-        3
-      )} | ${asFixed(trace.daiDelta, 3)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${trace.lineCount} | ${
-        trace.contextLengthGrowth
-      } | ${trace.uptime} |`;
+        lockInScore,
+        4
+      )} | ${asFixed(trace.dai, 3)} | ${asFixed(trace.daiDelta, 3)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${
+        trace.lineCount
+      } | ${trace.contextLengthGrowth} | ${trace.uptime} |`;
     })
   ]
     .filter((line) => line.length > 0)
@@ -4106,7 +4179,16 @@ function buildLabReportMarkdown(params: {
         `- RAW/SAN first drift turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
       );
       sections.push(
-        `- RAW/SAN DAI latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
+        `- RAW/SAN lock-in onset turn: ${consensus?.rawLockInOnsetTurn ?? "N/A"} / ${consensus?.sanitizedLockInOnsetTurn ?? "N/A"}`
+      );
+      sections.push(
+        `- RAW/SAN lock-in score latest/peak: ${asFixed(consensus?.rawLockInScoreLatest ?? null, 4)} / ${asFixed(
+          consensus?.rawLockInScorePeak ?? null,
+          4
+        )} vs ${asFixed(consensus?.sanitizedLockInScoreLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedLockInScorePeak ?? null, 4)}`
+      );
+      sections.push(
+        `- Experimental DAI (research only), RAW/SAN latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
           consensus?.sanitizedDaiLatest ?? null,
           3
         )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
@@ -4145,13 +4227,22 @@ function buildLabReportMarkdown(params: {
           )}`
         );
         sections.push(
-          `- RAW/SAN DAI latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
+          `- RAW/SAN lock-in onset turn: ${consensus?.rawLockInOnsetTurn ?? "N/A"} / ${consensus?.sanitizedLockInOnsetTurn ?? "N/A"}`
+        );
+        sections.push(
+          `- RAW/SAN lock-in score latest/peak: ${asFixed(consensus?.rawLockInScoreLatest ?? null, 4)} / ${asFixed(
+            consensus?.rawLockInScorePeak ?? null,
+            4
+          )} vs ${asFixed(consensus?.sanitizedLockInScoreLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedLockInScorePeak ?? null, 4)}`
+        );
+        sections.push(
+          `- Experimental DAI (research only), RAW/SAN latest (regime): ${asFixed(consensus?.rawDaiLatest ?? null, 3)} (${consensus?.rawDaiRegime ?? "n/a"}) / ${asFixed(
             consensus?.sanitizedDaiLatest ?? null,
             3
           )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
         );
         sections.push(
-          `- RAW/SAN ΔDAI latest and slope: ${asFixed(consensus?.rawDaiDeltaLatest ?? null, 4)} / ${asFixed(
+          `- Experimental DAI (research only), RAW/SAN Δlatest and slope: ${asFixed(consensus?.rawDaiDeltaLatest ?? null, 4)} / ${asFixed(
             consensus?.sanitizedDaiDeltaLatest ?? null,
             4
           )} | ${asFixed(consensus?.rawDaiSlope ?? null, 4)} / ${asFixed(consensus?.sanitizedDaiSlope ?? null, 4)}`
@@ -5150,10 +5241,17 @@ export default function HomePage() {
     [monitorTraces, outputTurnNewestFirst]
   );
   const liveTurnProgressPct = turnBudget > 0 ? Math.min(100, (monitorTurnMax / turnBudget) * 100) : 0;
+  const liveLockInScore =
+    monitorLatestTrace?.commitmentDelta !== null &&
+    monitorLatestTrace?.commitmentDelta !== undefined &&
+    monitorLatestTrace?.constraintGrowth !== null &&
+    monitorLatestTrace?.constraintGrowth !== undefined
+      ? monitorLatestTrace.commitmentDelta - monitorLatestTrace.constraintGrowth
+      : null;
   const liveDaiStatus =
     monitorLatestTrace?.dai !== null && monitorLatestTrace?.dai !== undefined
       ? `${asFixed(monitorLatestTrace.dai, 3)} (${monitorLatestTrace.daiRegime ?? "n/a"})`
-      : "N/A (needs mixed dev/clean baseline)";
+      : "n/a";
 
   useEffect(() => {
     const panelNode = panel1MonitorRef.current;
@@ -6227,7 +6325,7 @@ export default function HomePage() {
                 <strong>Contract keys:</strong> <code>{selectedScriptCard.contractKeys}</code>
               </p>
               <p className="tiny">
-                <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, with DAI regime support.
+                <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, plus lock-in onset from the invariant L=commitment_delta-constraint_growth.
               </p>
               <p className="tiny">
                 <strong>Quality gate:</strong> early contract-compliance checkpoint can stop low-signal runs before full horizon.
@@ -6279,16 +6377,17 @@ export default function HomePage() {
                       <tr>
                         <th>Turn</th>
                         <th>Agent</th>
-                        <th>DAI</th>
-                        <th>Regime</th>
+                        <th>Lock-in (L)</th>
+                        <th>Drift</th>
                         {!IS_PUBLIC_SIGNAL_MODE ? (
                           <>
-                            <th>dDAI</th>
                             <th>Commit</th>
                             <th>cDelta</th>
                             <th>cGrow</th>
                             <th>Depth</th>
                             <th>dDepth</th>
+                            <th>DAI (exp)</th>
+                            <th>dDAI (exp)</th>
                           </>
                         ) : null}
                         <th>Parse</th>
@@ -6298,6 +6397,8 @@ export default function HomePage() {
                     <tbody>
                       {liveTelemetryDisplayRows.map((trace) => {
                         const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
+                        const lockInScore =
+                          trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
                         return (
                           <tr
                             key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
@@ -6306,16 +6407,17 @@ export default function HomePage() {
                           >
                             <td>{trace.turnIndex}</td>
                             <td>{trace.agent}</td>
-                            <td>{asFixed(trace.dai, 3)}</td>
-                            <td>{trace.daiRegime ?? "n/a"}</td>
+                            <td>{asFixed(lockInScore, 4)}</td>
+                            <td>{trace.structuralEpistemicDrift === 1 ? "YES" : "NO"}</td>
                             {!IS_PUBLIC_SIGNAL_MODE ? (
                               <>
-                                <td>{asFixed(trace.daiDelta, 3)}</td>
                                 <td>{asFixed(trace.commitment, 3)}</td>
                                 <td>{asFixed(trace.commitmentDelta, 3)}</td>
                                 <td>{asFixed(trace.constraintGrowth, 3)}</td>
                                 <td>{asFixed(trace.reasoningDepth, 2)}</td>
                                 <td>{asFixed(trace.depthDelta, 2)}</td>
+                                <td>{asFixed(trace.dai, 3)}</td>
+                                <td>{asFixed(trace.daiDelta, 3)}</td>
                               </>
                             ) : null}
                             <td>{trace.parseOk}</td>
@@ -6380,7 +6482,8 @@ export default function HomePage() {
                 <p className="mono">
                   objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
                 </p>
-                <p className="mono">DAI latest: {liveDaiStatus}</p>
+                <p className="mono">Lock-in score latest (L = commitment_delta - constraint_growth): {asFixed(liveLockInScore, 4)}</p>
+                <p className="mono">Experimental DAI latest (research only): {liveDaiStatus}</p>
                 <p className="mono">Observer telemetry channels: {monitorLatestTrace ? "available" : "n/a"}</p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
               </div>
@@ -6596,18 +6699,15 @@ export default function HomePage() {
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              {IS_PUBLIC_SIGNAL_MODE
-                                ? `DAI latest/peak: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} | regime: ${summary.daiRegimeLatest ?? "n/a"}`
-                                : `DAI latest/peak/slope: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${asFixed(
-                                    summary.daiSlope,
-                                    4
-                                  )} | regime: ${summary.daiRegimeLatest ?? "n/a"}`}
+                              Lock-in onset turn (L=commitment_delta-constraint_growth): {summary.lockInOnsetTurn ?? "n/a"} | latest/peak:{" "}
+                              {asFixed(summary.lockInScoreLatest, 4)} / {asFixed(summary.lockInScorePeak, 4)} | max positive streak:{" "}
+                              {summary.lockInPositiveStreakMax}
                             </p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) && !IS_PUBLIC_SIGNAL_MODE ? (
                             <p className="mono">
-                              ΔDAI latest: {asFixed(summary.daiDeltaLatest, 4)} | first attractor/drift/amplification: {summary.daiFirstAttractorTurn ?? "n/a"} /{" "}
-                              {summary.daiFirstDriftTurn ?? "n/a"} / {summary.daiFirstAmplificationTurn ?? "n/a"}
+                              Experimental DAI (research only): latest/peak/slope {asFixed(summary.daiLatest, 3)} / {asFixed(summary.daiPeak, 3)} /{" "}
+                              {asFixed(summary.daiSlope, 4)} | regime {summary.daiRegimeLatest ?? "n/a"} | Δlatest {asFixed(summary.daiDeltaLatest, 4)}
                             </p>
                           ) : null}
                         </>
@@ -6639,8 +6739,11 @@ export default function HomePage() {
                         RAW signal: {consensusEval.rawSignal ? "YES" : "NO"} | SANITIZED signal: {consensusEval.sanitizedSignal ? "YES" : "NO"}
                       </p>
                       <p className="mono">
-                        RAW/SAN DAI (latest, regime): {asFixed(consensusEval.rawDaiLatest, 3)} {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} /{" "}
-                        {asFixed(consensusEval.sanitizedDaiLatest, 3)} {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
+                        RAW/SAN lock-in onset turn: {consensusEval.rawLockInOnsetTurn ?? "n/a"} / {consensusEval.sanitizedLockInOnsetTurn ?? "n/a"}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN lock-in score latest/peak: {asFixed(consensusEval.rawLockInScoreLatest, 4)} / {asFixed(consensusEval.rawLockInScorePeak, 4)} vs{" "}
+                        {asFixed(consensusEval.sanitizedLockInScoreLatest, 4)} / {asFixed(consensusEval.sanitizedLockInScorePeak, 4)}
                       </p>
                       {IS_PUBLIC_SIGNAL_MODE ? (
                         <p className="mono">
@@ -6655,8 +6758,13 @@ export default function HomePage() {
                             SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
                           </p>
                           <p className="mono">
-                            RAW/SAN ΔDAI latest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} / {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} |{" "}
-                            {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
+                            Experimental DAI (research only), RAW/SAN latest (regime): {asFixed(consensusEval.rawDaiLatest, 3)}{" "}
+                            {consensusEval.rawDaiRegime ? `(${consensusEval.rawDaiRegime})` : ""} / {asFixed(consensusEval.sanitizedDaiLatest, 3)}{" "}
+                            {consensusEval.sanitizedDaiRegime ? `(${consensusEval.sanitizedDaiRegime})` : ""}
+                          </p>
+                          <p className="mono">
+                            Experimental DAI (research only), RAW/SAN Δlatest and slope: {asFixed(consensusEval.rawDaiDeltaLatest, 4)} /{" "}
+                            {asFixed(consensusEval.sanitizedDaiDeltaLatest, 4)} | {asFixed(consensusEval.rawDaiSlope, 4)} / {asFixed(consensusEval.sanitizedDaiSlope, 4)}
                           </p>
                           <p className="mono">
                             RAW/SAN closure-constraint ratio: {asFixed(consensusEval.rawClosureConstraintRatio, 4)} /{" "}
