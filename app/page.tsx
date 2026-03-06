@@ -146,6 +146,10 @@ const TRAJECTORY_BASIN_STABILIZATION_DELTA_MAX = 0.005;
 const TRAJECTORY_BASIN_STABILIZATION_CONFIDENCE_MIN = 0.95;
 const TRAJECTORY_BASIN_AGREEMENT_MIN = 0.95;
 const BELIEF_BASIN_DEPTH_SCORE_MAX = 0.6;
+const BASIN_ENTRY_LOCKIN_STREAK_MIN = 3;
+const BASIN_STABILIZATION_DELTA_EPSILON = 0.01;
+const BASIN_STABILIZATION_STREAK_MIN = 2;
+const BASIN_CYCLE_REINFORCEMENT_MIN = 0.15;
 const HARD_FAILURE_METRIC_HELP = "Cv = contract byte mismatch (output != expected), Pf = parse failure, Ld = logic/state failure.";
 const HARD_FAILURE_RATE_HELP = "Cv/Pf/Ld rates are the percent of turns where each hard failure fired (lower is better).";
 const FTF_HELP = "FTF = First Failure Turn (first turn where total/parse/logic/structural failure appears).";
@@ -385,6 +389,7 @@ interface EdgeTransferStats {
 
 type TrajectoryStatus = "exploration" | "reinforcement" | "basin_formation" | "basin_stabilization";
 type BasinState = "open" | "forming" | "stabilized";
+type BeliefBasinStrengthBand = "none" | "forming" | "shallow" | "deep" | "locked";
 
 interface ConditionSummary {
   runConfig: RunConfig;
@@ -469,7 +474,8 @@ interface ConditionSummary {
   firstBasinStabilizationTurn: number | null;
   beliefBasinDepth: number | null;
   beliefBasinStrengthScore: number | null;
-  beliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
+  beliefBasinStrengthBand: BeliefBasinStrengthBand | null;
+  basinMetricInconsistencyWarning: number;
   structuralEpistemicDriftFlag: number;
   structuralEpistemicDriftReason: string | null;
   daiLatest: number | null;
@@ -643,8 +649,10 @@ interface ConsensusEval {
   sanitizedBeliefBasinDepth: number | null;
   rawBeliefBasinStrengthScore: number | null;
   sanitizedBeliefBasinStrengthScore: number | null;
-  rawBeliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
-  sanitizedBeliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
+  rawBeliefBasinStrengthBand: BeliefBasinStrengthBand | null;
+  sanitizedBeliefBasinStrengthBand: BeliefBasinStrengthBand | null;
+  rawBasinMetricInconsistencyWarning: number;
+  sanitizedBasinMetricInconsistencyWarning: number;
   rawDaiLatest: number | null;
   sanitizedDaiLatest: number | null;
   rawDaiDeltaLatest: number | null;
@@ -1624,7 +1632,8 @@ interface TrajectoryUiTelemetry {
   firstBasinStabilizationTurn: number | null;
   beliefBasinDepth: number | null;
   beliefBasinStrengthScore: number | null;
-  beliefBasinStrengthBand: "weak" | "forming" | "deep" | "locked" | null;
+  beliefBasinStrengthBand: BeliefBasinStrengthBand | null;
+  basinMetricInconsistencyWarning: number;
 }
 
 function basinStateFromTrajectoryStatus(status: TrajectoryStatus | null): BasinState | null {
@@ -1672,32 +1681,57 @@ function classifyTrajectoryStatus(params: {
   return "exploration";
 }
 
-function beliefBasinStrengthBand(score: number | null, stabilized: boolean): "weak" | "forming" | "deep" | "locked" | null {
-  if (score === null) return null;
-  if (stabilized && score >= 0.75) return "locked";
-  if (score >= 0.75) return "deep";
-  if (score >= 0.45) return "forming";
-  return "weak";
+function basinStrengthRank(band: BeliefBasinStrengthBand | null): number {
+  switch (band) {
+    case "none":
+      return 0;
+    case "forming":
+      return 1;
+    case "shallow":
+      return 2;
+    case "deep":
+      return 3;
+    case "locked":
+      return 4;
+    default:
+      return -1;
+  }
 }
 
-function computeTrajectoryUiTelemetry(traces: TurnTrace[]): TrajectoryUiTelemetry {
+function beliefBasinStrengthBandFromStreak(
+  positiveStreakMax: number,
+  stabilized: boolean
+): BeliefBasinStrengthBand {
+  if (stabilized && positiveStreakMax >= 9) return "locked";
+  if (positiveStreakMax >= 9) return "locked";
+  if (positiveStreakMax >= 6) return "deep";
+  if (positiveStreakMax >= 3) return "shallow";
+  return "forming";
+}
+
+function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepCondition): TrajectoryUiTelemetry {
   let tsiLatest: number | null = null;
   let tsiPeak: number | null = null;
   let statusLatest: TrajectoryStatus | null = null;
-  let basinStateLatest: BasinState | null = null;
+  let basinStateLatest: BasinState | null = traces.length > 0 ? "open" : null;
   let cycleReinforcement3Latest: number | null = null;
   let cycleReinforcement3Peak: number | null = null;
   let firstBasinFormationTurn: number | null = null;
   let firstBasinStabilizationTurn: number | null = null;
   let hasSeenBasinFormation = false;
-  let beliefBasinDepth = 0;
   const lockInHistory: Array<number | null> = [];
+  let lockInPositiveStreak = 0;
+  let lockInPositiveStreakMax = 0;
+  let basinEntryTurn: number | null = null;
+  let stabilizationStreak = 0;
+  let latestLockInScore: number | null = null;
 
   for (const trace of traces) {
     const commitmentDelta = trace.commitmentDelta;
     const constraintGrowth = trace.constraintGrowth;
     const lockInScore = commitmentDelta !== null && constraintGrowth !== null ? commitmentDelta - constraintGrowth : null;
     lockInHistory.push(lockInScore);
+    latestLockInScore = lockInScore;
 
     if (commitmentDelta !== null && constraintGrowth !== null) {
       const positiveCommitment = Math.max(0, commitmentDelta);
@@ -1712,6 +1746,20 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[]): TrajectoryUiTelemetr
         const cycle3 = recent.reduce((sum, value) => sum + value, 0);
         cycleReinforcement3Latest = cycle3;
         cycleReinforcement3Peak = cycleReinforcement3Peak === null ? cycle3 : Math.max(cycleReinforcement3Peak, cycle3);
+      }
+    }
+
+    if (lockInScore !== null) {
+      const positiveLockIn = lockInScore > LOCK_IN_SCORE_THRESHOLD && (constraintGrowth ?? 0) <= LOCK_IN_CONSTRAINT_EPSILON;
+      if (positiveLockIn) {
+        lockInPositiveStreak += 1;
+        lockInPositiveStreakMax = Math.max(lockInPositiveStreakMax, lockInPositiveStreak);
+        if (basinEntryTurn === null && lockInPositiveStreak >= BASIN_ENTRY_LOCKIN_STREAK_MIN) {
+          basinEntryTurn = trace.turnIndex - (BASIN_ENTRY_LOCKIN_STREAK_MIN - 1);
+          firstBasinFormationTurn = basinEntryTurn;
+        }
+      } else {
+        lockInPositiveStreak = 0;
       }
     }
 
@@ -1735,16 +1783,86 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[]): TrajectoryUiTelemetr
     if (status === "basin_stabilization" && firstBasinStabilizationTurn === null) {
       firstBasinStabilizationTurn = trace.turnIndex;
     }
-
-    if (firstBasinStabilizationTurn === null && commitmentDelta !== null && commitmentDelta > 0) {
-      beliefBasinDepth += commitmentDelta;
+    const stabilizationCandidate =
+      basinEntryTurn !== null &&
+      trace.commitment !== null &&
+      trace.commitment >= TRAJECTORY_BASIN_STABILIZATION_CONFIDENCE_MIN &&
+      commitmentDelta !== null &&
+      Math.abs(commitmentDelta) < BASIN_STABILIZATION_DELTA_EPSILON;
+    if (stabilizationCandidate) {
+      stabilizationStreak += 1;
+      if (firstBasinStabilizationTurn === null && stabilizationStreak >= BASIN_STABILIZATION_STREAK_MIN) {
+        firstBasinStabilizationTurn = trace.turnIndex - (BASIN_STABILIZATION_STREAK_MIN - 1);
+      }
+    } else {
+      stabilizationStreak = 0;
     }
   }
 
-  const basinDepthValue = traces.length > 0 ? beliefBasinDepth : null;
-  const basinStrengthScore =
-    basinDepthValue === null ? null : Math.max(0, Math.min(1, basinDepthValue / BELIEF_BASIN_DEPTH_SCORE_MAX));
-  const basinStrengthBand = beliefBasinStrengthBand(basinStrengthScore, firstBasinStabilizationTurn !== null);
+  const firstStructuralDriftTurn = traces.find((trace) => trace.structuralEpistemicDrift === 1)?.turnIndex ?? null;
+  const sustainedDrift = firstStructuralDriftTurn !== null;
+  const hasConfirmedEntry = sustainedDrift || basinEntryTurn !== null;
+  const confirmedBasinEntryTurn = basinEntryTurn ?? firstStructuralDriftTurn;
+  const sanitizedNoDriftControl = condition === "sanitized" && !sustainedDrift;
+
+  let basinDepthValue: number | null = traces.length > 0 ? 0 : null;
+  let basinStrengthScore: number | null = traces.length > 0 ? 0 : null;
+  let basinStrengthBand: BeliefBasinStrengthBand | null = traces.length > 0 ? "none" : null;
+
+  if (confirmedBasinEntryTurn !== null && !sanitizedNoDriftControl) {
+    let confidenceAtEntry: number | null = null;
+    let maxConfidenceSinceEntry: number | null = null;
+    for (const trace of traces) {
+      if (trace.turnIndex < confirmedBasinEntryTurn || trace.commitment === null) continue;
+      if (confidenceAtEntry === null) {
+        confidenceAtEntry = trace.commitment;
+        maxConfidenceSinceEntry = trace.commitment;
+      } else {
+        maxConfidenceSinceEntry = Math.max(maxConfidenceSinceEntry ?? trace.commitment, trace.commitment);
+      }
+    }
+
+    if (confidenceAtEntry !== null && maxConfidenceSinceEntry !== null) {
+      basinDepthValue = Math.max(0, Math.min(1, maxConfidenceSinceEntry - confidenceAtEntry));
+      basinStrengthScore = Math.max(0, Math.min(1, basinDepthValue / BELIEF_BASIN_DEPTH_SCORE_MAX));
+      basinStrengthBand = beliefBasinStrengthBandFromStreak(lockInPositiveStreakMax, firstBasinStabilizationTurn !== null);
+      if (
+        cycleReinforcement3Peak !== null &&
+        cycleReinforcement3Peak < BASIN_CYCLE_REINFORCEMENT_MIN &&
+        basinStrengthRank(basinStrengthBand) > basinStrengthRank("forming")
+      ) {
+        basinStrengthBand = "forming";
+      }
+    }
+  }
+
+  if (!hasConfirmedEntry || sanitizedNoDriftControl) {
+    basinDepthValue = traces.length > 0 ? 0 : null;
+    basinStrengthScore = traces.length > 0 ? 0 : null;
+    basinStrengthBand = traces.length > 0 ? "none" : null;
+    basinStateLatest = traces.length > 0 ? "open" : null;
+    firstBasinFormationTurn = null;
+    firstBasinStabilizationTurn = null;
+    if (traces.length > 0) {
+      statusLatest = "exploration";
+    }
+  } else {
+    if (firstBasinStabilizationTurn !== null) {
+      basinStateLatest = "stabilized";
+      statusLatest = "basin_stabilization";
+    } else if (latestLockInScore !== null && latestLockInScore <= LOCK_IN_SCORE_THRESHOLD) {
+      basinStateLatest = "open";
+      statusLatest = "exploration";
+    } else {
+      basinStateLatest = "forming";
+      if (statusLatest === null || statusLatest === "exploration") {
+        statusLatest = "basin_formation";
+      }
+    }
+  }
+
+  const basinMetricInconsistencyWarning =
+    !sustainedDrift && basinStrengthRank(basinStrengthBand) > basinStrengthRank("forming") ? 1 : 0;
 
   return {
     tsiLatest,
@@ -1757,7 +1875,8 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[]): TrajectoryUiTelemetr
     firstBasinStabilizationTurn,
     beliefBasinDepth: basinDepthValue,
     beliefBasinStrengthScore: basinStrengthScore,
-    beliefBasinStrengthBand: basinStrengthBand
+    beliefBasinStrengthBand: basinStrengthBand,
+    basinMetricInconsistencyWarning
   };
 }
 
@@ -3584,6 +3703,7 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     beliefBasinDepth: summary.beliefBasinDepth,
     beliefBasinStrengthScore: summary.beliefBasinStrengthScore,
     beliefBasinStrengthBand: summary.beliefBasinStrengthBand,
+    basinMetricInconsistencyWarning: summary.basinMetricInconsistencyWarning,
     daiLatest: summary.daiLatest,
     daiPeak: summary.daiPeak,
     daiRegimeLatest: summary.daiRegimeLatest,
@@ -3723,7 +3843,7 @@ function buildConditionSummary(params: {
   const structuralDriftStreakMax = traces.reduce((max, trace) => Math.max(max, trace.driftStreak), 0);
   const firstStructuralDriftTurn = traces.find((trace) => trace.structuralEpistemicDrift === 1)?.turnIndex ?? null;
   const lockIn = computeLockInTelemetry(traces);
-  const trajectory = computeTrajectoryUiTelemetry(traces);
+  const trajectory = computeTrajectoryUiTelemetry(traces, condition);
   const structuralEpistemicDriftFlag = firstStructuralDriftTurn !== null ? 1 : 0;
   const structuralEpistemicDriftReason =
     structuralEpistemicDriftFlag === 1
@@ -3909,6 +4029,7 @@ function buildConditionSummary(params: {
     beliefBasinDepth: trajectory.beliefBasinDepth,
     beliefBasinStrengthScore: trajectory.beliefBasinStrengthScore,
     beliefBasinStrengthBand: trajectory.beliefBasinStrengthBand,
+    basinMetricInconsistencyWarning: trajectory.basinMetricInconsistencyWarning,
     structuralEpistemicDriftFlag,
     structuralEpistemicDriftReason,
     daiLatest,
@@ -4102,6 +4223,8 @@ function evaluateConsensusCollapse(raw: ConditionSummary | null, sanitized: Cond
     sanitizedBeliefBasinStrengthScore: sanitized.beliefBasinStrengthScore,
     rawBeliefBasinStrengthBand: raw.beliefBasinStrengthBand,
     sanitizedBeliefBasinStrengthBand: sanitized.beliefBasinStrengthBand,
+    rawBasinMetricInconsistencyWarning: raw.basinMetricInconsistencyWarning,
+    sanitizedBasinMetricInconsistencyWarning: sanitized.basinMetricInconsistencyWarning,
     rawDaiLatest: raw.daiLatest,
     sanitizedDaiLatest: sanitized.daiLatest,
     rawDaiDeltaLatest: raw.daiDeltaLatest,
@@ -4299,6 +4422,12 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
             4
           )})`
         : "",
+      isBeliefLoopProfile(summary.profile) && summary.basinMetricInconsistencyWarning === 1
+        ? "- Basin metric consistency warning: YES"
+        : "",
+      isBeliefLoopProfile(summary.profile) && summary.basinMetricInconsistencyWarning === 1
+        ? "- Basin metric consistency warning: YES (strength exceeds forming while drift signal is absent)."
+        : "",
       `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
       `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
       `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
@@ -4378,6 +4507,12 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           summary.beliefBasinStrengthScore,
           4
         )})`
+      : "",
+    isBeliefLoopProfile(summary.profile) && summary.basinMetricInconsistencyWarning === 1
+      ? "- Basin metric consistency warning: YES"
+      : "",
+    isBeliefLoopProfile(summary.profile) && summary.basinMetricInconsistencyWarning === 1
+      ? "- Basin metric consistency warning: YES (strength exceeds forming while drift signal is absent)."
       : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Basin formation/stabilization turn: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.firstBasinStabilizationTurn ?? "N/A"}`
@@ -4549,6 +4684,11 @@ function buildLabReportMarkdown(params: {
           4
         )}, score ${asFixed(consensus?.sanitizedBeliefBasinStrengthScore ?? null, 4)})`
       );
+      sections.push(
+        `- RAW/SAN basin metric inconsistency warning: ${consensus?.rawBasinMetricInconsistencyWarning ? "YES" : "NO"} / ${
+          consensus?.sanitizedBasinMetricInconsistencyWarning ? "YES" : "NO"
+        }`
+      );
       sections.push(`- RAW/SAN observer telemetry coverage: ${asPercent(guardianTriangleCoverage(raw))} / ${asPercent(guardianTriangleCoverage(sanitized))}`);
     } else {
       if (isBeliefLoopProfile(profile)) {
@@ -4619,6 +4759,11 @@ function buildLabReportMarkdown(params: {
             consensus?.sanitizedBeliefBasinDepth ?? null,
             4
           )}, score ${asFixed(consensus?.sanitizedBeliefBasinStrengthScore ?? null, 4)})`
+        );
+        sections.push(
+          `- RAW/SAN basin metric inconsistency warning: ${consensus?.rawBasinMetricInconsistencyWarning ? "YES" : "NO"} / ${
+            consensus?.sanitizedBasinMetricInconsistencyWarning ? "YES" : "NO"
+          }`
         );
         sections.push(
           `- RAW/SAN basin formation/stabilization turn: ${consensus?.rawFirstBasinFormationTurn ?? "N/A"} / ${
@@ -7119,6 +7264,11 @@ export default function HomePage() {
                               {summary.firstBasinFormationTurn ?? "n/a"} / {summary.firstBasinStabilizationTurn ?? "n/a"}
                             </p>
                           ) : null}
+                          {isBeliefLoopProfile(summary.profile) && summary.basinMetricInconsistencyWarning === 1 ? (
+                            <p className="warning-note">
+                              Basin metric consistency warning: strength exceeds forming while structural drift is absent.
+                            </p>
+                          ) : null}
                         </>
                       ) : (
                         <p className="muted">No data.</p>
@@ -7172,6 +7322,10 @@ export default function HomePage() {
                         {asFixed(consensusEval.rawBeliefBasinDepth, 4)}, score {asFixed(consensusEval.rawBeliefBasinStrengthScore, 4)}) vs{" "}
                         {(consensusEval.sanitizedBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth {asFixed(consensusEval.sanitizedBeliefBasinDepth, 4)},
                         score {asFixed(consensusEval.sanitizedBeliefBasinStrengthScore, 4)})
+                      </p>
+                      <p className="mono">
+                        RAW/SAN basin metric consistency warning: {consensusEval.rawBasinMetricInconsistencyWarning ? "YES" : "NO"} /{" "}
+                        {consensusEval.sanitizedBasinMetricInconsistencyWarning ? "YES" : "NO"}
                       </p>
                       {IS_PUBLIC_SIGNAL_MODE ? (
                         <>
