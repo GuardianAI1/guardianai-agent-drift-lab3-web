@@ -29,7 +29,7 @@ const DEFAULT_MAX_HISTORY_TURNS = 50;
 const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
+const RUN_LEVEL_LLM_MAX_ATTEMPTS = 5;
 const GUARDIAN_OBSERVE_MAX_ATTEMPTS = 2;
 const DRIFT_DEV_EVENT_THRESHOLD = 8;
 const EARLY_WINDOW_TURNS = 40;
@@ -2018,7 +2018,15 @@ function isRunLevelRetryableLLMError(message: string): boolean {
   );
 }
 
-function runLevelRetryDelayMs(attempt: number): number {
+function runLevelRetryDelayMs(attempt: number, provider: APIProvider, message: string): number {
+  const normalized = message.toLowerCase();
+  const is429 = normalized.includes("http 429") || normalized.includes("rate limit") || normalized.includes("code\":\"1300\"");
+  if (provider === "mistral" && is429) {
+    const boundedAttempt = Math.max(1, Math.min(8, attempt));
+    const base = 5000 * boundedAttempt;
+    const jitter = Math.floor(Math.random() * 700);
+    return Math.min(30_000, base + jitter);
+  }
   const boundedAttempt = Math.max(1, Math.min(6, attempt));
   const base = 1200 * boundedAttempt;
   const jitter = Math.floor(Math.random() * 250);
@@ -5843,7 +5851,7 @@ export default function HomePage() {
         systemPrompt: params.systemPrompt,
         mistralJsonSchemaMode: false
       })
-    }, { maxAttempts: 2 });
+    }, { maxAttempts: effectiveProvider === "mistral" ? 3 : 2 });
 
     return response.content ?? "";
   }
@@ -5989,7 +5997,7 @@ export default function HomePage() {
                 llmAttempt + 1
               }/${RUN_LEVEL_LLM_MAX_ATTEMPTS}`
             );
-            await sleep(runLevelRetryDelayMs(llmAttempt));
+            await sleep(runLevelRetryDelayMs(llmAttempt, effectiveProvider, message));
             continue;
           }
 

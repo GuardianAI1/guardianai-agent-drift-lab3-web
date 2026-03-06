@@ -15,7 +15,7 @@ type RequestBody = {
 };
 
 const FETCH_TIMEOUT_MS = 30_000;
-const MAX_RETRY_ATTEMPTS = 3;
+const MAX_RETRY_ATTEMPTS = 4;
 const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
 function nonEmpty(value?: string): string | undefined {
@@ -53,11 +53,16 @@ function parseRetryAfterMs(rawHeader: string | null): number | null {
   return Math.max(0, epochMs - Date.now());
 }
 
-function retryDelayMs(attempt: number): number {
+function retryDelayMs(attempt: number, status?: number): number {
   const cappedAttempt = Math.max(1, Math.min(6, attempt));
+  if (status === 429) {
+    const base429 = 3500 * cappedAttempt;
+    const jitter429 = Math.floor(Math.random() * 400);
+    return Math.min(20_000, base429 + jitter429);
+  }
   const base = 250 * 2 ** (cappedAttempt - 1);
   const jitter = Math.floor(Math.random() * 150);
-  return Math.min(3000, base + jitter);
+  return Math.min(5000, base + jitter);
 }
 
 function payloadToMessage(payload: unknown): string {
@@ -210,7 +215,7 @@ async function postJson(url: string, init: RequestInit): Promise<unknown> {
       }
 
       const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-      await sleep(retryAfterMs ?? retryDelayMs(attempt));
+      await sleep(retryAfterMs ?? retryDelayMs(attempt, response.status));
     } catch (error) {
       lastError = error;
       const retryableError = isAbortError(error) || isNetworkError(error);
