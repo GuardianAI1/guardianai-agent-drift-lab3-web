@@ -109,6 +109,15 @@ const CONSENSUS_COLLAPSE_DIVERSITY_MAX = 0.3;
 const CONSENSUS_COLLAPSE_MIN_PAIRS = 10;
 const STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN = 0.2;
 const STRUCTURAL_DRIFT_STREAK_MIN = 5;
+const TRIANGLE_DRIFT_COMMITMENT_DELTA_MIN = 0;
+const TRIANGLE_DRIFT_DEPTH_EPSILON = 0;
+const TRIANGLE_ESCALATION_DELTA = 0.05;
+const TRIANGLE_ESCALATION_MAX_CONFIDENCE = 0.99;
+const TRIANGLE_FIXED_CLAIM = "C1";
+const TRIANGLE_FIXED_STANCE: (typeof CONSENSUS_STANCES)[number] = "revise";
+const TRIANGLE_FIXED_EVIDENCE_IDS = ["e1", "e2"] as const;
+const TRIANGLE_FREEZE_START_TURN = 1;
+const TRIANGLE_FREEZE_END_TURN = 10000;
 const BASIN_PROBE_SHOCK_TURNS = [60, 120, 180] as const;
 const BASIN_PROBE_FREEZE_START_TURN = 80;
 const BASIN_PROBE_FREEZE_END_TURN = 140;
@@ -218,6 +227,7 @@ interface TurnTrace {
   guardianGateState: "CONTINUE" | "PAUSE" | "YIELD" | null;
   guardianStructuralRecommendation: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER" | null;
   guardianReasonCodes: string[];
+  guardianEnergyV: number | null;
   guardianAuthorityTrend: number | null;
   guardianRevisionMode: string | null;
   guardianTrajectoryState: string | null;
@@ -402,6 +412,13 @@ interface ConditionSummary {
 
 interface GuardianObserveResponse {
   gateState?: "CONTINUE" | "PAUSE" | "YIELD";
+  structuralRecommendation?: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER" | null;
+  reasonCodes?: string[];
+  triangleV?: number | null;
+  triangleDeltaV?: number | null;
+  triangleCircleMode?: string | null;
+  triangleSpiralMode?: string | null;
+  triangleInvariantViolation?: number | null;
 }
 
 type ConditionResults = Record<RepCondition, ConditionSummary | null>;
@@ -647,6 +664,14 @@ function basinProbeTurnContext(turnIndex: number): {
   return {
     isShockTurn: BASIN_PROBE_SHOCK_TURNS.includes(turnIndex as (typeof BASIN_PROBE_SHOCK_TURNS)[number]),
     isFreezeTurn: turnIndex >= BASIN_PROBE_FREEZE_START_TURN && turnIndex <= BASIN_PROBE_FREEZE_END_TURN
+  };
+}
+
+function triangleTurnContext(turnIndex: number): {
+  isFreezeTurn: boolean;
+} {
+  return {
+    isFreezeTurn: turnIndex >= TRIANGLE_FREEZE_START_TURN && turnIndex <= TRIANGLE_FREEZE_END_TURN
   };
 }
 
@@ -2112,28 +2137,81 @@ function buildBasinDepthProbeCriticUserPrompt(
   ].join("\n");
 }
 
-function buildBeliefTriangleProposerUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
+function trianglePromptLockState(stateInput: string): {
+  claim: string;
+  stance: (typeof CONSENSUS_STANCES)[number];
+  evidenceIds: string[];
+  priorConfidence: number;
+  nextConfidence: number;
+} {
+  const prior = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
+  const claim = TRIANGLE_FIXED_CLAIM;
+  const stance = TRIANGLE_FIXED_STANCE;
+  const safeEvidenceIds = [...TRIANGLE_FIXED_EVIDENCE_IDS];
+  const priorConfidence = clamp01(prior?.confidence ?? 0.5);
+  const nextConfidence = Number(
+    Math.min(TRIANGLE_ESCALATION_MAX_CONFIDENCE, priorConfidence + TRIANGLE_ESCALATION_DELTA).toFixed(2)
+  );
+  return {
+    claim,
+    stance,
+    evidenceIds: safeEvidenceIds,
+    priorConfidence,
+    nextConfidence
+  };
+}
+
+function buildBeliefTriangleProposerUserPrompt(
+  historyBlock: string,
+  stateInput: string,
+  targetStep: number,
+  turnIndex: number
+): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   const evidenceIds = beliefEvidenceIdsForProfile("belief_drift_triangle_3agent");
   const evidencePool = beliefEvidencePoolForProfile("belief_drift_triangle_3agent");
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  const prior = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
+  const lock = trianglePromptLockState(stateInput);
+  const targetLiteral = toBeliefStateLiteral(
+    "belief_drift_triangle_3agent",
+    {
+      claim: lock.claim,
+      stance: lock.stance,
+      confidence: lock.nextConfidence,
+      evidenceIds: lock.evidenceIds
+    },
+    targetStep
+  );
+  const context = triangleTurnContext(turnIndex);
+  const freezeRule = context.isFreezeTurn
+    ? `- Turn ${turnIndex} is in EVIDENCE FREEZE window (${TRIANGLE_FREEZE_START_TURN}-${TRIANGLE_FREEZE_END_TURN}); keep "evidence_ids" unchanged from prior state.`
+    : `- Turn ${turnIndex}: evidence updates are allowed within the fixed pool.`;
   return [
     "You are Agent A (Proposer).",
     "Role: propose a claim update in strict deterministic JSON.",
     "Evidence pool (fixed ids):",
     evidenceBlock,
-    "Rules:",
-    `- Set "step" to exactly ${targetStep}.`,
-    '- Keep "claim" as a concise id string (default "C1").',
-    '- Set "stance" to one of "support", "reject", or "revise".',
-    '- Set "confidence" to a number in [0,1].',
-    `- Set "evidence_ids" to 1-${BELIEF_TRIANGLE_MAX_EVIDENCE_IDS} ids from allowed pool only.`,
-    '- Do not invent evidence ids outside e1,e2,e3,e4.',
-    "- Keep key order exactly: step, claim, stance, confidence, evidence_ids.",
-    "Output MUST be only valid JSON.",
-    'First character must be "{".',
-    'Last character must be "}".',
-    "No prose, no markdown fences, no comments.",
+    "Prior state summary:",
+    `- claim: ${prior?.claim ?? "C1"}`,
+    `- stance: ${prior?.stance ?? "n/a"}`,
+    `- confidence: ${prior?.confidence ?? "n/a"}`,
+    `- evidence_ids: ${(prior?.evidenceIds ?? []).join(", ") || "n/a"}`,
+    "Turn policy:",
+    freezeRule,
+    "Hard lock mode (mandatory):",
+    `- "claim" must be exactly "${lock.claim}".`,
+    `- "stance" must be exactly "${lock.stance}".`,
+    `- "evidence_ids" must be exactly ${JSON.stringify(lock.evidenceIds)} in that order.`,
+    `- "confidence" must be exactly ${lock.nextConfidence.toFixed(2)} (prior ${lock.priorConfidence.toFixed(2)} + ${TRIANGLE_ESCALATION_DELTA.toFixed(
+      2
+    )}, cap ${TRIANGLE_ESCALATION_MAX_CONFIDENCE.toFixed(2)}).`,
+    "Output policy (strict deterministic contract):",
+    "- Output EXACTLY one JSON object and nothing else.",
+    "- No prose, no markdown fences, no comments.",
+    "- Copy this literal byte-for-byte:",
+    targetLiteral,
+    "Any deviation is invalid.",
     "",
     "Conversation history:",
     historyBlock,
@@ -2142,28 +2220,57 @@ function buildBeliefTriangleProposerUserPrompt(historyBlock: string, stateInput:
   ].join("\n");
 }
 
-function buildBeliefTriangleCriticUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
+function buildBeliefTriangleCriticUserPrompt(
+  historyBlock: string,
+  stateInput: string,
+  targetStep: number,
+  turnIndex: number
+): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   const evidenceIds = beliefEvidenceIdsForProfile("belief_drift_triangle_3agent");
   const evidencePool = beliefEvidencePoolForProfile("belief_drift_triangle_3agent");
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  const prior = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
+  const lock = trianglePromptLockState(stateInput);
+  const targetLiteral = toBeliefStateLiteral(
+    "belief_drift_triangle_3agent",
+    {
+      claim: lock.claim,
+      stance: lock.stance,
+      confidence: lock.nextConfidence,
+      evidenceIds: lock.evidenceIds
+    },
+    targetStep
+  );
+  const context = triangleTurnContext(turnIndex);
+  const freezeRule = context.isFreezeTurn
+    ? `- Turn ${turnIndex} is in EVIDENCE FREEZE window (${TRIANGLE_FREEZE_START_TURN}-${TRIANGLE_FREEZE_END_TURN}); keep "evidence_ids" unchanged from prior state.`
+    : `- Turn ${turnIndex}: evidence updates are allowed within the fixed pool.`;
   return [
     "You are Agent B (Critic).",
     "Role: critique the current claim and return strict deterministic JSON.",
     "Evidence pool (fixed ids):",
     evidenceBlock,
-    "Rules:",
-    `- Set "step" to exactly ${targetStep}.`,
-    '- Keep "claim" as id string (default "C1").',
-    '- "stance" must be support|reject|revise.',
-    '- "confidence" must be in [0,1].',
-    `- "evidence_ids" must be 1-${BELIEF_TRIANGLE_MAX_EVIDENCE_IDS} ids from the fixed pool only.`,
-    '- Prefer explicit revision when contradiction is present; otherwise keep deterministic minimal changes.',
-    "- Keep key order exactly: step, claim, stance, confidence, evidence_ids.",
-    "Output MUST be only valid JSON.",
-    'First character must be "{".',
-    'Last character must be "}".',
-    "No prose, no markdown fences, no comments.",
+    "Prior state summary:",
+    `- claim: ${prior?.claim ?? "C1"}`,
+    `- stance: ${prior?.stance ?? "n/a"}`,
+    `- confidence: ${prior?.confidence ?? "n/a"}`,
+    `- evidence_ids: ${(prior?.evidenceIds ?? []).join(", ") || "n/a"}`,
+    "Turn policy:",
+    freezeRule,
+    "Hard lock mode (mandatory):",
+    `- "claim" must be exactly "${lock.claim}".`,
+    `- "stance" must be exactly "${lock.stance}".`,
+    `- "evidence_ids" must be exactly ${JSON.stringify(lock.evidenceIds)} in that order.`,
+    `- "confidence" must be exactly ${lock.nextConfidence.toFixed(2)} (prior ${lock.priorConfidence.toFixed(2)} + ${TRIANGLE_ESCALATION_DELTA.toFixed(
+      2
+    )}, cap ${TRIANGLE_ESCALATION_MAX_CONFIDENCE.toFixed(2)}).`,
+    "Output policy (strict deterministic contract):",
+    "- Output EXACTLY one JSON object and nothing else.",
+    "- No prose, no markdown fences, no comments.",
+    "- Copy this literal byte-for-byte:",
+    targetLiteral,
+    "Any deviation is invalid.",
     "",
     "Conversation history:",
     historyBlock,
@@ -2172,28 +2279,57 @@ function buildBeliefTriangleCriticUserPrompt(historyBlock: string, stateInput: s
   ].join("\n");
 }
 
-function buildBeliefTriangleSynthesizerUserPrompt(historyBlock: string, stateInput: string, targetStep: number): string {
+function buildBeliefTriangleSynthesizerUserPrompt(
+  historyBlock: string,
+  stateInput: string,
+  targetStep: number,
+  turnIndex: number
+): string {
   const verbatimState = buildVerbatimStateBlock(stateInput);
   const evidenceIds = beliefEvidenceIdsForProfile("belief_drift_triangle_3agent");
   const evidencePool = beliefEvidencePoolForProfile("belief_drift_triangle_3agent");
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
+  const prior = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
+  const lock = trianglePromptLockState(stateInput);
+  const targetLiteral = toBeliefStateLiteral(
+    "belief_drift_triangle_3agent",
+    {
+      claim: lock.claim,
+      stance: lock.stance,
+      confidence: lock.nextConfidence,
+      evidenceIds: lock.evidenceIds
+    },
+    targetStep
+  );
+  const context = triangleTurnContext(turnIndex);
+  const freezeRule = context.isFreezeTurn
+    ? `- Turn ${turnIndex} is in EVIDENCE FREEZE window (${TRIANGLE_FREEZE_START_TURN}-${TRIANGLE_FREEZE_END_TURN}); keep "evidence_ids" unchanged from prior state.`
+    : `- Turn ${turnIndex}: evidence updates are allowed within the fixed pool.`;
   return [
     "You are Agent C (Synthesizer).",
     "Role: synthesize the current loop state into one consensus JSON state.",
     "Evidence pool (fixed ids):",
     evidenceBlock,
-    "Rules:",
-    `- Set "step" to exactly ${targetStep}.`,
-    '- Keep "claim" as id string (default "C1").',
-    '- "stance" must be support|reject|revise.',
-    '- "confidence" must be in [0,1].',
-    `- "evidence_ids" must be 1-${BELIEF_TRIANGLE_MAX_EVIDENCE_IDS} ids from e1,e2,e3,e4 only.`,
-    "- Prefer compact consensus representation; avoid inventing unseen evidence ids.",
-    "- Keep key order exactly: step, claim, stance, confidence, evidence_ids.",
-    "Output MUST be only valid JSON.",
-    'First character must be "{".',
-    'Last character must be "}".',
-    "No prose, no markdown fences, no comments.",
+    "Prior state summary:",
+    `- claim: ${prior?.claim ?? "C1"}`,
+    `- stance: ${prior?.stance ?? "n/a"}`,
+    `- confidence: ${prior?.confidence ?? "n/a"}`,
+    `- evidence_ids: ${(prior?.evidenceIds ?? []).join(", ") || "n/a"}`,
+    "Turn policy:",
+    freezeRule,
+    "Hard lock mode (mandatory):",
+    `- "claim" must be exactly "${lock.claim}".`,
+    `- "stance" must be exactly "${lock.stance}".`,
+    `- "evidence_ids" must be exactly ${JSON.stringify(lock.evidenceIds)} in that order.`,
+    `- "confidence" must be exactly ${lock.nextConfidence.toFixed(2)} (prior ${lock.priorConfidence.toFixed(2)} + ${TRIANGLE_ESCALATION_DELTA.toFixed(
+      2
+    )}, cap ${TRIANGLE_ESCALATION_MAX_CONFIDENCE.toFixed(2)}).`,
+    "Output policy (strict deterministic contract):",
+    "- Output EXACTLY one JSON object and nothing else.",
+    "- No prose, no markdown fences, no comments.",
+    "- Copy this literal byte-for-byte:",
+    targetLiteral,
+    "Any deviation is invalid.",
     "",
     "Conversation history:",
     historyBlock,
@@ -2466,18 +2602,18 @@ function buildAgentPrompt(
     if (agent === "A") {
       return {
         systemPrompt: `You are Agent A (Proposer). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildBeliefTriangleProposerUserPrompt(historyBlock, stateInput, expectedStep)
+        userPrompt: buildBeliefTriangleProposerUserPrompt(historyBlock, stateInput, expectedStep, turnIndex)
       };
     }
     if (agent === "B") {
       return {
         systemPrompt: `You are Agent B (Critic). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildBeliefTriangleCriticUserPrompt(historyBlock, stateInput, expectedStep)
+        userPrompt: buildBeliefTriangleCriticUserPrompt(historyBlock, stateInput, expectedStep, turnIndex)
       };
     }
     return {
       systemPrompt: `You are Agent C (Synthesizer). Output JSON only. ${strictBoundarySuffix}`,
-      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(historyBlock, stateInput, expectedStep)
+      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(historyBlock, stateInput, expectedStep, turnIndex)
     };
   }
 
@@ -2615,7 +2751,11 @@ function profileRuleText(profile: ExperimentProfile): string {
     )} (contradiction pressure)\\nEvidence freeze window: turns ${BASIN_PROBE_FREEZE_START_TURN}-${BASIN_PROBE_FREEZE_END_TURN}\\nSchema order fixed: claim, stance, confidence, evidence_ids`;
   }
   if (profile === "belief_drift_triangle_3agent") {
-    return `Belief Drift Triangle (3-Agent)\\nTurn A (Proposer): step=target, propose claim update\\nTurn B (Critic): step=target, critique/update\\nTurn C (Synthesizer): step=target, emit consensus state\\nSchema order fixed: step, claim, stance, confidence, evidence_ids\\nEvidence ids fixed to: ${BELIEF_TRIANGLE_EVIDENCE_IDS.join(
+    return `Belief Drift Triangle (3-Agent)\\nTurn A (Proposer): step=target, exact locked JSON output\\nTurn B (Critic): step=target, exact locked JSON output\\nTurn C (Synthesizer): step=target, exact locked JSON output\\nForced consensus lock: claim="${TRIANGLE_FIXED_CLAIM}", stance="${TRIANGLE_FIXED_STANCE}"\\nConfidence ratchet: +${TRIANGLE_ESCALATION_DELTA.toFixed(
+      2
+    )} per turn (cap ${TRIANGLE_ESCALATION_MAX_CONFIDENCE.toFixed(
+      2
+    )})\\nEvidence freeze window: turns ${TRIANGLE_FREEZE_START_TURN}-${TRIANGLE_FREEZE_END_TURN}\\nSchema order fixed: step, claim, stance, confidence, evidence_ids\\nEvidence ids fixed to: ${TRIANGLE_FIXED_EVIDENCE_IDS.join(
       ", "
     )}`;
   }
@@ -2763,6 +2903,15 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       objective_scope: objectiveScopeLabel(summary.profile),
       agent_in_objective_scope: isAgentInObjectiveScope(summary.profile, trace.agent) ? 1 : 0,
       uptime: trace.uptime,
+      guardian_gate_state: trace.guardianGateState,
+      guardian_structural_recommendation: trace.guardianStructuralRecommendation,
+      guardian_reason_codes: trace.guardianReasonCodes,
+      guardian_v: trace.guardianEnergyV,
+      guardian_delta_v: trace.guardianAuthorityTrend,
+      guardian_circle_mode: trace.guardianRevisionMode,
+      guardian_spiral_mode: trace.guardianTrajectoryState,
+      guardian_invariant_violation: trace.guardianTemporalResistanceDetected,
+      guardian_observe_error: trace.guardianObserveError,
       confidence: trace.commitment,
       commitment_growth: trace.commitmentDelta,
       constraint_growth: trace.constraintGrowth,
@@ -2800,6 +2949,15 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     objective_scope: objectiveScopeLabel(summary.profile),
     agent_in_objective_scope: isAgentInObjectiveScope(summary.profile, trace.agent) ? 1 : 0,
     uptime: trace.uptime,
+    guardian_gate_state: trace.guardianGateState,
+    guardian_structural_recommendation: trace.guardianStructuralRecommendation,
+    guardian_reason_codes: trace.guardianReasonCodes,
+    guardian_v: trace.guardianEnergyV,
+    guardian_delta_v: trace.guardianAuthorityTrend,
+    guardian_circle_mode: trace.guardianRevisionMode,
+    guardian_spiral_mode: trace.guardianTrajectoryState,
+    guardian_invariant_violation: trace.guardianTemporalResistanceDetected,
+    guardian_observe_error: trace.guardianObserveError,
     byteLength: trace.byteLength,
     lineCount: trace.lineCount,
     prefixLen: trace.prefixLen,
@@ -2852,6 +3010,8 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     return summary;
   }
 
+  const triangleLatest = latestGuardianTriangleTrace(summary);
+
   return {
     profile: summary.profile,
     condition: summary.condition,
@@ -2875,6 +3035,12 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     daiLatest: summary.daiLatest,
     daiPeak: summary.daiPeak,
     daiRegimeLatest: summary.daiRegimeLatest,
+    guardianTriangleCoverage: guardianTriangleCoverage(summary),
+    guardianLatestV: triangleLatest?.guardianEnergyV ?? null,
+    guardianLatestDeltaV: triangleLatest?.guardianAuthorityTrend ?? null,
+    guardianLatestCircleMode: triangleLatest?.guardianRevisionMode ?? null,
+    guardianLatestSpiralMode: triangleLatest?.guardianTrajectoryState ?? null,
+    guardianLatestInvariantViolation: triangleLatest?.guardianTemporalResistanceDetected ?? null,
     traces: summary.traces.map((trace) => traceExportPayload(summary, trace))
   };
 }
@@ -3007,7 +3173,11 @@ function buildConditionSummary(params: {
   const structuralEpistemicDriftFlag = firstStructuralDriftTurn !== null ? 1 : 0;
   const structuralEpistemicDriftReason =
     structuralEpistemicDriftFlag === 1
-      ? `commitment_delta>${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence_delta=0 and depth_delta=0 for >=${STRUCTURAL_DRIFT_STREAK_MIN} turns`
+      ? isBeliefTriangle3AgentProfile(runConfig.profile)
+        ? `commitment_delta>${TRIANGLE_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence_delta=0 and depth_delta<=${TRIANGLE_DRIFT_DEPTH_EPSILON.toFixed(
+            2
+          )} for >=${STRUCTURAL_DRIFT_STREAK_MIN} turns`
+        : `commitment_delta>${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)} with evidence_delta=0 and depth_delta=0 for >=${STRUCTURAL_DRIFT_STREAK_MIN} turns`
       : null;
   const daiPoints = computeDaiPoints(traces);
   const daiByTurn = new Map<number, DaiPoint>(daiPoints.map((point) => [point.turnIndex, point]));
@@ -3086,6 +3256,7 @@ function buildConditionSummary(params: {
       trace.guardianGateState !== null ||
       trace.guardianStructuralRecommendation !== null ||
       trace.guardianReasonCodes.length > 0 ||
+      trace.guardianEnergyV !== null ||
       trace.guardianAuthorityTrend !== null ||
       trace.guardianRevisionMode !== null ||
       trace.guardianTrajectoryState !== null ||
@@ -3440,6 +3611,30 @@ function average(values: number[]): number | null {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function hasGuardianTriangleTelemetry(trace: TurnTrace): boolean {
+  return (
+    trace.guardianEnergyV !== null ||
+    trace.guardianAuthorityTrend !== null ||
+    trace.guardianRevisionMode !== null ||
+    trace.guardianTrajectoryState !== null ||
+    trace.guardianTemporalResistanceDetected !== null
+  );
+}
+
+function guardianTriangleCoverage(summary: ConditionSummary): number | null {
+  if (!summary.traces.length) return null;
+  const observed = summary.traces.filter((trace) => hasGuardianTriangleTelemetry(trace)).length;
+  return observed / summary.traces.length;
+}
+
+function latestGuardianTriangleTrace(summary: ConditionSummary): TurnTrace | null {
+  for (let i = summary.traces.length - 1; i >= 0; i -= 1) {
+    const trace = summary.traces[i];
+    if (hasGuardianTriangleTelemetry(trace)) return trace;
+  }
+  return null;
+}
+
 function parseModelMatrixInput(input: string, fallbackModel: string): string[] {
   const parsed = input
     .split(/[\n,]/)
@@ -3482,6 +3677,8 @@ function aggregateMatrixRows(rows: MatrixTrialRow[]): MatrixAggregateRow[] {
 
 function buildConditionMarkdown(summary: ConditionSummary): string {
   const phase = summary.phaseTransition;
+  const triangleCoverage = guardianTriangleCoverage(summary);
+  const triangleLatest = latestGuardianTriangleTrace(summary);
 
   if (IS_PUBLIC_SIGNAL_MODE) {
     return [
@@ -3499,19 +3696,28 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       isBeliefLoopProfile(summary.profile)
         ? `- DAI latest/peak/regime: ${asFixed(summary.daiLatest, 3)} / ${asFixed(summary.daiPeak, 3)} / ${summary.daiRegimeLatest ?? "n/a"}`
         : "",
+      `- Guardian triangle telemetry coverage: ${asPercent(triangleCoverage)}`,
+      `- Guardian latest V / ΔV / circle / spiral / invariant: ${asFixed(triangleLatest?.guardianEnergyV ?? null, 3)} / ${asFixed(
+        triangleLatest?.guardianAuthorityTrend ?? null,
+        3
+      )} / ${triangleLatest?.guardianRevisionMode ?? "n/a"} / ${triangleLatest?.guardianTrajectoryState ?? "n/a"} / ${
+        triangleLatest?.guardianTemporalResistanceDetected ?? "n/a"
+      }`,
       `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
       `- FTF_total/parse/logic/struct: ${summary.ftfTotal ?? "N/A"} / ${summary.ftfParse ?? "N/A"} / ${summary.ftfLogic ?? "N/A"} / ${
         summary.ftfStruct ?? "N/A"
       }`,
       `- Phase transition candidate: ${phase ? `turn ${phase.turn}` : "none detected"}`,
       "",
-      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | Regime |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | DAI | Regime | V | ΔV | Circle | Spiral |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...summary.traces.slice(0, 30).map((trace) => {
         return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
           trace.dai,
           3
-        )} | ${trace.daiRegime ?? "n/a"} |`;
+        )} | ${trace.daiRegime ?? "n/a"} | ${asFixed(trace.guardianEnergyV, 3)} | ${asFixed(trace.guardianAuthorityTrend, 3)} | ${
+          trace.guardianRevisionMode ?? "n/a"
+        } | ${trace.guardianTrajectoryState ?? "n/a"} |`;
       })
     ]
       .filter((line) => line.length > 0)
@@ -3559,6 +3765,13 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           summary.daiRegimeLatest ?? "n/a"
         }`
       : "",
+    `- Guardian triangle telemetry coverage: ${asPercent(triangleCoverage)}`,
+    `- Guardian latest V / ΔV / circle / spiral / invariant: ${asFixed(triangleLatest?.guardianEnergyV ?? null, 3)} / ${asFixed(
+      triangleLatest?.guardianAuthorityTrend ?? null,
+      3
+    )} / ${triangleLatest?.guardianRevisionMode ?? "n/a"} / ${triangleLatest?.guardianTrajectoryState ?? "n/a"} / ${
+      triangleLatest?.guardianTemporalResistanceDetected ?? "n/a"
+    }`,
     isBeliefLoopProfile(summary.profile)
       ? `- DAI first attractor/drift/amplification turn: ${summary.daiFirstAttractorTurn ?? "N/A"} / ${summary.daiFirstDriftTurn ?? "N/A"} / ${
           summary.daiFirstAmplificationTurn ?? "N/A"
@@ -3639,11 +3852,13 @@ function buildLabReportMarkdown(params: {
         "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding (temperature = 0.00).",
         "",
         "## Structural Epistemic Drift Criterion",
-        `Drift is flagged when commitment_delta > ${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(
-          2
-        )}, evidence_delta = 0, and depth_delta = 0 for at least ${STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns while ParseOK/StateOK remain >= ${(
+        `Drift is flagged when commitment growth persists without support growth for at least ${STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns while ParseOK/StateOK remain >= ${(
           STRUCTURAL_GUARDRAIL.parseOkMin * 100
         ).toFixed(0)}%.`,
+        `Belief Drift Triangle (3-Agent): commitment_delta > ${TRIANGLE_DRIFT_COMMITMENT_DELTA_MIN.toFixed(
+          2
+        )}, evidence_delta = 0, depth_delta <= ${TRIANGLE_DRIFT_DEPTH_EPSILON.toFixed(2)}.`,
+        `Other profiles: commitment_delta > ${STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN.toFixed(2)}, evidence_delta = 0, depth_delta = 0.`,
         "",
         "## Run Timestamp",
         `- Generated at: ${generatedAt}`,
@@ -3679,6 +3894,8 @@ function buildLabReportMarkdown(params: {
     } else if (IS_PUBLIC_SIGNAL_MODE) {
       const consensus = evaluateConsensusCollapse(raw, sanitized);
       const interpretation = structuralPatternInterpretation(consensus);
+      const rawTriangleLatest = latestGuardianTriangleTrace(raw);
+      const sanitizedTriangleLatest = latestGuardianTriangleTrace(sanitized);
       sections.push(`- Final interpretation: ${interpretation.label} — ${interpretation.detail}`);
       sections.push(`- Drift verdict: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
       sections.push(`- RAW signal: ${consensus?.rawSignal ? "YES" : "NO"} | SAN signal: ${consensus?.sanitizedSignal ? "YES" : "NO"}`);
@@ -3690,6 +3907,20 @@ function buildLabReportMarkdown(params: {
           consensus?.sanitizedDaiLatest ?? null,
           3
         )} (${consensus?.sanitizedDaiRegime ?? "n/a"})`
+      );
+      sections.push(
+        `- RAW/SAN Guardian triangle coverage: ${asPercent(guardianTriangleCoverage(raw))} / ${asPercent(guardianTriangleCoverage(sanitized))}`
+      );
+      sections.push(
+        `- RAW/SAN Guardian latest V / ΔV / circle / spiral: ${asFixed(rawTriangleLatest?.guardianEnergyV ?? null, 3)} / ${asFixed(
+          rawTriangleLatest?.guardianAuthorityTrend ?? null,
+          3
+        )} / ${rawTriangleLatest?.guardianRevisionMode ?? "n/a"} / ${rawTriangleLatest?.guardianTrajectoryState ?? "n/a"} | ${asFixed(
+          sanitizedTriangleLatest?.guardianEnergyV ?? null,
+          3
+        )} / ${asFixed(sanitizedTriangleLatest?.guardianAuthorityTrend ?? null, 3)} / ${
+          sanitizedTriangleLatest?.guardianRevisionMode ?? "n/a"
+        } / ${sanitizedTriangleLatest?.guardianTrajectoryState ?? "n/a"}`
       );
     } else {
       if (isBeliefLoopProfile(profile)) {
@@ -4768,17 +4999,31 @@ export default function HomePage() {
   }
 
   async function requestGuardianObservation(params: {
+    runId: string;
     turnId: number;
+    agent: AgentRole;
     output: string;
     deterministicConstraint: string;
+    constraintIds: string[] | null;
+    reasoningDepth: number | null;
+    confidence: number | null;
+    elapsedTimeMs: number | null;
+    externalRefresh: number | null;
   }): Promise<GuardianObserveResponse> {
     return requestJSON<GuardianObserveResponse>("/api/guardian/observe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        runId: params.runId,
         turnId: params.turnId,
+        agentId: params.agent,
         output: params.output,
-        deterministicConstraint: params.deterministicConstraint
+        deterministicConstraint: params.deterministicConstraint,
+        constraintIds: params.constraintIds,
+        reasoningDepth: params.reasoningDepth,
+        confidence: params.confidence,
+        elapsedTime: params.elapsedTimeMs !== null ? params.elapsedTimeMs / 1000 : null,
+        externalRefresh: params.externalRefresh
       })
     }, { maxAttempts: 1 });
   }
@@ -4901,26 +5146,14 @@ export default function HomePage() {
       const elapsedTimeMs = Date.now() - llmStartMs;
 
       let guardianGateState: "CONTINUE" | "PAUSE" | "YIELD" | null = null;
+      let guardianStructuralRecommendation: "CONTINUE" | "SLOW" | "REOPEN" | "DEFER" | null = null;
+      let guardianReasonCodes: string[] = [];
+      let guardianEnergyV: number | null = null;
+      let guardianAuthorityTrend: number | null = null;
+      let guardianRevisionMode: string | null = null;
+      let guardianTrajectoryState: string | null = null;
+      let guardianTemporalResistanceDetected: number | null = null;
       let guardianObserveError: string | null = null;
-
-      if (guardianEnabled && guardianAvailableThisRun) {
-        try {
-          const guardianObservation = await requestGuardianObservation({
-            turnId: turn,
-            output: outputBytes,
-            deterministicConstraint: expectedBytes
-          });
-          guardianGateState = guardianObservation.gateState ?? null;
-          setGuardianRuntimeState((prev) => (prev === "connected" ? prev : "connected"));
-        } catch (error) {
-          guardianObserveError = error instanceof Error ? "Observer unavailable." : "Observer unavailable.";
-          guardianAvailableThisRun = false;
-          setGuardianRuntimeState("degraded");
-          setRunPhaseText(`${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Observer unavailable (fail-open)`);
-        }
-      } else if (guardianEnabled) {
-        guardianObserveError = "Observer unavailable.";
-      }
 
       const [rawHash, expectedHash] = await Promise.all([sha256Hex(outputBytes), sha256Hex(expectedBytes)]);
       const cv = outputBytes === expectedBytes ? 0 : 1;
@@ -5057,17 +5290,55 @@ export default function HomePage() {
       const previousReasoningDepth = previousTrace?.reasoningDepth ?? null;
       const depthDelta =
         reasoningDepth !== null && previousReasoningDepth !== null ? reasoningDepth - previousReasoningDepth : null;
+      const commitmentDeltaMin = isBeliefTriangle3AgentProfile(profile)
+        ? TRIANGLE_DRIFT_COMMITMENT_DELTA_MIN
+        : STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN;
+      const depthStableForDriftRule =
+        depthDelta !== null &&
+        (isBeliefTriangle3AgentProfile(profile) ? depthDelta <= TRIANGLE_DRIFT_DEPTH_EPSILON : depthDelta === 0);
       const driftRuleSatisfied =
         commitmentDelta !== null &&
         evidenceDelta !== null &&
-        depthDelta !== null &&
-        commitmentDelta > STRUCTURAL_DRIFT_COMMITMENT_DELTA_MIN &&
-        evidenceDelta === 0 &&
-        depthDelta === 0
+        depthStableForDriftRule &&
+        commitmentDelta > commitmentDeltaMin &&
+        evidenceDelta === 0
           ? 1
           : 0;
       const driftStreak = driftRuleSatisfied === 1 ? (previousTrace?.driftStreak ?? 0) + 1 : 0;
       const structuralEpistemicDrift = driftStreak >= STRUCTURAL_DRIFT_STREAK_MIN ? 1 : 0;
+
+      if (guardianEnabled && guardianAvailableThisRun) {
+        try {
+          const guardianObservation = await requestGuardianObservation({
+            runId: runConfig.runId,
+            turnId: turn,
+            agent,
+            output: outputBytes,
+            deterministicConstraint: expectedBytes,
+            constraintIds: currentConsensus?.evidenceIds ?? null,
+            reasoningDepth,
+            confidence: commitment,
+            elapsedTimeMs,
+            externalRefresh: turn === 1 || (constraintGrowth !== null && constraintGrowth > 0) ? 1 : 0
+          });
+          guardianGateState = guardianObservation.gateState ?? null;
+          guardianStructuralRecommendation = guardianObservation.structuralRecommendation ?? null;
+          guardianReasonCodes = Array.isArray(guardianObservation.reasonCodes) ? guardianObservation.reasonCodes : [];
+          guardianEnergyV = guardianObservation.triangleV ?? null;
+          guardianAuthorityTrend = guardianObservation.triangleDeltaV ?? null;
+          guardianRevisionMode = guardianObservation.triangleCircleMode ?? null;
+          guardianTrajectoryState = guardianObservation.triangleSpiralMode ?? null;
+          guardianTemporalResistanceDetected = guardianObservation.triangleInvariantViolation ?? null;
+          setGuardianRuntimeState((prev) => (prev === "connected" ? prev : "connected"));
+        } catch (error) {
+          guardianObserveError = error instanceof Error ? "Observer unavailable." : "Observer unavailable.";
+          guardianAvailableThisRun = false;
+          setGuardianRuntimeState("degraded");
+          setRunPhaseText(`${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Observer unavailable (fail-open)`);
+        }
+      } else if (guardianEnabled) {
+        guardianObserveError = "Observer unavailable.";
+      }
 
       const provisionalTrace: TurnTrace = {
         runId: runConfig.runId,
@@ -5109,12 +5380,13 @@ export default function HomePage() {
         contextLengthGrowth,
         devState,
         guardianGateState,
-        guardianStructuralRecommendation: null,
-        guardianReasonCodes: [],
-        guardianAuthorityTrend: null,
-        guardianRevisionMode: null,
-        guardianTrajectoryState: null,
-        guardianTemporalResistanceDetected: null,
+        guardianStructuralRecommendation,
+        guardianReasonCodes,
+        guardianEnergyV,
+        guardianAuthorityTrend,
+        guardianRevisionMode,
+        guardianTrajectoryState,
+        guardianTemporalResistanceDetected,
         guardianObserveError,
         reasoningDepth,
         authorityWeights,
@@ -5673,8 +5945,10 @@ export default function HomePage() {
               ) : null}
               {selectedProfile === "belief_drift_triangle_3agent" ? (
                 <p className="tiny">
-                  <strong>Script:</strong> Belief Drift Triangle (3-Agent): A proposer, B critic, C synthesizer, fixed evidence pool{" "}
-                  {BELIEF_TRIANGLE_EVIDENCE_IDS.join(", ")}.
+                  <strong>Script:</strong> Belief Drift Triangle (3-Agent): forced consensus lock (claim={TRIANGLE_FIXED_CLAIM}, stance=
+                  {TRIANGLE_FIXED_STANCE}), fixed evidence {TRIANGLE_FIXED_EVIDENCE_IDS.join(", ")}, confidence ratchet +
+                  {TRIANGLE_ESCALATION_DELTA.toFixed(2)} per turn (cap {TRIANGLE_ESCALATION_MAX_CONFIDENCE.toFixed(2)}), evidence freeze turns{" "}
+                  {TRIANGLE_FREEZE_START_TURN}-{TRIANGLE_FREEZE_END_TURN}.
                 </p>
               ) : null}
               <p className="tiny">
@@ -5759,6 +6033,14 @@ export default function HomePage() {
                   objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
                 </p>
                 <p className="mono">DAI latest: {liveDaiStatus}</p>
+                <p className="mono">Guardian V latest: {asFixed(monitorLatestTrace?.guardianEnergyV ?? null, 3)}</p>
+                <p className="mono">Guardian ΔV latest: {asFixed(monitorLatestTrace?.guardianAuthorityTrend ?? null, 3)}</p>
+                <p className="mono">
+                  Guardian circle/spiral:{" "}
+                  {monitorLatestTrace
+                    ? `${monitorLatestTrace.guardianRevisionMode ?? "n/a"} / ${monitorLatestTrace.guardianTrajectoryState ?? "n/a"}`
+                    : "n/a"}
+                </p>
                 <p className="mono">Guardian: {guardianStatusLabel}</p>
               </div>
             </section>
@@ -5772,6 +6054,12 @@ export default function HomePage() {
                 Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
               </p>
               <p className="mono">objective_failure (viewed turn 0/1): {monitorTrace ? monitorTrace.objectiveFailure : "n/a"}</p>
+              <p className="mono">Guardian V (viewed turn): {asFixed(monitorTrace?.guardianEnergyV ?? null, 3)}</p>
+              <p className="mono">Guardian ΔV (viewed turn): {asFixed(monitorTrace?.guardianAuthorityTrend ?? null, 3)}</p>
+              <p className="mono">
+                Guardian modes (circle/spiral):{" "}
+                {monitorTrace ? `${monitorTrace.guardianRevisionMode ?? "n/a"} / ${monitorTrace.guardianTrajectoryState ?? "n/a"}` : "n/a"}
+              </p>
               <div className="trace-viewer-toolbar">
                 <button type="button" onClick={viewPreviousTrace} disabled={!canViewPrevTrace}>
                   Prev turn

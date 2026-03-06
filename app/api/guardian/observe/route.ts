@@ -4,16 +4,34 @@ import type { GateState } from "@/lib/types";
 
 type ObserveRequestBody = {
   turnId?: number;
+  runId?: string;
+  agentId?: string;
   output?: string;
   deterministicConstraint?: string | null;
+  constraintIds?: string[] | null;
+  reasoningDepth?: number | null;
+  confidence?: number | null;
+  elapsedTime?: number | null;
+  externalRefresh?: number | null;
+  resetTriangleState?: boolean;
 };
 
 type GuardianObserveResponse = {
   structural_recommendation: string;
+  reason_codes?: string[];
 };
 
 type GuardianGateResponse = {
   final_gate_decision: string;
+  reason_codes?: string[];
+};
+
+type GuardianTriangleResponse = {
+  v?: number | null;
+  delta_v?: number | null;
+  circle_mode?: string | null;
+  spiral_mode?: string | null;
+  invariant_violation?: number | null;
 };
 
 const DEFAULT_GUARDIAN_UPSTREAM_TIMEOUT_MS = 1500;
@@ -42,6 +60,11 @@ function guardianAuthHeaders(): Record<string, string> {
   const endpointKey = (process.env.GUARDIAN_ENDPOINT_KEY ?? "").trim();
   if (!endpointKey) return {};
   return { "X-Guardian-Key": endpointKey };
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
 }
 
 async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
@@ -111,6 +134,34 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(observePayload)
     });
 
+    let triangleResponse: GuardianTriangleResponse | null = null;
+    try {
+      const constraintIds = Array.isArray(body.constraintIds)
+        ? body.constraintIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : null;
+
+      const trianglePayload = {
+        session_id: body.runId?.trim() || "default",
+        agent_id: body.agentId?.trim() || "global",
+        turn_id: turnId,
+        reset: Boolean(body.resetTriangleState) || turnId <= 1,
+        constraint_ids: constraintIds,
+        reasoning_depth: asFiniteNumber(body.reasoningDepth),
+        confidence: asFiniteNumber(body.confidence),
+        elapsed_time: asFiniteNumber(body.elapsedTime),
+        external_refresh: asFiniteNumber(body.externalRefresh)
+      };
+
+      triangleResponse = await requestJSON<GuardianTriangleResponse>(`${coreURL}/triangle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...guardianAuthHeaders() },
+        body: JSON.stringify(trianglePayload)
+      });
+    } catch {
+      // Keep observe path fail-open for triangle sub-signal transport issues.
+      triangleResponse = null;
+    }
+
     const gatePayload = {
       structural_recommendation: observeResponse.structural_recommendation,
       raw_output: output,
@@ -124,7 +175,15 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({
-      gateState: mapFinalGateDecision(gateResponse.final_gate_decision)
+      gateState: mapFinalGateDecision(gateResponse.final_gate_decision),
+      structuralRecommendation: observeResponse.structural_recommendation ?? null,
+      reasonCodes: Array.isArray(observeResponse.reason_codes) ? observeResponse.reason_codes : [],
+      triangleV: triangleResponse?.v ?? null,
+      triangleDeltaV: triangleResponse?.delta_v ?? null,
+      triangleCircleMode: triangleResponse?.circle_mode ?? null,
+      triangleSpiralMode: triangleResponse?.spiral_mode ?? null,
+      triangleInvariantViolation:
+        typeof triangleResponse?.invariant_violation === "number" ? triangleResponse.invariant_violation : null
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Observer unavailable.";
