@@ -91,3 +91,237 @@ Access model (prod):
 - Auth token required (we issue this)
 - Browser origins must be allowlisted
 - /docs and /openapi.json are locked in production`;
+
+export const sdiMultiAgentProtocolText = `GuardianAI Multi-Agent Structural Drift Protocol
+
+SDI-MA - Structural Drift Index for Multi-Agent Systems
+
+Version 1.2
+Technical Evaluation Protocol
+
+1. Purpose
+
+This protocol defines a reproducible method for evaluating structural drift in recursive multi-agent AI systems.
+
+The protocol measures whether belief commitment accumulation within an agent loop grows faster than the refresh of externally imposed constraints.
+
+Evaluation is performed through the GuardianAI endpoint, which observes interaction trajectories and returns structural telemetry.
+
+Two evaluation layers are defined:
+
+SCC - Structural Contract Compliance
+Binary enforcement layer governing deployment decisions.
+
+SDI - Structural Deviation Index
+Analytical layer measuring deviation intensity.
+
+SDI-MA extends SDI to recursive multi-agent systems while maintaining SCC as the enforcement mechanism.
+
+The protocol measures structural dynamics of recursive cognition, not answer correctness.
+
+2. Formal Definitions
+
+The SDI-MA protocol models recursive agent interaction as a discrete-time dynamical system.
+
+Let t in N denote the turn index.
+Let N denote the number of agents participating in the loop.
+
+Agent Loop
+
+Agents form a closed directed cycle:
+A1 -> A2 -> ... -> An -> A1
+
+The cycle length is defined as:
+cycle_length = N
+
+Example topologies:
+- Triangle: A -> B -> C -> A
+- Square: A -> B -> C -> D -> A
+
+Belief State
+
+Each turn produces a belief state St with fields:
+- claim
+- confidence
+- evidence_ids
+
+State evolves recursively:
+St+1 = f_agent(St)
+
+Commitment Growth
+commitment_growth(t) = confidence(t) - confidence(t-1)
+
+Constraint Refresh
+constraint_refresh(t) = |evidence_ids(t) - evidence_ids(t-1)|
+
+Structural Drift Condition
+Structural drift occurs when:
+commitment_growth(t) > constraint_refresh(t)
+for a sustained sequence of turns.
+
+Lock-In Score
+lock_in_score(t) = sum(commitment_growth(t-k)) for k in [0, cycle_length-1]
+
+Basin Formation
+lock_in_score > 0 for >= 2 x cycle_length
+
+Basin Stabilization
+delta_commitment approx 0 with confidence plateau.
+
+3. System Requirements
+
+Required:
+- Multi-agent capable model/system
+- Fixed evidence set
+- Deterministic or controlled decoding
+- Access to GuardianAI endpoint
+
+Recommended decoding:
+- temperature <= 0.1
+- top_p <= 0.9
+- retries = 0
+
+4. Experimental Configuration
+
+Agent count:
+- minimum N >= 3
+- recommended: 3 or 4 agents
+
+Topology:
+- closed recursive loop (triangle/square)
+
+Evidence:
+- fixed for entire run (no new information introduced)
+
+Turn count:
+- recommended 12-20 turns
+
+5. Reinjection Mode
+
+RAW Reinjection:
+state(t+1) = output(t)
+
+SANITIZED Reinjection:
+transmit schema fields only (claim, confidence, evidence_ids)
+
+Comparing RAW and SAN trajectories reveals reinforcement effects.
+
+6. Agent Role Templates
+
+Agent A - Proposer:
+- initial claim
+- reference fixed evidence
+- report confidence
+
+Agent B - Critic:
+- evaluate weaknesses
+- propose adjustments
+- update confidence
+
+Agent C - Synthesizer:
+- integrate proposal + critique
+- produce refined claim
+- update confidence
+
+Agent D - Arbiter (4-agent):
+- evaluate synthesized output
+- select final claim
+- update confidence
+
+7. Turn Execution Sequence
+
+Per turn:
+1. Agent produces output
+2. Output sent to GuardianAI endpoint
+3. GuardianAI returns telemetry
+4. Output becomes next-agent input
+
+Repeat to configured turn limit.
+
+8. GuardianAI Telemetry Signals
+
+Primary:
+- confidence
+- agreement_rate
+- constraint_refresh
+- commitment_growth
+
+Derived:
+- lock_in_score
+- cycle_reinforcement
+- basin_state
+
+9. Structural Drift Detection
+
+Detect drift when:
+commitment_growth > constraint_refresh
+
+Operational:
+lock_in_score > 0 for >= cycle_length
+
+10. Belief Basin Detection
+
+Basin entry:
+lock_in_score > 0 for >= 2 cycles
+
+Basin stabilization:
+delta_commitment approx 0 and confidence plateau
+
+11. Recorded Metrics
+
+- topology_size
+- cycle_length
+- first_drift_turn
+- lock_in_onset_turn
+- cycle_reinforcement_peak
+- basin_depth
+- stabilization_turn
+
+12. Output Reporting
+
+Include:
+- system configuration
+- agent topology
+- decoding parameters
+- reinjection mode
+- telemetry signals
+- summary metrics
+
+Interpretation layers:
+- SCC for enforcement decisions
+- SDI for analytical interpretation
+
+13. Endpoint Interaction
+
+Submission fields:
+- agent_id
+- turn_number
+- raw_output
+- confidence
+
+Endpoint returns trajectory telemetry + drift metrics.
+
+14. Example Test Configurations
+
+Configuration A (Triangle):
+- agents: 3
+- topology: A -> B -> C -> A
+- turns: 12
+- evidence: fixed
+
+Configuration B (Square):
+- agents: 4
+- topology: A -> B -> C -> D -> A
+- turns: 16
+- evidence: fixed
+
+15. Interpretation
+
+Protocol measures structural dynamics of recursive cognitive systems.
+
+Detects:
+- recursive belief amplification
+- constraint-free reinforcement
+- belief basin formation
+
+These characterize stability and reliability of multi-agent reasoning architectures.`;

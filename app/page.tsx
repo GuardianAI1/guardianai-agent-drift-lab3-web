@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { deterministicReadmeText, guardianSpecText } from "@/lib/docs";
+import { guardianSpecText, sdiMultiAgentProtocolText } from "@/lib/docs";
 import {
   defaultModelForProvider,
   detectKeyProvider,
@@ -18,7 +18,8 @@ const FIXED_RETRIES = 0;
 const DEFAULT_PROVIDER: APIProvider = "together";
 const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
 const DEFAULT_PROFILE: ExperimentProfile = "belief_drift_triangle_3agent";
-const DEFAULT_TURNS = 400;
+const DEFAULT_TURNS = 100;
+const TURN_BUDGET_PRESETS = [20, 30, 40, 50, 100, 200, 400] as const;
 const DEFAULT_MAX_TOKENS = 96;
 const DEFAULT_INTER_TURN_DELAY_MS = 50;
 const MIN_INTER_TURN_DELAY_MS = 0;
@@ -43,7 +44,7 @@ const STORAGE_API_PROVIDER_KEY = "guardianai_agent_lab_provider";
 const STORAGE_API_MODEL_KEY = "guardianai_agent_lab_model";
 const STORAGE_API_KEY_VALUE_KEY = "guardianai_agent_lab_api_key";
 const STORAGE_UI_DEFAULTS_VERSION_KEY = "guardianai_agent_lab_defaults_version";
-const UI_DEFAULTS_VERSION = "lab3-epistemic-drift-v3";
+const UI_DEFAULTS_VERSION = "lab3-epistemic-drift-v4";
 const CONTRACT_KEYS = ["step", "state", "meta"] as const;
 const CONTRACT_STATE_LITERAL = "running";
 const CONTRACT_META_LITERAL = "";
@@ -5693,7 +5694,7 @@ export default function HomePage() {
         ? providerOptions.find((item) => item.value === detectedKeyProvider)?.label ?? "Detected"
         : "Provided"
       : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
-  const guardianStatusLabel = guardianEnabled && guardianRuntimeState === "connected" ? "Connected" : "Not Connected";
+  const guardianStatusLabel = !guardianEnabled ? "Disabled" : guardianRuntimeState === "connected" ? "Connected" : guardianRuntimeState === "degraded" ? "Degraded" : "Offline";
   const guardianStatusDotClass = !guardianEnabled ? "warn" : guardianRuntimeState === "connected" ? "good" : guardianRuntimeState === "degraded" ? "bad" : "warn";
 
   const profileResults = results[selectedProfile];
@@ -5701,37 +5702,19 @@ export default function HomePage() {
   const sanitizedSummary = profileResults.sanitized;
   const selectedScriptCard = useMemo(() => scriptCardCopyForProfile(selectedProfile), [selectedProfile]);
   const protocolDocBody = useMemo(() => {
-    if (IS_PUBLIC_SIGNAL_MODE) {
-      return [
-        "Agent Drift Lab Protocol (Public)",
-        "",
-        `Selected script: ${selectedScriptCard.title}`,
-        `Objective: ${selectedScriptCard.objective}`,
-        `Loop: ${selectedScriptCard.loop}`,
-        "Invariant: authority must decay unless refreshed by external constraint.",
-        "",
-        "Public scope:",
-        "- Deterministic recursive state exchange.",
-        "- RAW vs SANITIZED reinjection comparison.",
-        "- Structural telemetry only (no semantic scoring).",
-        "",
-        "Runtime outline:",
-        publicScriptTextForProfile(selectedProfile)
-      ].join("\n");
-    }
     return [
-      `Agent Drift Lab Protocol`,
-      ``,
+      `GuardianAI Multi-agent Drift Lab Protocol`,
+      "",
       `Selected script: ${selectedScriptCard.title}`,
       `Objective: ${selectedScriptCard.objective}`,
       `Loop: ${selectedScriptCard.loop}`,
       `Contract keys: ${selectedScriptCard.contractKeys}`,
-      ``,
-      `Runtime script contract:`,
-      profileRuleText(selectedProfile),
-      ``,
-      `Reference protocol text:`,
-      deterministicReadmeText
+      "",
+      "Runtime script contract:",
+      IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(selectedProfile) : profileRuleText(selectedProfile),
+      "",
+      "SDI-MA protocol reference:",
+      sdiMultiAgentProtocolText
     ].join("\n");
   }, [selectedProfile, selectedScriptCard]);
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
@@ -6662,7 +6645,7 @@ export default function HomePage() {
             <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={40} height={40} priority />
             <div className="brand-copy">
               <strong>GuardianAI</strong>
-              <span>Agent Drift Lab</span>
+              <span>Multi-agent Drift Lab</span>
             </div>
           </div>
 
@@ -6801,14 +6784,32 @@ export default function HomePage() {
 
               <div className="field-block run-field-turns">
                 <label>Turns</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={4000}
-                  value={turnBudget}
-                  onChange={(event) => setTurnBudget(Math.max(1, Math.min(4000, Number(event.target.value) || 1)))}
-                  disabled={isRunning}
-                />
+                <div className="turn-field-controls">
+                  <select
+                    value={TURN_BUDGET_PRESETS.includes(turnBudget as (typeof TURN_BUDGET_PRESETS)[number]) ? String(turnBudget) : "custom"}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      if (value === "custom") return;
+                      setTurnBudget(Math.max(1, Math.min(4000, Number(value) || DEFAULT_TURNS)));
+                    }}
+                    disabled={isRunning}
+                  >
+                    {TURN_BUDGET_PRESETS.map((preset) => (
+                      <option key={preset} value={preset}>
+                        {preset}
+                      </option>
+                    ))}
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={1}
+                    max={4000}
+                    value={turnBudget}
+                    onChange={(event) => setTurnBudget(Math.max(1, Math.min(4000, Number(event.target.value) || 1)))}
+                    disabled={isRunning}
+                  />
+                </div>
               </div>
 
               <div className="field-block run-field-tokens">
@@ -7409,7 +7410,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {showProtocol ? <SectionDocModal title="Agent Drift Protocol" body={protocolDocBody} onClose={() => setShowProtocol(false)} /> : null}
+      {showProtocol ? <SectionDocModal title="SDI-MA Protocol" body={protocolDocBody} onClose={() => setShowProtocol(false)} /> : null}
       {showSpec ? <SectionDocModal title="Observer Specification + Access" body={guardianSpecText} onClose={() => setShowSpec(false)} /> : null}
     </main>
   );

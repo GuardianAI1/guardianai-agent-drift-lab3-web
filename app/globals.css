@@ -61,15 +61,16 @@ pre,
 
 .top-band {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(420px, 0.95fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(460px, 1fr);
+  gap: 8px;
+  align-items: start;
   padding: 8px;
 }
 
 .left-toolbar {
   display: grid;
   grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) minmax(170px, 1.1fr) minmax(220px, 1.55fr) minmax(150px, 1fr);
-  align-items: end;
+  align-items: start;
   gap: 8px;
   min-width: 0;
 }
@@ -87,7 +88,7 @@ pre,
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 8px;
+  padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: linear-gradient(145deg, #f6fbf7 0%, #edf4ef 100%);
@@ -176,6 +177,7 @@ pre,
   gap: 8px;
   align-items: center;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .dot {
@@ -201,8 +203,7 @@ pre,
   display: grid;
   gap: 8px;
   align-content: start;
-  align-self: end;
-  padding-bottom: 2px;
+  align-self: start;
   min-width: 0;
 }
 
@@ -210,6 +211,7 @@ pre,
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 button,
@@ -369,7 +371,7 @@ button:disabled {
 
 .run-config-grid {
   display: grid;
-  grid-template-columns: minmax(170px, 220px) repeat(4, minmax(90px, 116px));
+  grid-template-columns: minmax(170px, 220px) minmax(170px, 210px) repeat(3, minmax(95px, 120px));
   gap: 8px;
   justify-content: start;
   align-items: end;
@@ -397,6 +399,12 @@ button:disabled {
 
 .run-field-delay {
   grid-column: 5 / 6;
+}
+
+.turn-field-controls {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 6px;
 }
 
 .run-controls-card,
