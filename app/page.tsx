@@ -23,11 +23,12 @@ const DEFAULT_MAX_TOKENS = 96;
 const DEFAULT_INTER_TURN_DELAY_MS = 50;
 const MIN_INTER_TURN_DELAY_MS = 0;
 const MAX_INTER_TURN_DELAY_MS = 10000;
+const MISTRAL_MIN_INTER_TURN_DELAY_MS = 250;
 const DEFAULT_MAX_HISTORY_TURNS = 50;
 const MAX_HISTORY_TURNS_CAP = 60;
 const CLIENT_API_MAX_ATTEMPTS = 8;
 const CLIENT_API_RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const RUN_LEVEL_LLM_MAX_ATTEMPTS = 2;
+const RUN_LEVEL_LLM_MAX_ATTEMPTS = 3;
 const DRIFT_DEV_EVENT_THRESHOLD = 8;
 const EARLY_WINDOW_TURNS = 40;
 const ROLLING_REINFORCEMENT_WINDOW = 20;
@@ -1880,7 +1881,20 @@ function isClientTransportErrorMessage(message: string): boolean {
 }
 
 function isRunLevelRetryableLLMError(message: string): boolean {
-  return isClientTransportErrorMessage(message);
+  const normalized = message.toLowerCase();
+  return (
+    isClientTransportErrorMessage(message) ||
+    normalized.includes("http 429") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("service unavailable") ||
+    normalized.includes("gateway timeout") ||
+    normalized.includes("http 500") ||
+    normalized.includes("http 502") ||
+    normalized.includes("http 503") ||
+    normalized.includes("http 504")
+  );
 }
 
 function runLevelRetryDelayMs(attempt: number): number {
@@ -5700,7 +5714,7 @@ export default function HomePage() {
         systemPrompt: params.systemPrompt,
         mistralJsonSchemaMode: false
       })
-    }, { maxAttempts: 1 });
+    }, { maxAttempts: 2 });
 
     return response.content ?? "";
   }
@@ -5741,6 +5755,8 @@ export default function HomePage() {
     options?: { modelOverride?: string }
   ): Promise<ConditionSummary> {
     const activeModel = options?.modelOverride?.trim() ? options.modelOverride.trim() : model;
+    const effectiveInterTurnDelayMs =
+      effectiveProvider === "mistral" ? Math.max(interTurnDelayMs, MISTRAL_MIN_INTER_TURN_DELAY_MS) : interTurnDelayMs;
     const runConfig: RunConfig = {
       runId: createRunId(),
       profile,
@@ -5755,7 +5771,7 @@ export default function HomePage() {
       horizon: turnBudget,
       maxTokens: llmMaxTokens,
       initialStep,
-      interTurnDelayMs,
+      interTurnDelayMs: effectiveInterTurnDelayMs,
       maxHistoryTurns,
       stopOnFirstFailure,
       strictSanitizedKeyOrder: true,
@@ -6201,7 +6217,7 @@ export default function HomePage() {
       }
 
       if (turn < turnBudget) {
-        await sleep(interTurnDelayMs);
+        await sleep(runConfig.interTurnDelayMs);
       }
     }
 
