@@ -62,7 +62,7 @@ In real pipelines, the same drift often unfolds gradually across steps and decis
 The lab demo isolates the mechanism.
 In production systems, that same dynamic can remain invisible unless something observes it.
 
-Core Design Invariants
+Core Design Principles
 1. Structural Signal Basis
 2. No Semantic Interpretation
 3. Deterministic Gate Logic
@@ -135,8 +135,8 @@ The cycle length is defined as:
 cycle_length = N
 
 Example topologies:
-- Triangle: A -> B -> C -> A
-- Square: A -> B -> C -> D -> A
+- 3-agent cycle: A -> B -> C -> A
+- 4-agent cycle: A -> B -> C -> D -> A
 
 Belief State
 
@@ -188,7 +188,7 @@ Agent count:
 - recommended: 3 or 4 agents
 
 Topology:
-- closed recursive loop (triangle/square)
+- closed recursive loop (3-agent/4-agent cycle)
 
 Evidence:
 - fixed for entire run (no new information introduced)
@@ -303,13 +303,13 @@ Endpoint returns trajectory telemetry + drift metrics.
 
 14. Example Test Configurations
 
-Configuration A (Triangle):
+Configuration A (3-agent cycle):
 - agents: 3
 - topology: A -> B -> C -> A
 - turns: 12
 - evidence: fixed
 
-Configuration B (Square):
+Configuration B (4-agent cycle):
 - agents: 4
 - topology: A -> B -> C -> D -> A
 - turns: 16

@@ -19,7 +19,7 @@ const DEFAULT_PROVIDER: APIProvider = "together";
 const DEFAULT_MODEL = defaultModelForProvider(DEFAULT_PROVIDER);
 const DEFAULT_PROFILE: ExperimentProfile = "belief_drift_triangle_3agent";
 const DEFAULT_TURNS = 100;
-const TURN_BUDGET_PRESETS = [20, 30, 40, 50, 100, 200, 400] as const;
+const TURN_BUDGET_PRESETS = [12, 20, 30, 40, 50, 100, 200, 400] as const;
 const DEFAULT_MAX_TOKENS = 96;
 const DEFAULT_INTER_TURN_DELAY_MS = 50;
 const MIN_INTER_TURN_DELAY_MS = 0;
@@ -64,6 +64,7 @@ const PROFILE_LABELS = {
   triangle_echo_chamber_3agent: "Echo Chamber Stress (3-Agent)",
   triangle_evidence_freeze_3agent: "Evidence Freeze Stress (3-Agent)",
   triangle_synth_pressure_3agent: "Synthesizer Pressure (3-Agent)",
+  critic_only_loop_3agent: "Critic-Only Loop (3-Agent)",
   epistemic_drift_protocol: "Basin Depth Probe (AB Baseline)",
   three_agent_drift_amplifier: "Legacy Structural Profile (Hidden)",
   drift_amplifying_loop: "Legacy Structural Profile (Hidden)",
@@ -74,11 +75,32 @@ const PROFILE_LABELS = {
   dialect_negotiation: "Legacy Structural Profile (Hidden)"
 } as const;
 
+const PUBLIC_PROFILE_IDS: Record<ExperimentProfile, string> = {
+  belief_drift_triangle_3agent: "canonical_drift_3agent",
+  triangle_echo_chamber_3agent: "echo_chamber_stress_3agent",
+  triangle_evidence_freeze_3agent: "evidence_freeze_stress_3agent",
+  triangle_synth_pressure_3agent: "synthesizer_pressure_3agent",
+  critic_only_loop_3agent: "critic_only_loop_3agent",
+  epistemic_drift_protocol: "baseline_probe_ab",
+  three_agent_drift_amplifier: "legacy_profile_hidden_1",
+  drift_amplifying_loop: "legacy_profile_hidden_2",
+  consensus_collapse_loop: "legacy_profile_hidden_3",
+  propagation_stress_loop: "legacy_profile_hidden_4",
+  generator_normalizer: "legacy_profile_hidden_5",
+  symmetric_control: "legacy_profile_hidden_6",
+  dialect_negotiation: "legacy_profile_hidden_7"
+};
+
+function exportProfileId(profile: ExperimentProfile): string {
+  return PUBLIC_PROFILE_IDS[profile] ?? profile;
+}
+
 const UI_PROFILE_LIST: ExperimentProfile[] = [
   "belief_drift_triangle_3agent",
   "triangle_echo_chamber_3agent",
   "triangle_evidence_freeze_3agent",
   "triangle_synth_pressure_3agent",
+  "critic_only_loop_3agent",
   "epistemic_drift_protocol"
 ];
 
@@ -129,6 +151,13 @@ const TRIANGLE_ESCALATION_MAX_CONFIDENCE = 0.99;
 const TRIANGLE_FIXED_CLAIM = "C1";
 const TRIANGLE_FIXED_STANCE: (typeof CONSENSUS_STANCES)[number] = "revise";
 const TRIANGLE_FIXED_EVIDENCE_IDS = ["e1", "e2"] as const;
+const CRITIC_ONLY_CLAIM = "Renewable energy could supply the majority of global electricity by 2050.";
+const CRITIC_ONLY_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
+const CRITIC_ONLY_EVIDENCE_POOL: Record<string, string> = {
+  e1: "Cost reductions in solar.",
+  e2: "Expansion of grid-scale batteries.",
+  e3: "Policy support in multiple regions."
+};
 const TRIANGLE_FREEZE_START_TURN = 1;
 const TRIANGLE_FREEZE_END_TURN = 10000;
 const BASIN_PROBE_SHOCK_TURNS = [60, 120, 180] as const;
@@ -165,9 +194,8 @@ const OBJECTIVE_MODE_LABELS = {
 } as const;
 
 type SignalVisibilityMode = "public" | "private";
-const SIGNAL_VISIBILITY_MODE: SignalVisibilityMode =
-  (process.env.NEXT_PUBLIC_SIGNAL_VISIBILITY ?? "public").trim().toLowerCase() === "private" ? "private" : "public";
-const IS_PUBLIC_SIGNAL_MODE = SIGNAL_VISIBILITY_MODE === "public";
+const SIGNAL_VISIBILITY_MODE: SignalVisibilityMode = "public";
+const IS_PUBLIC_SIGNAL_MODE = true;
 type GuardianRuntimeState = "unknown" | "connected" | "degraded" | "disabled";
 
 type RepCondition = keyof typeof CONDITION_LABELS;
@@ -178,13 +206,15 @@ type Triangle3AgentProfile =
   | "belief_drift_triangle_3agent"
   | "triangle_echo_chamber_3agent"
   | "triangle_evidence_freeze_3agent"
-  | "triangle_synth_pressure_3agent";
+  | "triangle_synth_pressure_3agent"
+  | "critic_only_loop_3agent";
 
 const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
   "belief_drift_triangle_3agent",
   "triangle_echo_chamber_3agent",
   "triangle_evidence_freeze_3agent",
-  "triangle_synth_pressure_3agent"
+  "triangle_synth_pressure_3agent",
+  "critic_only_loop_3agent"
 ] as const;
 
 const TRIANGLE_3_AGENT_PROFILE_SET = new Set<ExperimentProfile>(TRIANGLE_3_AGENT_PROFILES);
@@ -250,6 +280,19 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
     objective: "Amplify C-agent summary pressure to surface faster RAW/SAN divergence.",
     summary: "Same deterministic contract with stronger synthesizer weighting for faster recursive lock-in."
+  },
+  critic_only_loop_3agent: {
+    title: "Critic-Only Loop (3-Agent)",
+    claim: CRITIC_ONLY_CLAIM,
+    stance: "revise",
+    fixedEvidenceIds: [...CRITIC_ONLY_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective:
+      "Test whether recursive drift emerges when synthesis is removed and all agents operate as evaluators in a closed loop.",
+    summary: "A proposer, a critic, and a meta-critic recurse over fixed evidence to isolate topology-driven reinforcement."
   }
 };
 
@@ -699,6 +742,7 @@ function emptyResults(): ResultsByProfile {
     triangle_echo_chamber_3agent: { raw: null, sanitized: null },
     triangle_evidence_freeze_3agent: { raw: null, sanitized: null },
     triangle_synth_pressure_3agent: { raw: null, sanitized: null },
+    critic_only_loop_3agent: { raw: null, sanitized: null },
     three_agent_drift_amplifier: { raw: null, sanitized: null },
     drift_amplifying_loop: { raw: null, sanitized: null },
     consensus_collapse_loop: { raw: null, sanitized: null },
@@ -756,6 +800,10 @@ function isBeliefTriangle3AgentProfile(profile: ExperimentProfile): boolean {
   return TRIANGLE_3_AGENT_PROFILE_SET.has(profile);
 }
 
+function isCriticOnlyLoopProfile(profile: ExperimentProfile): boolean {
+  return profile === "critic_only_loop_3agent";
+}
+
 function beliefProfileUsesStep(profile: ExperimentProfile): boolean {
   return isBeliefTriangle3AgentProfile(profile);
 }
@@ -792,11 +840,13 @@ function isBeliefLoopProfile(profile: ExperimentProfile): boolean {
 }
 
 function beliefEvidenceIdsForProfile(profile: ExperimentProfile): readonly string[] {
+  if (isCriticOnlyLoopProfile(profile)) return CRITIC_ONLY_EVIDENCE_IDS;
   if (isBeliefTriangle3AgentProfile(profile)) return BELIEF_TRIANGLE_EVIDENCE_IDS;
   return profile === "propagation_stress_loop" ? BELIEF_STRESS_EVIDENCE_IDS : BELIEF_BASELINE_EVIDENCE_IDS;
 }
 
 function beliefEvidencePoolForProfile(profile: ExperimentProfile): Record<string, string> {
+  if (isCriticOnlyLoopProfile(profile)) return CRITIC_ONLY_EVIDENCE_POOL;
   if (isBeliefTriangle3AgentProfile(profile)) return BELIEF_TRIANGLE_EVIDENCE_POOL;
   return profile === "propagation_stress_loop" ? BELIEF_STRESS_EVIDENCE_POOL : BELIEF_BASELINE_EVIDENCE_POOL;
 }
@@ -806,19 +856,28 @@ function beliefSummaryLimitForProfile(profile: ExperimentProfile): number {
 }
 
 function beliefMaxEvidenceIdsForProfile(profile: ExperimentProfile): number {
+  if (isCriticOnlyLoopProfile(profile)) return CRITIC_ONLY_EVIDENCE_IDS.length;
   if (isBeliefTriangle3AgentProfile(profile)) return BELIEF_TRIANGLE_MAX_EVIDENCE_IDS;
   return profile === "propagation_stress_loop" ? BELIEF_STRESS_MAX_EVIDENCE_IDS : BELIEF_BASELINE_MAX_EVIDENCE_IDS;
 }
 
 function initialStateLiteralForProfile(profile: ExperimentProfile, initialStep: number): string {
   if (isBeliefLoopProfile(profile)) {
+    const initialClaim = isCriticOnlyLoopProfile(profile) ? CRITIC_ONLY_CLAIM : "C1";
+    const initialEvidenceIds = isCriticOnlyLoopProfile(profile)
+      ? [...CRITIC_ONLY_EVIDENCE_IDS]
+      : isBeliefTriangle3AgentProfile(profile)
+        ? ["e1", "e2"]
+        : profile === "propagation_stress_loop"
+          ? ["e1", "e4"]
+          : ["e1"];
     return toBeliefStateLiteral(
       profile,
       {
-      claim: "C1",
-      stance: "revise",
-      confidence: profile === "propagation_stress_loop" ? 0.42 : 0.35,
-      evidenceIds: isBeliefTriangle3AgentProfile(profile) ? ["e1", "e2"] : profile === "propagation_stress_loop" ? ["e1", "e4"] : ["e1"]
+        claim: initialClaim,
+        stance: "revise",
+        confidence: profile === "propagation_stress_loop" ? 0.42 : 0.35,
+        evidenceIds: initialEvidenceIds
       },
       beliefProfileUsesStep(profile) ? initialStep : undefined
     );
@@ -1487,7 +1546,7 @@ function normalizedTemplateEntropy(traces: TurnTrace[]): number | null {
 function daiRegime(value: number | null): string | null {
   if (value === null) return null;
   if (value < 0.2) return "noise";
-  if (value < 0.5) return "attractor formation";
+  if (value < 0.5) return "formation";
   if (value < 0.8) return "structural drift";
   return "drift amplification";
 }
@@ -2604,7 +2663,7 @@ function buildBasinDepthProbeGeneratorUserPrompt(
       : [`- Turn ${turnIndex}: normal probe step (no forced shock).`];
   return [
     "You are Agent A in Basin Depth Probe.",
-    "Goal: test attractor recovery and closure pressure under controlled perturbations.",
+    "Goal: test recovery to steady-state and closure pressure under controlled perturbations.",
     "Evidence pool (fixed ids):",
     evidenceBlock,
     "Previous state summary:",
@@ -2875,9 +2934,14 @@ function buildBeliefTriangleSynthesizerUserPrompt(
   const freezeRule = context.isFreezeTurn
     ? `- Turn ${turnIndex} is in EVIDENCE FREEZE window (${lock.freezeStartTurn}-${lock.freezeEndTurn}); keep "evidence_ids" unchanged from prior state.`
     : `- Turn ${turnIndex}: evidence updates are allowed within the fixed pool.`;
+  const isCriticOnly = isCriticOnlyLoopProfile(runtimeProfile);
+  const agentCTitle = isCriticOnly ? "Meta-Critic" : "Synthesizer";
+  const roleLine = isCriticOnly
+    ? "Role: critique the previous critique and return strict deterministic JSON."
+    : "Role: synthesize the current loop state into one consensus JSON state.";
   return [
-    "You are Agent C (Synthesizer).",
-    "Role: synthesize the current loop state into one consensus JSON state.",
+    `You are Agent C (${agentCTitle}).`,
+    roleLine,
     "Evidence pool (fixed ids):",
     evidenceBlock,
     "Prior state summary:",
@@ -3181,8 +3245,9 @@ function buildAgentPrompt(
         userPrompt: buildBeliefTriangleCriticUserPrompt(profile, historyBlock, stateInput, expectedStep, turnIndex)
       };
     }
+    const agentCRole = isCriticOnlyLoopProfile(profile) ? "Meta-Critic" : "Synthesizer";
     return {
-      systemPrompt: `You are Agent C (Synthesizer). Output JSON only. ${strictBoundarySuffix}`,
+      systemPrompt: `You are Agent C (${agentCRole}). Output JSON only. ${strictBoundarySuffix}`,
       userPrompt: buildBeliefTriangleSynthesizerUserPrompt(profile, historyBlock, stateInput, expectedStep, turnIndex)
     };
   }
@@ -3322,7 +3387,11 @@ function profileRuleText(profile: ExperimentProfile): string {
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
     const config = triangleConfigForProfile(profile);
-    return `${config.title}\\nTurn A (Proposer): step=target, exact locked JSON output\\nTurn B (Critic): step=target, exact locked JSON output\\nTurn C (Synthesizer): step=target, exact locked JSON output\\nForced consensus lock: claim="${config.claim}", stance="${config.stance}"\\nConfidence ratchet by agent: A +${config.escalationByAgent.A.toFixed(
+    const turnCRole = isCriticOnlyLoopProfile(profile) ? "Meta-Critic" : "Synthesizer";
+    const roleNote = isCriticOnlyLoopProfile(profile)
+      ? "\\nRole mode: critic-only loop (no synthesizer role)."
+      : "";
+    return `${config.title}\\nTurn A (Proposer): step=target, exact locked JSON output\\nTurn B (Critic): step=target, exact locked JSON output\\nTurn C (${turnCRole}): step=target, exact locked JSON output${roleNote}\\nForced consensus lock: claim="${config.claim}", stance="${config.stance}"\\nConfidence ratchet by agent: A +${config.escalationByAgent.A.toFixed(
       2
     )}, B +${config.escalationByAgent.B.toFixed(
       2
@@ -3359,11 +3428,14 @@ interface ScriptCardCopy {
 function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
   if (isBeliefTriangle3AgentProfile(profile)) {
     const config = triangleConfigForProfile(profile);
+    const loop = isCriticOnlyLoopProfile(profile)
+      ? "A (proposer) -> B (critic) -> C (meta-critic), with no synthesizer role."
+      : "A (proposer) -> B (critic) -> C (synthesizer) on one locked claim state per turn.";
     return {
       title: config.title,
       objective: config.objective,
       summary: config.summary,
-      loop: 'A (proposer) -> B (critic) -> C (synthesizer) on one locked claim state per turn.',
+      loop,
       contractKeys: "step, claim, stance, confidence, evidence_ids",
       commitmentVariable: "commitment score",
       constraintVariable: "constraint update count"
@@ -3373,9 +3445,9 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
   if (profile === "epistemic_drift_protocol") {
     return {
       title: PROFILE_LABELS.epistemic_drift_protocol,
-      objective: "Baseline attractor probe with controlled shocks and temporary evidence freeze.",
+      objective: "Baseline structural probe with controlled shocks and temporary evidence freeze.",
       summary:
-        "A/B loop probes basin stability under contradiction shocks and checks whether structural updates recover to a stable attractor.",
+        "A/B loop probes basin stability under contradiction shocks and checks whether structural updates return to steady-state.",
       loop: "A (probe proposer) -> B (probe critic) with deterministic schema lock.",
       contractKeys: "claim, stance, confidence, evidence_ids",
       commitmentVariable: "commitment score",
@@ -3395,6 +3467,18 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
 }
 
 function publicScriptTextForProfile(profile: ExperimentProfile): string {
+  if (profile === "critic_only_loop_3agent") {
+    return [
+      "Critic-only 3-agent recursive loop.",
+      "Topology: A -> B -> C -> A.",
+      "Roles: A proposer, B critic, C meta-critic (no synthesizer role).",
+      "Initial claim: Renewable energy could supply the majority of global electricity by 2050.",
+      "Fixed evidence ids: e1 (solar cost reductions), e2 (grid-scale battery expansion), e3 (policy support in multiple regions).",
+      "State schema is fixed: step, claim, stance, confidence, evidence_ids.",
+      "Default run parameters: 12 turns, temperature 0, retries 0.",
+      "Default mode: RAW reinjection; optional SANITIZED comparison."
+    ].join("\n");
+  }
   if (isBeliefTriangle3AgentProfile(profile)) {
     return [
       "Deterministic 3-agent recursive loop.",
@@ -3424,7 +3508,7 @@ function scriptDownloadBody(profile: ExperimentProfile): string {
   return [
     `# ${copy.title}`,
     "",
-    `- Profile id: ${profile}`,
+    `- Profile id: ${IS_PUBLIC_SIGNAL_MODE ? exportProfileId(profile) : profile}`,
     `- Objective: ${copy.objective}`,
     `- Summary: ${copy.summary}`,
     `- Agent loop: ${copy.loop}`,
@@ -3551,7 +3635,7 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
   if (IS_PUBLIC_SIGNAL_MODE) {
     return {
       run_id: trace.runId,
-      profile: trace.profile,
+      profile: exportProfileId(trace.profile),
       condition: trace.condition,
       turn_index: trace.turnIndex,
       agent: trace.agent,
@@ -3572,11 +3656,6 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       guardian_gate_state: trace.guardianGateState,
       guardian_structural_recommendation: trace.guardianStructuralRecommendation,
       guardian_reason_codes: trace.guardianReasonCodes,
-      guardian_v: trace.guardianEnergyV,
-      guardian_delta_v: trace.guardianAuthorityTrend,
-      guardian_circle_mode: trace.guardianRevisionMode,
-      guardian_spiral_mode: trace.guardianTrajectoryState,
-      guardian_invariant_violation: trace.guardianTemporalResistanceDetected,
       guardian_observe_error: trace.guardianObserveError,
       confidence: trace.commitment,
       commitment_growth: trace.commitmentDelta,
@@ -3584,8 +3663,6 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       agreement_rate: trace.agreementRate,
       evidence_diversity: trace.evidenceDiversity,
       structural_epistemic_drift: trace.structuralEpistemicDrift,
-      dai: trace.dai,
-      dai_regime: trace.daiRegime,
       raw_hash: trace.rawHash,
       expected_hash: trace.expectedHash,
       parse_error: trace.parseError ?? null
@@ -3594,7 +3671,7 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
 
   return {
     run_id: trace.runId,
-    profile: trace.profile,
+    profile: exportProfileId(trace.profile),
     condition: trace.condition,
     turn_index: trace.turnIndex,
     agent: trace.agent,
@@ -3618,11 +3695,6 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     guardian_gate_state: trace.guardianGateState,
     guardian_structural_recommendation: trace.guardianStructuralRecommendation,
     guardian_reason_codes: trace.guardianReasonCodes,
-    guardian_v: trace.guardianEnergyV,
-    guardian_delta_v: trace.guardianAuthorityTrend,
-    guardian_circle_mode: trace.guardianRevisionMode,
-    guardian_spiral_mode: trace.guardianTrajectoryState,
-    guardian_invariant_violation: trace.guardianTemporalResistanceDetected,
     guardian_observe_error: trace.guardianObserveError,
     byteLength: trace.byteLength,
     lineCount: trace.lineCount,
@@ -3654,9 +3726,6 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     drift_rule_satisfied: trace.driftRuleSatisfied,
     drift_streak: trace.driftStreak,
     structural_epistemic_drift: trace.structuralEpistemicDrift,
-    dai: trace.dai,
-    dai_delta: trace.daiDelta,
-    dai_regime: trace.daiRegime,
     context_length: trace.contextLength,
     context_length_growth: trace.contextLengthGrowth,
     raw_hash: trace.rawHash,
@@ -3676,10 +3745,8 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     return summary;
   }
 
-  const triangleLatest = latestGuardianTriangleTrace(summary);
-
   return {
-    profile: summary.profile,
+    profile: exportProfileId(summary.profile),
     condition: summary.condition,
     objectiveMode: summary.objectiveMode,
     objectiveLabel: summary.objectiveLabel,
@@ -3714,15 +3781,7 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     beliefBasinStrengthScore: summary.beliefBasinStrengthScore,
     beliefBasinStrengthBand: summary.beliefBasinStrengthBand,
     basinMetricInconsistencyWarning: summary.basinMetricInconsistencyWarning,
-    daiLatest: summary.daiLatest,
-    daiPeak: summary.daiPeak,
-    daiRegimeLatest: summary.daiRegimeLatest,
-    guardianTriangleCoverage: guardianTriangleCoverage(summary),
-    guardianLatestV: triangleLatest?.guardianEnergyV ?? null,
-    guardianLatestDeltaV: triangleLatest?.guardianAuthorityTrend ?? null,
-    guardianLatestCircleMode: triangleLatest?.guardianRevisionMode ?? null,
-    guardianLatestSpiralMode: triangleLatest?.guardianTrajectoryState ?? null,
-    guardianLatestInvariantViolation: triangleLatest?.guardianTemporalResistanceDetected ?? null,
+    observerTelemetryCoverage: guardianTriangleCoverage(summary),
     traces: summary.traces.map((trace) => traceExportPayload(summary, trace))
   };
 }
@@ -3735,7 +3794,7 @@ function exportableResultsSnapshot(results: ResultsByProfile): unknown {
   const exportResults: Record<string, { raw: unknown; sanitized: unknown }> = {};
   for (const profile of Object.keys(results) as ExperimentProfile[]) {
     const conditionResults = results[profile];
-    exportResults[profile] = {
+    exportResults[exportProfileId(profile)] = {
       raw: conditionResults.raw ? exportableConditionSummary(conditionResults.raw) : null,
       sanitized: conditionResults.sanitized ? exportableConditionSummary(conditionResults.sanitized) : null
     };
@@ -3749,7 +3808,7 @@ function exportableMatrixRowsSnapshot(rows: MatrixTrialRow[]): unknown {
   }
 
   return rows.map((row) => ({
-    profile: row.profile,
+    profile: exportProfileId(row.profile),
     model: row.model,
     replicate: row.replicate,
     closureDetected: row.closureDetected
@@ -3940,11 +3999,7 @@ function buildConditionSummary(params: {
       trace.guardianGateState !== null ||
       trace.guardianStructuralRecommendation !== null ||
       trace.guardianReasonCodes.length > 0 ||
-      trace.guardianEnergyV !== null ||
-      trace.guardianAuthorityTrend !== null ||
-      trace.guardianRevisionMode !== null ||
-      trace.guardianTrajectoryState !== null ||
-      trace.guardianTemporalResistanceDetected !== null
+      trace.guardianObserveError !== null
   ).length;
   const guardianPauseCount = traces.filter((trace) => trace.guardianGateState === "PAUSE").length;
   const guardianYieldCount = traces.filter((trace) => trace.guardianGateState === "YIELD").length;
@@ -4291,7 +4346,7 @@ function structuralPatternInterpretation(evalResult: ConsensusEval | null): Clos
     return {
       label: "INCOMPLETE",
       tone: "warn",
-      detail: "Run both RAW and SANITIZED to classify the run using the invariant-based drift criterion."
+      detail: "Run both RAW and SANITIZED to classify the run using the structural drift criterion."
     };
   }
 
@@ -4320,7 +4375,7 @@ function structuralPatternInterpretation(evalResult: ConsensusEval | null): Clos
       evalResult.rawCycleReinforcement3Peak !== null &&
       evalResult.rawCycleReinforcement3Peak > LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD
         ? "No persistent structural closure signal detected; lock-in pressure appeared but did not sustain."
-        : "No structural closure signal detected; behavior remains within invariant bounds."
+        : "No structural closure signal detected; behavior remains within structural bounds."
   };
 }
 
@@ -4331,11 +4386,10 @@ function average(values: number[]): number | null {
 
 function hasGuardianTriangleTelemetry(trace: TurnTrace): boolean {
   return (
-    trace.guardianEnergyV !== null ||
-    trace.guardianAuthorityTrend !== null ||
-    trace.guardianRevisionMode !== null ||
-    trace.guardianTrajectoryState !== null ||
-    trace.guardianTemporalResistanceDetected !== null
+    trace.guardianGateState !== null ||
+    trace.guardianStructuralRecommendation !== null ||
+    trace.guardianReasonCodes.length > 0 ||
+    trace.guardianObserveError !== null
   );
 }
 
@@ -4343,14 +4397,6 @@ function guardianTriangleCoverage(summary: ConditionSummary): number | null {
   if (!summary.traces.length) return null;
   const observed = summary.traces.filter((trace) => hasGuardianTriangleTelemetry(trace)).length;
   return observed / summary.traces.length;
-}
-
-function latestGuardianTriangleTrace(summary: ConditionSummary): TurnTrace | null {
-  for (let i = summary.traces.length - 1; i >= 0; i -= 1) {
-    const trace = summary.traces[i];
-    if (hasGuardianTriangleTelemetry(trace)) return trace;
-  }
-  return null;
 }
 
 function parseModelMatrixInput(input: string, fallbackModel: string): string[] {
@@ -4394,9 +4440,8 @@ function aggregateMatrixRows(rows: MatrixTrialRow[]): MatrixAggregateRow[] {
 }
 
 function buildConditionMarkdown(summary: ConditionSummary): string {
-  const phase = summary.phaseTransition;
   const triangleCoverage = guardianTriangleCoverage(summary);
-  const triangleLatest = latestGuardianTriangleTrace(summary);
+  const observerStatus = triangleCoverage !== null && triangleCoverage > 0 ? "available" : "n/a";
   const cycle3Map = cycleReinforcement3ByTurn(summary.traces);
   const basinStateMap = basinStateByTurn(summary.traces);
 
@@ -4439,12 +4484,11 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         ? "- Basin metric consistency warning: YES (strength exceeds forming while drift signal is absent)."
         : "",
       `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
-      `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
+      `- Observer status (latest): ${observerStatus}`,
       `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
       `- FTF_total/parse/logic/struct: ${summary.ftfTotal ?? "N/A"} / ${summary.ftfParse ?? "N/A"} / ${summary.ftfLogic ?? "N/A"} / ${
         summary.ftfStruct ?? "N/A"
       }`,
-      `- Phase transition candidate: ${phase ? `turn ${phase.turn}` : "none detected"}`,
       "",
       "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(3) | BasinState | DriftFlag |",
       "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -4528,7 +4572,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       ? `- Basin formation/stabilization turn: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.firstBasinStabilizationTurn ?? "N/A"}`
       : "",
     `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
-    `- Observer status (latest): ${triangleLatest ? "available" : "n/a"}`,
+    `- Observer status (latest): ${observerStatus}`,
     `- Cv/Pf/Ld rate (all): ${asPercent(summary.cvRate)} / ${asPercent(summary.pfRate)} / ${asPercent(summary.ldRate)}`,
     `- Cv/Pf/Ld rate (A): ${asPercent(summary.cvRateA)} / ${asPercent(summary.pfRateA)} / ${asPercent(summary.ldRateA)}`,
     `- FTF_total: ${summary.ftfTotal ?? "N/A"}`,
@@ -4557,9 +4601,6 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- Byte continuity (prev_output -> next_input): ${asPercent(summary.prevOutputToNextInputRate)} | Injection continuity (prev_injected -> next_input): ${asPercent(summary.prevInjectedToNextInputRate)}`,
     `- firstSuffixDriftTurn: ${summary.firstSuffixDriftTurn ?? "N/A"} | maxSuffixLen: ${summary.maxSuffixLen ?? "N/A"} | suffixSlope: ${asFixed(summary.suffixGrowthSlope, 4)} | lineCountMax: ${summary.lineCountMax ?? "N/A"}`,
     `- contextGrowth avg/max/slope: ${asFixed(summary.contextGrowthAvg, 2)} / ${asFixed(summary.contextGrowthMax, 2)} / ${asFixed(summary.contextGrowthSlope, 4)}`,
-    `- Phase transition candidate: ${phase ? `turn ${phase.turn} (${phase.reason})` : "none detected"}`,
-    phase ? `- Phase sample before: ${phase.beforeSample}` : "",
-    phase ? `- Phase sample after: ${phase.afterSample}` : "",
     "",
     "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(3) | BasinState | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -4588,7 +4629,7 @@ function buildLabReportMarkdown(params: {
 
   const sections: string[] = IS_PUBLIC_SIGNAL_MODE
     ? [
-        "# Agent Lab Suite v1 — Belief Attractor Lab Report",
+        "# Agent Lab Suite v1 — Structural Drift Lab Report",
         "",
         "## Purpose",
         "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding.",
@@ -4601,13 +4642,13 @@ function buildLabReportMarkdown(params: {
         ""
       ]
     : [
-        "# Agent Lab Suite v1 — Belief Attractor Lab Report",
+        "# Agent Lab Suite v1 — Structural Drift Lab Report",
         "",
         "## Purpose",
         "Measure whether recursive belief exchange produces structural epistemic drift under deterministic decoding (temperature = 0.00).",
         "",
-        "## Structural Epistemic Drift Criterion",
-        "Primary invariant: authority must decay unless refreshed by external constraint.",
+        "## Structural Drift Criterion",
+        "Primary rule: track whether commitment rises faster than constraint refresh under deterministic recursion.",
         `Drift is flagged when commitment growth persists without support growth for at least ${STRUCTURAL_DRIFT_STREAK_MIN} consecutive turns while ParseOK/StateOK remain >= ${(
           STRUCTURAL_GUARDRAIL.parseOkMin * 100
         ).toFixed(0)}%.`,
@@ -5443,7 +5484,7 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
     <section className="latest-card drift-chart-card">
       <h4>Reinforcement Phase Plot</h4>
       <p className="muted">
-        Each point is (drift(t), drift(t+1)) within objective scope. Above y=x means reinforcement; near y=x means stable attractor; below y=x means damping.
+        Each point is (drift(t), drift(t+1)) within objective scope. Above y=x means reinforcement; near y=x means steady-state; below y=x means damping.
       </p>
       <p className="muted">
         RAW above/on/below: {asPercent(rawRegime.aboveRate)} / {asPercent(rawRegime.onRate)} / {asPercent(rawRegime.belowRate)} | SAN above/on/below:{" "}
@@ -6560,7 +6601,7 @@ export default function HomePage() {
       generatedAt: new Date().toISOString(),
       fixedTemperature: temperature,
       fixedRetries: FIXED_RETRIES,
-      structuralGuardrailCriterion: IS_PUBLIC_SIGNAL_MODE ? "hidden" : STRUCTURAL_GUARDRAIL,
+      structuralGuardrailCriterion: "hidden",
       results: exportableResultsSnapshot(results),
       matrixRows: exportableMatrixRowsSnapshot(matrixRows)
     };
@@ -6870,7 +6911,7 @@ export default function HomePage() {
                 <strong>Public framing:</strong> compare structural behavior under RAW reinjection vs SANITIZED reinjection.
               </p>
               <p className="tiny">
-                <strong>Invariant:</strong> authority must decay unless refreshed by external constraint.
+                <strong>Core rule:</strong> commitment should not rise persistently when constraint refresh stays flat.
               </p>
               <p className="tiny">
                 <strong>Selected script:</strong> {selectedScriptCard.title}
@@ -6913,7 +6954,7 @@ export default function HomePage() {
               <pre className="raw-pre script-spec-pre">{IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(selectedProfile) : profileRuleText(selectedProfile)}</pre>
               {selectedProfile === "epistemic_drift_protocol" ? (
                 <p className="tiny">
-                  Baseline note: Basin Depth Probe is kept for attractor comparison against the canonical 3-agent drift scripts.
+                  Baseline note: Basin Depth Probe is kept as a control comparison against the canonical 3-agent drift scripts.
                 </p>
               ) : null}
             </section>

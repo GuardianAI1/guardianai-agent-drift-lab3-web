@@ -177,13 +177,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       gateState: mapFinalGateDecision(gateResponse.final_gate_decision),
       structuralRecommendation: observeResponse.structural_recommendation ?? null,
-      reasonCodes: Array.isArray(observeResponse.reason_codes) ? observeResponse.reason_codes : [],
-      triangleV: triangleResponse?.v ?? null,
-      triangleDeltaV: triangleResponse?.delta_v ?? null,
-      triangleCircleMode: triangleResponse?.circle_mode ?? null,
-      triangleSpiralMode: triangleResponse?.spiral_mode ?? null,
-      triangleInvariantViolation:
-        typeof triangleResponse?.invariant_violation === "number" ? triangleResponse.invariant_violation : null
+      reasonCodes: Array.isArray(observeResponse.reason_codes) ? observeResponse.reason_codes : []
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Observer unavailable.";
