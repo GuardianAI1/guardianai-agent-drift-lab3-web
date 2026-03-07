@@ -61,6 +61,8 @@ const CONDITION_LABELS = {
 const PROFILE_LABELS = {
   belief_drift_triangle_3agent: "LAB3 - Controlled Perturbation Propagation (3-Agent)",
   belief_drift_triangle_3agent_isolation: "LAB3 - Propagation Isolation (3-Agent)",
+  belief_drift_triangle_9agent_isolation: "LAB3 - Propagation Isolation (9-Agent)",
+  belief_drift_triangle_27agent_isolation: "LAB3 - Propagation Isolation (27-Agent)",
   belief_drift_triangle_9agent: "Canonical Drift Run (9-Agent)",
   belief_drift_triangle_27agent: "Canonical Drift Run (27-Agent)",
   triangle_echo_chamber_3agent: "Echo Chamber Stress (3-Agent)",
@@ -80,6 +82,8 @@ const PROFILE_LABELS = {
 const PUBLIC_PROFILE_IDS: Record<ExperimentProfile, string> = {
   belief_drift_triangle_3agent: "lab3_controlled_perturbation_3agent",
   belief_drift_triangle_3agent_isolation: "lab3_propagation_isolation_3agent",
+  belief_drift_triangle_9agent_isolation: "lab3_propagation_isolation_9agent",
+  belief_drift_triangle_27agent_isolation: "lab3_propagation_isolation_27agent",
   belief_drift_triangle_9agent: "canonical_drift_9agent",
   belief_drift_triangle_27agent: "canonical_drift_27agent",
   triangle_echo_chamber_3agent: "echo_chamber_stress_3agent",
@@ -100,7 +104,12 @@ function exportProfileId(profile: ExperimentProfile): string {
   return PUBLIC_PROFILE_IDS[profile] ?? profile;
 }
 
-const UI_PROFILE_LIST: ExperimentProfile[] = ["belief_drift_triangle_3agent", "belief_drift_triangle_3agent_isolation"];
+const UI_PROFILE_LIST: ExperimentProfile[] = [
+  "belief_drift_triangle_3agent",
+  "belief_drift_triangle_3agent_isolation",
+  "belief_drift_triangle_9agent_isolation",
+  "belief_drift_triangle_27agent_isolation"
+];
 
 const CONSENSUS_STANCES = ["support", "reject", "revise"] as const;
 const BELIEF_TRIANGLE_EVIDENCE_IDS = ["e1", "e2", "e3", "e4"] as const;
@@ -236,6 +245,8 @@ type AgentRole = "A" | "B" | "C";
 type Triangle3AgentProfile =
   | "belief_drift_triangle_3agent"
   | "belief_drift_triangle_3agent_isolation"
+  | "belief_drift_triangle_9agent_isolation"
+  | "belief_drift_triangle_27agent_isolation"
   | "belief_drift_triangle_9agent"
   | "belief_drift_triangle_27agent"
   | "triangle_echo_chamber_3agent"
@@ -246,6 +257,8 @@ type Triangle3AgentProfile =
 const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
   "belief_drift_triangle_3agent",
   "belief_drift_triangle_3agent_isolation",
+  "belief_drift_triangle_9agent_isolation",
+  "belief_drift_triangle_27agent_isolation",
   "belief_drift_triangle_9agent",
   "belief_drift_triangle_27agent",
   "triangle_echo_chamber_3agent",
@@ -257,8 +270,8 @@ const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
 const TRIANGLE_3_AGENT_PROFILE_SET = new Set<ExperimentProfile>(TRIANGLE_3_AGENT_PROFILES);
 
 function triangleAgentCountForProfile(profile: ExperimentProfile): number {
-  if (profile === "belief_drift_triangle_9agent") return 9;
-  if (profile === "belief_drift_triangle_27agent") return 27;
+  if (profile === "belief_drift_triangle_9agent" || profile === "belief_drift_triangle_9agent_isolation") return 9;
+  if (profile === "belief_drift_triangle_27agent" || profile === "belief_drift_triangle_27agent_isolation") return 27;
   return 3;
 }
 
@@ -307,6 +320,34 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     objective: "Isolate recursive propagation by keeping SANITIZED fixed after perturbation while RAW remains recursive.",
     summary:
       "Turns 1-5 keep ground-truth value stable, turn 6 injects a +10% value error once, then RAW recursively amplifies while SANITIZED recursively damps error toward ground truth."
+  },
+  belief_drift_triangle_9agent_isolation: {
+    title: "LAB3 - Propagation Isolation (9-Agent)",
+    claim: LAB3_TRUE_CLAIM,
+    stance: TRIANGLE_FIXED_STANCE,
+    fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective:
+      "Scale LAB3 isolation to 9 agents with identical perturbation protocol and deterministic recursive reinjection dynamics.",
+    summary:
+      "Same LAB3 isolation design with 9 sequential agents: single-shot perturbation at turn 6, RAW recursive amplification, SANITIZED recursive damping toward ground truth."
+  },
+  belief_drift_triangle_27agent_isolation: {
+    title: "LAB3 - Propagation Isolation (27-Agent)",
+    claim: LAB3_TRUE_CLAIM,
+    stance: TRIANGLE_FIXED_STANCE,
+    fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective:
+      "Scale LAB3 isolation to 27 agents with identical perturbation protocol and deterministic recursive reinjection dynamics.",
+    summary:
+      "Same LAB3 isolation design with 27 sequential agents: single-shot perturbation at turn 6, RAW recursive amplification, SANITIZED recursive damping toward ground truth."
   },
   belief_drift_triangle_9agent: {
     title: "Canonical Drift Run (9-Agent)",
@@ -844,6 +885,8 @@ function emptyResults(): ResultsByProfile {
     epistemic_drift_protocol: { raw: null, sanitized: null },
     belief_drift_triangle_3agent: { raw: null, sanitized: null },
     belief_drift_triangle_3agent_isolation: { raw: null, sanitized: null },
+    belief_drift_triangle_9agent_isolation: { raw: null, sanitized: null },
+    belief_drift_triangle_27agent_isolation: { raw: null, sanitized: null },
     belief_drift_triangle_9agent: { raw: null, sanitized: null },
     belief_drift_triangle_27agent: { raw: null, sanitized: null },
     triangle_echo_chamber_3agent: { raw: null, sanitized: null },
@@ -925,17 +968,28 @@ function isCanonicalBeliefDriftProfile(profile: ExperimentProfile): boolean {
   return (
     profile === "belief_drift_triangle_3agent" ||
     profile === "belief_drift_triangle_3agent_isolation" ||
+    profile === "belief_drift_triangle_9agent_isolation" ||
+    profile === "belief_drift_triangle_27agent_isolation" ||
     profile === "belief_drift_triangle_9agent" ||
     profile === "belief_drift_triangle_27agent"
   );
 }
 
 function isLab3PerturbationProfile(profile: ExperimentProfile): boolean {
-  return profile === "belief_drift_triangle_3agent" || profile === "belief_drift_triangle_3agent_isolation";
+  return (
+    profile === "belief_drift_triangle_3agent" ||
+    profile === "belief_drift_triangle_3agent_isolation" ||
+    profile === "belief_drift_triangle_9agent_isolation" ||
+    profile === "belief_drift_triangle_27agent_isolation"
+  );
 }
 
 function isLab3PropagationIsolationProfile(profile: ExperimentProfile): boolean {
-  return profile === "belief_drift_triangle_3agent_isolation";
+  return (
+    profile === "belief_drift_triangle_3agent_isolation" ||
+    profile === "belief_drift_triangle_9agent_isolation" ||
+    profile === "belief_drift_triangle_27agent_isolation"
+  );
 }
 
 function beliefProfileUsesStep(profile: ExperimentProfile): boolean {
@@ -3662,6 +3716,7 @@ function profileRuleText(profile: ExperimentProfile): string {
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
     if (isLab3PerturbationProfile(profile)) {
+      const agentCount = triangleAgentCountForProfile(profile);
       const isIsolation = isLab3PropagationIsolationProfile(profile);
       const propagationRule = isIsolation
         ? `Propagation rule: RAW keeps recursive amplification (Agent C, +${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
@@ -3672,8 +3727,15 @@ function profileRuleText(profile: ExperimentProfile): string {
         : `Propagation rule: Agent C amplifies absolute claim error by ${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
             0
           )}% on cycle boundaries; Agents A/B relay.`;
+      const topologyLine =
+        agentCount > 3
+          ? `Sequential cycle (${agentCount} agents): A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(
+              agentCount / 3
+            )} -> C${Math.floor(agentCount / 3)}.`
+          : "Topology: A -> B -> C -> A.";
       return [
-        `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} loop (A->B->C).`,
+        `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} loop (${agentCount}-agent deterministic cycle).`,
+        topologyLine,
         `Turns 1-5: locked claim = "${LAB3_TRUE_CLAIM}" (ground truth baseline).`,
         `Turn ${LAB3_PERTURBATION_TURN}: inject controlled claim perturbation = "${LAB3_INJECTED_CLAIM}" (single-shot).`,
         `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: ${
@@ -3800,10 +3862,15 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
     if (isLab3PerturbationProfile(profile)) {
+      const agentCount = triangleAgentCountForProfile(profile);
       const isIsolation = isLab3PropagationIsolationProfile(profile);
       return [
-        `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} experiment (3-agent deterministic loop).`,
-        "Topology: A -> B -> C -> A.",
+        `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} experiment (${agentCount}-agent deterministic loop).`,
+        agentCount > 3
+          ? `Sequential cycle length is ${agentCount} turns: A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(
+              agentCount / 3
+            )} -> C${Math.floor(agentCount / 3)}.`
+          : "Topology: A -> B -> C -> A.",
         "Step 1 (turns 1-5): stable baseline with claim ValueEstimate:1000.",
         "Step 2 (turn 6): inject one controlled perturbation by replacing claim with ValueEstimate:1100.",
         isIsolation
