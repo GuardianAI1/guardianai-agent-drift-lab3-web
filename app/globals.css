@@ -61,30 +61,34 @@ pre,
 
 .top-band {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(460px, 1fr);
-  gap: 8px;
-  align-items: start;
-  padding: 8px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(420px, 1fr);
+  grid-template-areas:
+    "brand actions"
+    "controls controls";
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
 }
 
-.left-toolbar {
+.top-controls {
+  grid-area: controls;
   display: grid;
-  grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) minmax(170px, 1.1fr) minmax(220px, 1.55fr) minmax(150px, 1fr);
-  align-items: start;
+  grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) minmax(190px, 1.2fr) minmax(220px, 1.55fr) minmax(170px, 1fr);
+  align-items: end;
   gap: 8px;
   min-width: 0;
 }
 
-.left-toolbar .key-field {
+.top-controls .key-field {
   grid-column: 4 / 5;
 }
 
-.left-toolbar .status-field {
+.top-controls .status-field {
   grid-column: 5 / 6;
 }
 
 .brand-strip {
-  grid-column: 1 / -1;
+  grid-area: brand;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -212,10 +216,11 @@ pre,
 }
 
 .right-toolbar {
+  grid-area: actions;
   display: grid;
   gap: 8px;
-  align-content: start;
-  align-self: start;
+  align-content: end;
+  align-self: end;
   min-width: 0;
 }
 
@@ -330,6 +335,18 @@ button:disabled {
 .text-action.inline-action {
   white-space: nowrap;
   align-self: center;
+}
+
+.text-action.inline-action.key-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
+.text-action.inline-action.key-indicator .dot {
+  width: 8px;
+  height: 8px;
 }
 
 .text-action:hover {
@@ -1252,15 +1269,24 @@ button:disabled {
 @media (max-width: 1320px) {
   .top-band {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "brand"
+      "actions"
+      "controls";
+    align-items: start;
   }
 
-  .left-toolbar {
+  .top-controls {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
   }
 
-  .left-toolbar .key-field,
-  .left-toolbar .status-field {
+  .top-controls .key-field,
+  .top-controls .status-field {
     grid-column: 1 / -1;
+  }
+
+  .right-toolbar {
+    align-self: start;
   }
 
   .control-band {
@@ -1285,9 +1311,13 @@ button:disabled {
 @media (max-width: 740px) {
   .top-band {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "brand"
+      "actions"
+      "controls";
   }
 
-  .left-toolbar {
+  .top-controls {
     grid-template-columns: 1fr;
   }
 

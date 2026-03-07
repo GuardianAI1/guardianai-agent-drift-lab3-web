@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { guardianSpecText } from "@/lib/docs";
 import {
   defaultModelForProvider,
-  detectKeyProvider,
   modelOptionsForProvider,
   normalizeApiKeyInput,
   providerOptions,
@@ -5839,7 +5838,6 @@ export default function HomePage() {
     localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
   }, []);
 
-  const detectedKeyProvider = useMemo(() => detectKeyProvider(apiKey), [apiKey]);
   const effectiveProvider = useMemo(() => resolveProvider(apiProvider, apiKey), [apiProvider, apiKey]);
   const effectiveModelOptions = useMemo(() => modelOptionsForProvider(effectiveProvider), [effectiveProvider]);
   const websiteURL = (process.env.NEXT_PUBLIC_GUARDIAN_WEBSITE_URL ?? "https://guardianai.fr").trim();
@@ -5860,15 +5858,9 @@ export default function HomePage() {
     localStorage.setItem(STORAGE_API_MODEL_KEY, model);
   }, [model]);
 
-  const keyStatusLabel = !apiKey.trim()
-    ? "Server Key Only (Hidden)"
-    : apiProvider === "auto"
-      ? detectedKeyProvider
-        ? providerOptions.find((item) => item.value === detectedKeyProvider)?.label ?? "Detected"
-        : "Provided"
-      : providerOptions.find((item) => item.value === apiProvider)?.label ?? "Provided";
   const guardianStatusLabel = !guardianEnabled ? "Disabled" : guardianRuntimeState === "connected" ? "Connected" : guardianRuntimeState === "degraded" ? "Degraded" : "Offline";
   const guardianStatusDotClass = !guardianEnabled ? "warn" : guardianRuntimeState === "connected" ? "good" : guardianRuntimeState === "degraded" ? "bad" : "warn";
+  const serverKeyDotClass = apiKey.trim() ? "good" : "bad";
 
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
@@ -6798,18 +6790,41 @@ export default function HomePage() {
   return (
     <main className="shell">
       <section className="top-band">
-        <div className="left-toolbar">
-          <div className="brand-strip">
-            <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={52} height={52} priority />
-            <div className="brand-copy">
-              <strong>GuardianAI</strong>
-              <span className="brand-subtitle">Multi-agent Drift Lab</span>
-              <span className="brand-tagline">
-                A deterministic multi-agent interaction loop used to observe how recursive exchanges affect trajectory stability and drift.
-              </span>
-            </div>
+        <div className="brand-strip">
+          <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={52} height={52} priority />
+          <div className="brand-copy">
+            <strong>GuardianAI</strong>
+            <span className="brand-subtitle">Multi-agent Drift Lab</span>
+            <span className="brand-tagline">
+              A deterministic multi-agent interaction loop used to observe how recursive exchanges affect trajectory stability and drift.
+            </span>
           </div>
+        </div>
 
+        <div className="right-toolbar">
+          <div className="row-actions">
+            <button onClick={exportSnapshotJSON}>Export JSON</button>
+            <button onClick={() => downloadTrace("raw")} disabled={!rawSummary}>
+              Download Raw Trace
+            </button>
+            <button onClick={() => downloadTrace("sanitized")} disabled={!sanitizedSummary}>
+              Download Sanitized Trace
+            </button>
+            <button onClick={generateLabReport}>Generate Lab Report</button>
+          </div>
+          <div className="row-actions">
+            <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
+              Website
+            </a>
+            <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
+              GitHub
+            </a>
+            <button onClick={() => setShowSpec(true)}>GuardianAi Spec + Access</button>
+            <button onClick={downloadActiveScriptSpec}>Download Active Script</button>
+          </div>
+        </div>
+
+        <div className="top-controls">
           <div className="field-block">
             <label>Condition</label>
             <select value={selectedCondition} onChange={(event) => setSelectedCondition(event.target.value as RepCondition)} disabled={isRunning}>
@@ -6845,11 +6860,12 @@ export default function HomePage() {
               <label>API Key</label>
               <button
                 type="button"
-                className="text-action inline-action"
+                className="text-action inline-action key-indicator"
                 onClick={() => setApiKey("")}
-                title="Clear API key and use server default key"
+                title="Clear API key and use server key"
               >
-                Use Default Server Key
+                <span className={`dot ${serverKeyDotClass}`} />
+                Server Key (Hidden)
               </button>
             </div>
             <input
@@ -6869,44 +6885,17 @@ export default function HomePage() {
           </div>
 
           <div className="field-block status-field">
-            <label>Status</label>
+            <label aria-hidden="true">&nbsp;</label>
             <div className="status-box">
               <div className="status-line">
                 <span className={`dot ${isRunning ? "good" : "warn"}`} />
                 <span>Run {isRunning ? "ON" : "OFF"}</span>
               </div>
               <div className="status-line">
-                <span className={`dot ${apiKey.trim() ? "good" : "warn"}`} />
-                <span>Key {keyStatusLabel}</span>
-              </div>
-              <div className="status-line">
                 <span className={`dot ${guardianStatusDotClass}`} />
                 <span>Guardian {guardianStatusLabel}</span>
               </div>
             </div>
-          </div>
-        </div>
-
-        <div className="right-toolbar">
-          <div className="row-actions">
-            <button onClick={exportSnapshotJSON}>Export JSON</button>
-            <button onClick={() => downloadTrace("raw")} disabled={!rawSummary}>
-              Download Raw Trace
-            </button>
-            <button onClick={() => downloadTrace("sanitized")} disabled={!sanitizedSummary}>
-              Download Sanitized Trace
-            </button>
-            <button onClick={generateLabReport}>Generate Lab Report</button>
-          </div>
-          <div className="row-actions">
-            <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
-              Website
-            </a>
-            <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
-              GitHub
-            </a>
-            <button onClick={() => setShowSpec(true)}>Observer Spec + Access</button>
-            <button onClick={downloadActiveScriptSpec}>Download Active Script</button>
           </div>
         </div>
       </section>
