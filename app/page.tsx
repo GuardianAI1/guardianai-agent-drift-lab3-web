@@ -5884,20 +5884,6 @@ function agentSlotsForSummary(summary: ConditionSummary): string[] {
   return ordered;
 }
 
-function confidenceHeatColor(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "#f2f5f2";
-  const t = clamp01(value);
-  const hue = 162 - t * 34;
-  const saturation = 48 + t * 28;
-  const lightness = 95 - t * 46;
-  return `hsl(${hue.toFixed(1)} ${saturation.toFixed(1)}% ${lightness.toFixed(1)}%)`;
-}
-
-function driftFlagHeatColor(flag: number | null): string {
-  if (flag === null) return "#f2f5f2";
-  return flag === 1 ? "#b13a3a" : "#d9e8db";
-}
-
 function slotSeriesPath(params: {
   points: Array<{ turn: number; value: number }>;
   maxTurn: number;
@@ -5939,7 +5925,6 @@ function AgentScalingTopologyPanel({
   const isCanonical = isCanonicalBeliefDriftProfile(profile);
 
   const [viewCondition, setViewCondition] = useState<RepCondition>("raw");
-  const [showDriftHeatmap, setShowDriftHeatmap] = useState<boolean>(false);
 
   useEffect(() => {
     if (!isCanonical) return;
@@ -5961,8 +5946,8 @@ function AgentScalingTopologyPanel({
   if (!summary) {
     return (
       <section className="latest-card drift-chart-card agent-topology-panel">
-        <h4>Panel 6 - Agent Confidence Topology</h4>
-        <p className="muted">Run RAW or SANITIZED for this canonical profile to render per-agent heatmaps.</p>
+        <h4>Panel 6 - Confidence Trajectory and Drift Window</h4>
+        <p className="muted">Run RAW or SANITIZED for this canonical profile to render the reinforcement trajectory and drift window.</p>
       </section>
     );
   }
@@ -5972,17 +5957,6 @@ function AgentScalingTopologyPanel({
   const cycleLength = Math.max(1, summary.runConfig.agentCount);
   const cyclesObserved = maxTurn > 0 ? maxTurn / cycleLength : 0;
 
-  const confidenceByCell = new Map<string, number>();
-  const driftByCell = new Map<string, number>();
-  const traceByTurn = new Map<number, TurnTrace>();
-  for (const trace of summary.traces) {
-    traceByTurn.set(trace.turnIndex, trace);
-    if (trace.commitment !== null && Number.isFinite(trace.commitment)) {
-      confidenceByCell.set(`${trace.agentSlot}:${trace.turnIndex}`, clamp01(trace.commitment));
-    }
-    driftByCell.set(`${trace.agentSlot}:${trace.turnIndex}`, trace.structuralEpistemicDrift);
-  }
-
   const lineSeries = slots.map((slot) => ({
     slot,
     points: summary.traces
@@ -5990,58 +5964,34 @@ function AgentScalingTopologyPanel({
       .map((trace) => ({ turn: trace.turnIndex, value: clamp01(trace.commitment as number) }))
   }));
 
-  const momentSeries: Array<{ turn: number; mean: number | null; variance: number | null }> = [];
-  const latestBySlot = new Map<string, number | null>();
-  for (const slot of slots) latestBySlot.set(slot, null);
-  for (let turn = 1; turn <= maxTurn; turn += 1) {
-    const trace = traceByTurn.get(turn);
-    if (trace && trace.commitment !== null && Number.isFinite(trace.commitment)) {
-      latestBySlot.set(trace.agentSlot, clamp01(trace.commitment));
+  const driftSeries = summary.traces.map((trace) => ({
+    turn: trace.turnIndex,
+    value: trace.structuralEpistemicDrift === 1 ? 1 : 0
+  }));
+  const firstDriftTurn = driftSeries.find((point) => point.value === 1)?.turn ?? null;
+  const driftStableTurn = (() => {
+    if (driftSeries.length === 0) return null;
+    let suffixStart = driftSeries.length;
+    for (let index = driftSeries.length - 1; index >= 0; index -= 1) {
+      if (driftSeries[index].value !== 1) break;
+      suffixStart = index;
     }
-    const values = slots.map((slot) => latestBySlot.get(slot)).filter((value): value is number => value !== null);
-    if (values.length === 0) {
-      momentSeries.push({ turn, mean: null, variance: null });
-      continue;
-    }
-    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-    momentSeries.push({ turn, mean, variance });
-  }
-
-  const varianceMax = Math.max(...momentSeries.map((point) => point.variance ?? 0), 0.0001);
-
-  const labelWidth = Math.max(42, Math.min(88, 18 + Math.max(...slots.map((slot) => slot.length)) * 8));
-  const cellWidth = maxTurn > 220 ? 4 : maxTurn > 140 ? 5 : maxTurn > 90 ? 6 : 8;
-  const cellHeight = slots.length > 24 ? 12 : slots.length > 14 ? 14 : 16;
-  const heatTop = 18;
-  const heatBottom = 24;
-  const plotWidth = Math.max(1, maxTurn) * cellWidth;
-  const plotHeight = Math.max(1, slots.length) * cellHeight;
-  const heatWidth = labelWidth + plotWidth + 10;
-  const heatHeight = heatTop + plotHeight + heatBottom;
-  const cycleBoundaryTurns = Array.from({ length: Math.floor(maxTurn / cycleLength) }, (_, idx) => (idx + 1) * cycleLength);
+    return suffixStart < driftSeries.length ? driftSeries[suffixStart].turn : null;
+  })();
 
   const lineWidth = Math.max(720, Math.min(1400, 220 + maxTurn * 7));
   const lineHeight = 230;
   const linePaddingX = 44;
   const linePaddingY = 16;
-  const meanPath = slotSeriesPath({
-    points: momentSeries
-      .filter((point): point is { turn: number; mean: number; variance: number | null } => point.mean !== null)
-      .map((point) => ({ turn: point.turn, value: point.mean })),
+  const cycleBoundaryTurns = Array.from({ length: Math.floor(maxTurn / cycleLength) }, (_, idx) => (idx + 1) * cycleLength);
+  const linePlotWidth = lineWidth - linePaddingX * 2;
+  const linePlotHeight = lineHeight - linePaddingY * 2;
+  const turnDivisor = Math.max(1, maxTurn - 1);
+  const driftWindowWidth = maxTurn > 1 ? linePlotWidth / turnDivisor : linePlotWidth;
+  const driftPath = slotSeriesPath({
+    points: driftSeries,
     maxTurn,
     maxValue: 1,
-    width: lineWidth,
-    height: lineHeight,
-    paddingX: linePaddingX,
-    paddingY: linePaddingY
-  });
-  const variancePath = slotSeriesPath({
-    points: momentSeries
-      .filter((point): point is { turn: number; mean: number | null; variance: number } => point.variance !== null)
-      .map((point) => ({ turn: point.turn, value: point.variance })),
-    maxTurn,
-    maxValue: varianceMax,
     width: lineWidth,
     height: lineHeight,
     paddingX: linePaddingX,
@@ -6050,10 +6000,8 @@ function AgentScalingTopologyPanel({
 
   return (
     <section className="latest-card drift-chart-card agent-topology-panel">
-      <h4>Panel 6 - Agent Confidence Topology</h4>
-      <p className="muted">
-        Primary view: per-agent confidence heatmap (x=turn, y=agent slot). No smoothing or cross-agent averaging is applied.
-      </p>
+      <h4>Panel 6 - Confidence Trajectory and Drift Window</h4>
+      <p className="muted">Primary publication view: recursive confidence amplification, drift onset, and stabilization window.</p>
       <div className="topology-controls">
         <div className="segmented-toggle">
           <button type="button" className={viewCondition === "raw" ? "active" : ""} onClick={() => setViewCondition("raw")} disabled={!hasRaw}>
@@ -6068,9 +6016,6 @@ function AgentScalingTopologyPanel({
             Condition B (SANITIZED)
           </button>
         </div>
-        <label className="tiny telemetry-toggle">
-          <input type="checkbox" checked={showDriftHeatmap} onChange={(event) => setShowDriftHeatmap(event.target.checked)} /> Show drift-flag heatmap
-        </label>
       </div>
       <p className="tiny">
         Viewing: <strong>{CONDITION_LABELS[viewCondition]}</strong> | slots={slots.length} | turns={maxTurn} | cycle length={cycleLength} | cycles observed≈
@@ -6078,95 +6023,16 @@ function AgentScalingTopologyPanel({
       </p>
 
       <div className="drift-chart-wrap">
-        <svg
-          viewBox={`0 0 ${heatWidth} ${heatHeight}`}
-          className="agent-heatmap-chart"
-          role="img"
-          aria-label="Per-agent confidence heatmap over turns"
-        >
-          {Array.from({ length: maxTurn }, (_, index) => index + 1).map((turn) =>
-            slots.map((slot, rowIndex) => {
-              const x = labelWidth + (turn - 1) * cellWidth;
-              const y = heatTop + rowIndex * cellHeight;
-              const confidence = confidenceByCell.get(`${slot}:${turn}`) ?? null;
-              return <rect key={`conf_${slot}_${turn}`} x={x} y={y} width={cellWidth} height={cellHeight} fill={confidenceHeatColor(confidence)} />;
-            })
-          )}
-          {cycleBoundaryTurns.map((turn) => {
-            const x = labelWidth + turn * cellWidth;
-            return <line key={`conf_cycle_${turn}`} x1={x} y1={heatTop} x2={x} y2={heatTop + plotHeight} className="heatmap-cycle-line" />;
-          })}
-          {slots.map((slot, rowIndex) => {
-            const y = heatTop + rowIndex * cellHeight + cellHeight * 0.75;
-            return (
-              <text key={`conf_label_${slot}`} x={labelWidth - 6} y={y} textAnchor="end" className="drift-label">
-                {slot}
-              </text>
-            );
-          })}
-          {maxTurn > 0 ? (
-            <>
-              <text x={labelWidth} y={heatHeight - 6} className="drift-label">
-                1
-              </text>
-              <text x={labelWidth + plotWidth} y={heatHeight - 6} textAnchor="end" className="drift-label">
-                {maxTurn}
-              </text>
-            </>
-          ) : null}
-        </svg>
-      </div>
-      <p className="tiny">Pattern guide: uniform ramp, staggered blocks, traveling waves, or hot plateaus indicate different reinforcement regimes.</p>
-
-      {showDriftHeatmap ? (
-        <div className="drift-chart-wrap">
-          <svg
-            viewBox={`0 0 ${heatWidth} ${heatHeight}`}
-            className="agent-heatmap-chart"
-            role="img"
-            aria-label="Per-agent structural drift flag heatmap over turns"
-          >
-            {Array.from({ length: maxTurn }, (_, index) => index + 1).map((turn) =>
-              slots.map((slot, rowIndex) => {
-                const x = labelWidth + (turn - 1) * cellWidth;
-                const y = heatTop + rowIndex * cellHeight;
-                const flag = driftByCell.get(`${slot}:${turn}`) ?? null;
-                return <rect key={`drift_${slot}_${turn}`} x={x} y={y} width={cellWidth} height={cellHeight} fill={driftFlagHeatColor(flag)} />;
-              })
-            )}
-            {cycleBoundaryTurns.map((turn) => {
-              const x = labelWidth + turn * cellWidth;
-              return <line key={`drift_cycle_${turn}`} x1={x} y1={heatTop} x2={x} y2={heatTop + plotHeight} className="heatmap-cycle-line" />;
-            })}
-            {slots.map((slot, rowIndex) => {
-              const y = heatTop + rowIndex * cellHeight + cellHeight * 0.75;
-              return (
-                <text key={`drift_label_${slot}`} x={labelWidth - 6} y={y} textAnchor="end" className="drift-label">
-                  {slot}
-                </text>
-              );
-            })}
-            {maxTurn > 0 ? (
-              <>
-                <text x={labelWidth} y={heatHeight - 6} className="drift-label">
-                  1
-                </text>
-                <text x={labelWidth + plotWidth} y={heatHeight - 6} textAnchor="end" className="drift-label">
-                  {maxTurn}
-                </text>
-              </>
-            ) : null}
-          </svg>
-        </div>
-      ) : null}
-
-      <div className="drift-chart-wrap">
-        <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Per-agent confidence line chart">
+        <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Confidence trajectory over turns by agent">
           <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
           <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
           {[0.25, 0.5, 0.75].map((ratio) => {
-            const y = linePaddingY + (1 - ratio) * (lineHeight - linePaddingY * 2);
+            const y = linePaddingY + (1 - ratio) * linePlotHeight;
             return <line key={`line_grid_${ratio}`} x1={linePaddingX} y1={y} x2={lineWidth - linePaddingX} y2={y} className="drift-grid" />;
+          })}
+          {cycleBoundaryTurns.map((turn) => {
+            const x = linePaddingX + ((turn - 1) / turnDivisor) * linePlotWidth;
+            return <line key={`line_cycle_${turn}`} x1={x} y1={linePaddingY} x2={x} y2={lineHeight - linePaddingY} className="heatmap-cycle-line" />;
           })}
           {lineSeries.map((series, index) => {
             const path = slotSeriesPath({
@@ -6199,57 +6065,60 @@ function AgentScalingTopologyPanel({
           ) : null}
         </svg>
       </div>
-      <p className="tiny">Line view is secondary and plotted per slot without smoothing.</p>
+      <p className="tiny">Confidence Trajectory Plot: one line per agent slot in sequential speaking order.</p>
 
-      <div className="moments-grid">
-        <div className="drift-chart-wrap">
-          <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Mean confidence over turns">
-            <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
-            <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
-            {meanPath ? <polyline points={meanPath} fill="none" stroke="#1f5b3f" strokeWidth={2.2} /> : null}
-            {maxTurn > 0 ? (
-              <>
-                <text x={linePaddingX} y={lineHeight - 2} className="drift-label">
-                  1
-                </text>
-                <text x={lineWidth - linePaddingX} y={lineHeight - 2} textAnchor="end" className="drift-label">
-                  {maxTurn}
-                </text>
-                <text x={linePaddingX - 6} y={linePaddingY + 8} textAnchor="end" className="drift-label">
-                  1
-                </text>
-                <text x={linePaddingX - 6} y={lineHeight - linePaddingY + 4} textAnchor="end" className="drift-label">
-                  0
-                </text>
-              </>
-            ) : null}
-          </svg>
-        </div>
-        <div className="drift-chart-wrap">
-          <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Confidence variance over turns">
-            <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
-            <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
-            {variancePath ? <polyline points={variancePath} fill="none" stroke="#ad3a3a" strokeWidth={2.2} /> : null}
-            {maxTurn > 0 ? (
-              <>
-                <text x={linePaddingX} y={lineHeight - 2} className="drift-label">
-                  1
-                </text>
-                <text x={lineWidth - linePaddingX} y={lineHeight - 2} textAnchor="end" className="drift-label">
-                  {maxTurn}
-                </text>
-                <text x={linePaddingX - 6} y={linePaddingY + 8} textAnchor="end" className="drift-label">
-                  {asFixed(varianceMax, 2)}
-                </text>
-                <text x={linePaddingX - 6} y={lineHeight - linePaddingY + 4} textAnchor="end" className="drift-label">
-                  0
-                </text>
-              </>
-            ) : null}
-          </svg>
-        </div>
+      <div className="drift-chart-wrap">
+        <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Drift window plot over turns">
+          <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+          <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+          {[0.5].map((ratio) => {
+            const y = linePaddingY + (1 - ratio) * linePlotHeight;
+            return <line key={`drift_grid_${ratio}`} x1={linePaddingX} y1={y} x2={lineWidth - linePaddingX} y2={y} className="drift-grid" />;
+          })}
+          {driftSeries
+            .filter((point) => point.value === 1)
+            .map((point) => {
+              const centerX = linePaddingX + ((point.turn - 1) / turnDivisor) * linePlotWidth;
+              const x = Math.max(linePaddingX, centerX - driftWindowWidth / 2);
+              const width = Math.max(1, Math.min(driftWindowWidth, lineWidth - linePaddingX - x));
+              return (
+                <rect
+                  key={`drift_window_${point.turn}`}
+                  x={x}
+                  y={linePaddingY}
+                  width={width}
+                  height={linePlotHeight}
+                  fill="#f5d9d9"
+                  fillOpacity={0.85}
+                />
+              );
+            })}
+          {driftPath ? <polyline points={driftPath} fill="none" stroke="#8a2f2f" strokeWidth={2.2} /> : null}
+          {cycleBoundaryTurns.map((turn) => {
+            const x = linePaddingX + ((turn - 1) / turnDivisor) * linePlotWidth;
+            return <line key={`drift_cycle_${turn}`} x1={x} y1={linePaddingY} x2={x} y2={lineHeight - linePaddingY} className="heatmap-cycle-line" />;
+          })}
+          {maxTurn > 0 ? (
+            <>
+              <text x={linePaddingX} y={lineHeight - 2} className="drift-label">
+                1
+              </text>
+              <text x={lineWidth - linePaddingX} y={lineHeight - 2} textAnchor="end" className="drift-label">
+                {maxTurn}
+              </text>
+              <text x={linePaddingX - 6} y={linePaddingY + 8} textAnchor="end" className="drift-label">
+                1
+              </text>
+              <text x={linePaddingX - 6} y={lineHeight - linePaddingY + 4} textAnchor="end" className="drift-label">
+                0
+              </text>
+            </>
+          ) : null}
+        </svg>
       </div>
-      <p className="tiny">Moment view: rising mean + rising variance then collapsing variance is a common cluster-to-convergence signature.</p>
+      <p className="tiny">
+        Drift Window Plot: binary drift flag by turn (0/1). Onset={firstDriftTurn ?? "n/a"} | stabilization={driftStableTurn ?? "n/a"}.
+      </p>
     </section>
   );
 }
