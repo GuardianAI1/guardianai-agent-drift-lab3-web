@@ -3,7 +3,7 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GuardianAI Agent Lab Suite v1",
+  title: "Deterministic Multi-Agent Loop Experiment",
   description: "Multi-agent drift experiments with RAW vs SANITIZED reinjection under deterministic decoding."
 };
 

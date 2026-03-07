@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { guardianSpecText, sdiMultiAgentProtocolText } from "@/lib/docs";
+import { guardianSpecText } from "@/lib/docs";
 import {
   defaultModelForProvider,
   detectKeyProvider,
@@ -193,6 +193,30 @@ const OBJECTIVE_MODE_LABELS = {
   strict_structural: "Strict structural failure",
   composite_pf_or_ld: "Composite (Pf or Ld)"
 } as const;
+
+const SPEC_DOWNLOADS = [
+  {
+    kind: "Metric",
+    title: "Structural Contract Compliance (SCC)",
+    description: "Deterministic structural compliance metric used to enforce output contracts.",
+    href: "/docs/SCC_Structural_Contract_Compliance.pdf",
+    buttonLabel: "Download Specification"
+  },
+  {
+    kind: "Protocol",
+    title: "SDI-MA Protocol",
+    description: "Structural Drift Index for Multi-Agent Systems.",
+    href: "/docs/SDI-MA_Protocol_v1.2_revised.pdf",
+    buttonLabel: "Download Protocol"
+  },
+  {
+    kind: "Reference Experiment",
+    title: "Multi-Agent Drift Lab",
+    description: "Canonical SDI-MA implementation demonstrating recursive drift dynamics.",
+    href: "/docs/GuardianAI_Experiment_Reference.pdf",
+    buttonLabel: "Download Experiment"
+  }
+] as const;
 
 type SignalVisibilityMode = "public" | "private";
 const SIGNAL_VISIBILITY_MODE: SignalVisibilityMode = "public";
@@ -5776,7 +5800,6 @@ export default function HomePage() {
   const [runPhaseText, setRunPhaseText] = useState<string>("Idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [guardianRuntimeState, setGuardianRuntimeState] = useState<GuardianRuntimeState>(guardianEnabled ? "unknown" : "disabled");
-  const [showProtocol, setShowProtocol] = useState<boolean>(false);
   const [showSpec, setShowSpec] = useState<boolean>(false);
 
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
@@ -5851,22 +5874,6 @@ export default function HomePage() {
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
   const selectedScriptCard = useMemo(() => scriptCardCopyForProfile(selectedProfile), [selectedProfile]);
-  const protocolDocBody = useMemo(() => {
-    return [
-      `GuardianAI Multi-agent Drift Lab Protocol`,
-      "",
-      `Selected script: ${selectedScriptCard.title}`,
-      `Objective: ${selectedScriptCard.objective}`,
-      `Loop: ${selectedScriptCard.loop}`,
-      `Contract keys: ${selectedScriptCard.contractKeys}`,
-      "",
-      "Runtime script contract:",
-      IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(selectedProfile) : profileRuleText(selectedProfile),
-      "",
-      "SDI-MA protocol reference:",
-      sdiMultiAgentProtocolText
-    ].join("\n");
-  }, [selectedProfile, selectedScriptCard]);
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
   const closure = closureVerdict(consensusEval);
   const structuralPattern = structuralPatternInterpretation(consensusEval);
@@ -6793,10 +6800,13 @@ export default function HomePage() {
       <section className="top-band">
         <div className="left-toolbar">
           <div className="brand-strip">
-            <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={40} height={40} priority />
+            <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={52} height={52} priority />
             <div className="brand-copy">
               <strong>GuardianAI</strong>
-              <span>Multi-agent Drift Lab</span>
+              <span className="brand-subtitle">Multi-agent Drift Lab</span>
+              <span className="brand-tagline">
+                A deterministic multi-agent interaction loop used to observe how recursive exchanges affect trajectory stability and drift.
+              </span>
             </div>
           </div>
 
@@ -6895,10 +6905,25 @@ export default function HomePage() {
             <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
               GitHub
             </a>
-            <button onClick={() => setShowProtocol(true)}>Protocol</button>
             <button onClick={() => setShowSpec(true)}>Observer Spec + Access</button>
             <button onClick={downloadActiveScriptSpec}>Download Active Script</button>
           </div>
+        </div>
+      </section>
+
+      <section className="spec-strip">
+        <h3>Specifications</h3>
+        <div className="spec-strip-grid">
+          {SPEC_DOWNLOADS.map((spec) => (
+            <article key={spec.title} className="spec-doc-item">
+              <p className="spec-doc-kind">{spec.kind}</p>
+              <p className="spec-doc-title">{spec.title}</p>
+              <p className="tiny spec-doc-desc">{spec.description}</p>
+              <a className="button-link spec-doc-download" href={spec.href} download target="_blank" rel="noreferrer">
+                [{spec.buttonLabel}]
+              </a>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -7597,7 +7622,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      {showProtocol ? <SectionDocModal title="SDI-MA Protocol" body={protocolDocBody} onClose={() => setShowProtocol(false)} /> : null}
       {showSpec ? <SectionDocModal title="Observer Specification + Access" body={guardianSpecText} onClose={() => setShowSpec(false)} /> : null}
     </main>
   );
