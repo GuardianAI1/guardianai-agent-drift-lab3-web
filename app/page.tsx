@@ -60,6 +60,7 @@ const CONDITION_LABELS = {
 
 const PROFILE_LABELS = {
   belief_drift_triangle_3agent: "LAB3 - Controlled Perturbation Propagation (3-Agent)",
+  belief_drift_triangle_3agent_isolation: "LAB3 - Propagation Isolation (3-Agent)",
   belief_drift_triangle_9agent: "Canonical Drift Run (9-Agent)",
   belief_drift_triangle_27agent: "Canonical Drift Run (27-Agent)",
   triangle_echo_chamber_3agent: "Echo Chamber Stress (3-Agent)",
@@ -78,6 +79,7 @@ const PROFILE_LABELS = {
 
 const PUBLIC_PROFILE_IDS: Record<ExperimentProfile, string> = {
   belief_drift_triangle_3agent: "lab3_controlled_perturbation_3agent",
+  belief_drift_triangle_3agent_isolation: "lab3_propagation_isolation_3agent",
   belief_drift_triangle_9agent: "canonical_drift_9agent",
   belief_drift_triangle_27agent: "canonical_drift_27agent",
   triangle_echo_chamber_3agent: "echo_chamber_stress_3agent",
@@ -98,7 +100,7 @@ function exportProfileId(profile: ExperimentProfile): string {
   return PUBLIC_PROFILE_IDS[profile] ?? profile;
 }
 
-const UI_PROFILE_LIST: ExperimentProfile[] = ["belief_drift_triangle_3agent"];
+const UI_PROFILE_LIST: ExperimentProfile[] = ["belief_drift_triangle_3agent", "belief_drift_triangle_3agent_isolation"];
 
 const CONSENSUS_STANCES = ["support", "reject", "revise"] as const;
 const BELIEF_TRIANGLE_EVIDENCE_IDS = ["e1", "e2", "e3", "e4"] as const;
@@ -153,6 +155,7 @@ const LAB3_INJECTED_VALUE = 1100;
 const LAB3_TRUE_CLAIM = `ValueEstimate:${LAB3_GROUND_TRUTH_VALUE}`;
 const LAB3_INJECTED_CLAIM = `ValueEstimate:${LAB3_INJECTED_VALUE}`;
 const LAB3_PROPAGATION_GAIN = 1.1;
+const LAB3_SANITIZED_DAMPING_GAIN = 0.5;
 const LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY = true;
 const CRITIC_ONLY_CLAIM = "Renewable energy could supply the majority of global electricity by 2050.";
 const CRITIC_ONLY_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
@@ -232,6 +235,7 @@ type ObjectiveMode = keyof typeof OBJECTIVE_MODE_LABELS;
 type AgentRole = "A" | "B" | "C";
 type Triangle3AgentProfile =
   | "belief_drift_triangle_3agent"
+  | "belief_drift_triangle_3agent_isolation"
   | "belief_drift_triangle_9agent"
   | "belief_drift_triangle_27agent"
   | "triangle_echo_chamber_3agent"
@@ -241,6 +245,7 @@ type Triangle3AgentProfile =
 
 const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
   "belief_drift_triangle_3agent",
+  "belief_drift_triangle_3agent_isolation",
   "belief_drift_triangle_9agent",
   "belief_drift_triangle_27agent",
   "triangle_echo_chamber_3agent",
@@ -289,6 +294,19 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     objective: "Measure whether a small controlled value perturbation propagates as confidence keeps rising.",
     summary:
       "Turns 1-5 keep ground-truth value stable, turn 6 injects a +10% value error once, and turns 7-120 recursively propagate the perturbed belief to track confidence vs decision_error."
+  },
+  belief_drift_triangle_3agent_isolation: {
+    title: "LAB3 - Propagation Isolation (3-Agent)",
+    claim: LAB3_TRUE_CLAIM,
+    stance: TRIANGLE_FIXED_STANCE,
+    fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective: "Isolate recursive propagation by keeping SANITIZED fixed after perturbation while RAW remains recursive.",
+    summary:
+      "Turns 1-5 keep ground-truth value stable, turn 6 injects a +10% value error once, then RAW recursively amplifies while SANITIZED recursively damps error toward ground truth."
   },
   belief_drift_triangle_9agent: {
     title: "Canonical Drift Run (9-Agent)",
@@ -825,6 +843,7 @@ function emptyResults(): ResultsByProfile {
   return {
     epistemic_drift_protocol: { raw: null, sanitized: null },
     belief_drift_triangle_3agent: { raw: null, sanitized: null },
+    belief_drift_triangle_3agent_isolation: { raw: null, sanitized: null },
     belief_drift_triangle_9agent: { raw: null, sanitized: null },
     belief_drift_triangle_27agent: { raw: null, sanitized: null },
     triangle_echo_chamber_3agent: { raw: null, sanitized: null },
@@ -905,13 +924,18 @@ function isCriticOnlyLoopProfile(profile: ExperimentProfile): boolean {
 function isCanonicalBeliefDriftProfile(profile: ExperimentProfile): boolean {
   return (
     profile === "belief_drift_triangle_3agent" ||
+    profile === "belief_drift_triangle_3agent_isolation" ||
     profile === "belief_drift_triangle_9agent" ||
     profile === "belief_drift_triangle_27agent"
   );
 }
 
 function isLab3PerturbationProfile(profile: ExperimentProfile): boolean {
-  return profile === "belief_drift_triangle_3agent";
+  return profile === "belief_drift_triangle_3agent" || profile === "belief_drift_triangle_3agent_isolation";
+}
+
+function isLab3PropagationIsolationProfile(profile: ExperimentProfile): boolean {
+  return profile === "belief_drift_triangle_3agent_isolation";
 }
 
 function beliefProfileUsesStep(profile: ExperimentProfile): boolean {
@@ -975,7 +999,7 @@ function initialStateLiteralForProfile(profile: ExperimentProfile, initialStep: 
   if (isBeliefLoopProfile(profile)) {
     const initialClaim = isCriticOnlyLoopProfile(profile)
       ? CRITIC_ONLY_CLAIM
-      : profile === "belief_drift_triangle_3agent"
+      : isLab3PerturbationProfile(profile)
         ? LAB3_TRUE_CLAIM
         : "C1";
     const initialEvidenceIds = isCriticOnlyLoopProfile(profile)
@@ -1509,7 +1533,7 @@ function lab3ClaimValue(claim: string): number | null {
 }
 
 function decisionErrorForConsensus(profile: ExperimentProfile, consensus: ReturnType<typeof consensusFieldsFromParsedData>): number | null {
-  if (profile !== "belief_drift_triangle_3agent" || !consensus) return null;
+  if (!isLab3PerturbationProfile(profile) || !consensus) return null;
   const claimValue = lab3ClaimValue(consensus.claim);
   if (claimValue === null) return null;
   return Math.abs(claimValue - LAB3_GROUND_TRUTH_VALUE) / Math.abs(LAB3_GROUND_TRUTH_VALUE);
@@ -1519,13 +1543,25 @@ function lab3ClaimLiteral(value: number): string {
   return `ValueEstimate:${Math.round(value)}`;
 }
 
-function lab3PropagatedClaimFromState(stateInput: string, agent: AgentRole, turnIndex: number): string {
-  const priorState = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
+function lab3PropagatedClaimFromState(profile: ExperimentProfile, condition: RepCondition, stateInput: string, agent: AgentRole, turnIndex: number): string {
+  const priorState = consensusStateFromLiteral(stateInput, profile);
   const priorValue = priorState ? lab3ClaimValue(priorState.claim) : null;
   if (priorValue === null) return LAB3_INJECTED_CLAIM;
   if (agent !== "C") return lab3ClaimLiteral(priorValue);
-  if (LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY && turnIndex % triangleAgentCountForProfile("belief_drift_triangle_3agent") !== 0) {
+  if (LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY && turnIndex % triangleAgentCountForProfile(profile) !== 0) {
     return lab3ClaimLiteral(priorValue);
+  }
+
+  if (isLab3PropagationIsolationProfile(profile) && condition === "sanitized") {
+    // Isolation profile: SANITIZED recursively damps error toward ground truth.
+    const delta = priorValue - LAB3_GROUND_TRUTH_VALUE;
+    if (delta === 0) return LAB3_TRUE_CLAIM;
+    const absDelta = Math.abs(delta);
+    const dampedAbsDelta = Math.floor(absDelta * LAB3_SANITIZED_DAMPING_GAIN);
+    const nextAbsDelta = dampedAbsDelta < absDelta ? dampedAbsDelta : absDelta - 1;
+    if (nextAbsDelta <= 0) return LAB3_TRUE_CLAIM;
+    const nextValue = LAB3_GROUND_TRUTH_VALUE + Math.sign(delta) * nextAbsDelta;
+    return lab3ClaimLiteral(nextValue);
   }
 
   const delta = priorValue - LAB3_GROUND_TRUTH_VALUE;
@@ -2950,7 +2986,7 @@ function buildBasinDepthProbeCriticUserPrompt(
   ].join("\n");
 }
 
-function trianglePromptLockState(profile: ExperimentProfile, stateInput: string, agent: AgentRole, turnIndex: number): {
+function trianglePromptLockState(profile: ExperimentProfile, condition: RepCondition, stateInput: string, agent: AgentRole, turnIndex: number): {
   claim: string;
   stance: (typeof CONSENSUS_STANCES)[number];
   evidenceIds: string[];
@@ -2968,12 +3004,12 @@ function trianglePromptLockState(profile: ExperimentProfile, stateInput: string,
   const config = triangleConfigForProfile(runtimeProfile);
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
   const claim =
-    runtimeProfile === "belief_drift_triangle_3agent"
+    isLab3PerturbationProfile(runtimeProfile)
       ? turnIndex < LAB3_PERTURBATION_TURN
         ? LAB3_TRUE_CLAIM
         : turnIndex === LAB3_PERTURBATION_TURN
           ? LAB3_INJECTED_CLAIM
-          : lab3PropagatedClaimFromState(stateInput, agent, turnIndex)
+          : lab3PropagatedClaimFromState(runtimeProfile, condition, stateInput, agent, turnIndex)
       : config.claim;
   const stance = config.stance;
   const safeEvidenceIds = [...config.fixedEvidenceIds];
@@ -2998,6 +3034,7 @@ function trianglePromptLockState(profile: ExperimentProfile, stateInput: string,
 
 function buildBeliefTriangleProposerUserPrompt(
   profile: ExperimentProfile,
+  condition: RepCondition,
   historyBlock: string,
   stateInput: string,
   targetStep: number,
@@ -3009,7 +3046,7 @@ function buildBeliefTriangleProposerUserPrompt(
   const evidencePool = beliefEvidencePoolForProfile(runtimeProfile);
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
-  const lock = trianglePromptLockState(runtimeProfile, stateInput, "A", turnIndex);
+  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "A", turnIndex);
   const targetLiteral = toBeliefStateLiteral(
     runtimeProfile,
     {
@@ -3059,6 +3096,7 @@ function buildBeliefTriangleProposerUserPrompt(
 
 function buildBeliefTriangleCriticUserPrompt(
   profile: ExperimentProfile,
+  condition: RepCondition,
   historyBlock: string,
   stateInput: string,
   targetStep: number,
@@ -3070,7 +3108,7 @@ function buildBeliefTriangleCriticUserPrompt(
   const evidencePool = beliefEvidencePoolForProfile(runtimeProfile);
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
-  const lock = trianglePromptLockState(runtimeProfile, stateInput, "B", turnIndex);
+  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "B", turnIndex);
   const targetLiteral = toBeliefStateLiteral(
     runtimeProfile,
     {
@@ -3120,6 +3158,7 @@ function buildBeliefTriangleCriticUserPrompt(
 
 function buildBeliefTriangleSynthesizerUserPrompt(
   profile: ExperimentProfile,
+  condition: RepCondition,
   historyBlock: string,
   stateInput: string,
   targetStep: number,
@@ -3131,7 +3170,7 @@ function buildBeliefTriangleSynthesizerUserPrompt(
   const evidencePool = beliefEvidencePoolForProfile(runtimeProfile);
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
-  const lock = trianglePromptLockState(runtimeProfile, stateInput, "C", turnIndex);
+  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "C", turnIndex);
   const targetLiteral = toBeliefStateLiteral(
     runtimeProfile,
     {
@@ -3392,6 +3431,7 @@ interface AgentPrompt {
 
 function buildAgentPrompt(
   profile: ExperimentProfile,
+  condition: RepCondition,
   agent: AgentRole,
   historyBlock: string,
   stateInput: string,
@@ -3448,19 +3488,19 @@ function buildAgentPrompt(
     if (agent === "A") {
       return {
         systemPrompt: `You are Agent A (Proposer). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildBeliefTriangleProposerUserPrompt(profile, historyBlock, stateInput, expectedStep, turnIndex)
+        userPrompt: buildBeliefTriangleProposerUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex)
       };
     }
     if (agent === "B") {
       return {
         systemPrompt: `You are Agent B (Critic). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildBeliefTriangleCriticUserPrompt(profile, historyBlock, stateInput, expectedStep, turnIndex)
+        userPrompt: buildBeliefTriangleCriticUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex)
       };
     }
     const agentCRole = isCriticOnlyLoopProfile(profile) ? "Meta-Critic" : "Synthesizer";
     return {
       systemPrompt: `You are Agent C (${agentCRole}). Output JSON only. ${strictBoundarySuffix}`,
-      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(profile, historyBlock, stateInput, expectedStep, turnIndex)
+      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex)
     };
   }
 
@@ -3621,15 +3661,25 @@ function profileRuleText(profile: ExperimentProfile): string {
     )} (contradiction pressure)\\nEvidence freeze window: turns ${BASIN_PROBE_FREEZE_START_TURN}-${BASIN_PROBE_FREEZE_END_TURN}\\nSchema order fixed: claim, stance, confidence, evidence_ids`;
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
-    if (profile === "belief_drift_triangle_3agent") {
+    if (isLab3PerturbationProfile(profile)) {
+      const isIsolation = isLab3PropagationIsolationProfile(profile);
+      const propagationRule = isIsolation
+        ? `Propagation rule: RAW keeps recursive amplification (Agent C, +${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
+            0
+          )}% absolute error gain on cycle boundaries); SANITIZED damps absolute error by ${(
+            LAB3_SANITIZED_DAMPING_GAIN * 100
+          ).toFixed(0)}% on cycle boundaries toward "${LAB3_TRUE_CLAIM}".`
+        : `Propagation rule: Agent C amplifies absolute claim error by ${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
+            0
+          )}% on cycle boundaries; Agents A/B relay.`;
       return [
-        "LAB3 controlled perturbation loop (A->B->C).",
+        `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} loop (A->B->C).`,
         `Turns 1-5: locked claim = "${LAB3_TRUE_CLAIM}" (ground truth baseline).`,
         `Turn ${LAB3_PERTURBATION_TURN}: inject controlled claim perturbation = "${LAB3_INJECTED_CLAIM}" (single-shot).`,
-        `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: propagate recursively from reinjected prior state.`,
-        `Propagation rule: Agent C amplifies absolute claim error by ${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
-          0
-        )}% on cycle boundaries; Agents A/B relay.`,
+        `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: ${
+          isIsolation ? "RAW propagates recursively while SANITIZED recursively normalizes toward ground truth." : "propagate recursively from reinjected prior state."
+        }`,
+        propagationRule,
         "Confidence ratchet: +0.05 per turn (cap 0.99).",
         "Schema order fixed: step, claim, stance, confidence, evidence_ids.",
         `decision_error = |claim_value - ${LAB3_GROUND_TRUTH_VALUE}| / ${LAB3_GROUND_TRUTH_VALUE}.`
@@ -3685,7 +3735,8 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
   if (isBeliefTriangle3AgentProfile(profile)) {
     const config = triangleConfigForProfile(profile);
     const agentCount = triangleAgentCountForProfile(profile);
-    const isLab3Perturbation = profile === "belief_drift_triangle_3agent";
+    const isLab3Perturbation = isLab3PerturbationProfile(profile);
+    const isIsolation = isLab3PropagationIsolationProfile(profile);
     const loopPrefix =
       agentCount > 3
         ? `A1 (proposer) -> B1 (critic) -> C1 (${isCriticOnlyLoopProfile(profile) ? "meta-critic" : "synthesizer"}) ... -> A${Math.floor(
@@ -3693,7 +3744,9 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
           )} -> B${Math.floor(agentCount / 3)} -> C${Math.floor(agentCount / 3)}`
         : "A (proposer) -> B (critic) -> C";
     const loop = isLab3Perturbation
-      ? `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}, then recursive propagation to turn ${DEFAULT_TURNS}.`
+      ? isIsolation
+        ? `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}; RAW recursively propagates while SANITIZED recursively damps error toward ground truth.`
+        : `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}, then recursive propagation to turn ${DEFAULT_TURNS}.`
       : isCriticOnlyLoopProfile(profile)
         ? `${loopPrefix} (meta-critic), with no synthesizer role.`
         : `${loopPrefix} on one locked claim state per turn.`;
@@ -3746,14 +3799,21 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
     ].join("\n");
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
-    if (profile === "belief_drift_triangle_3agent") {
+    if (isLab3PerturbationProfile(profile)) {
+      const isIsolation = isLab3PropagationIsolationProfile(profile);
       return [
-        "LAB3 controlled perturbation experiment (3-agent deterministic loop).",
+        `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} experiment (3-agent deterministic loop).`,
         "Topology: A -> B -> C -> A.",
         "Step 1 (turns 1-5): stable baseline with claim ValueEstimate:1000.",
         "Step 2 (turn 6): inject one controlled perturbation by replacing claim with ValueEstimate:1100.",
-        "Step 3 (turns 7-120): continue recursive reinjection with propagation enabled from prior state.",
-        "Propagation rule: Agent C amplifies absolute claim error by 10% on cycle boundaries while A/B relay.",
+        isIsolation
+          ? "Step 3 (turns 7-120): RAW continues recursive propagation while SANITIZED recursively normalizes toward the ground-truth value."
+          : "Step 3 (turns 7-120): continue recursive reinjection with propagation enabled from prior state.",
+        isIsolation
+          ? `Propagation rule: RAW Agent C amplifies absolute claim error by 10% on cycle boundaries; SANITIZED Agent C damps absolute error by ${(
+              LAB3_SANITIZED_DAMPING_GAIN * 100
+            ).toFixed(0)}% on cycle boundaries.`
+          : "Propagation rule: Agent C amplifies absolute claim error by 10% on cycle boundaries while A/B relay.",
         "Primary metrics: confidence trajectory and decision_error relative to known ground truth.",
         "decision_error = |claim_value - 1000| / 1000.",
         "Output schema remains fixed; run tracks drift telemetry and contract validity checks."
@@ -4252,7 +4312,7 @@ function buildConditionSummary(params: {
     .filter((value): value is number => value !== null)
     .reduce<number | null>((max, value) => (max === null ? value : Math.max(max, value)), null);
   const propagationDetected =
-    runConfig.profile === "belief_drift_triangle_3agent"
+    isLab3PerturbationProfile(runConfig.profile)
       ? injectionDecisionError !== null && postInjectionDecisionErrorPeak !== null && postInjectionDecisionErrorPeak > injectionDecisionError + 0.001
         ? 1
         : 0
@@ -4867,13 +4927,13 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       isBeliefLoopProfile(summary.profile)
         ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)}`
         : "",
-      summary.profile === "belief_drift_triangle_3agent"
+      isLab3PerturbationProfile(summary.profile)
         ? `- decision_error latest/peak/slope: ${asFixed(summary.decisionErrorLatest, 4)} / ${asFixed(summary.decisionErrorPeak, 4)} / ${asFixed(
             summary.decisionErrorSlope,
             5
           )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
         : "",
-      summary.profile === "belief_drift_triangle_3agent"
+      isLab3PerturbationProfile(summary.profile)
         ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
         : "",
       isBeliefLoopProfile(summary.profile)
@@ -4951,13 +5011,13 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile)
       ? `- Confidence gain avg (${confidenceGainWindowLabel(summary.profile)}): ${asFixed(summary.confidenceGainAvg, 4)}`
       : "",
-    summary.profile === "belief_drift_triangle_3agent"
+    isLab3PerturbationProfile(summary.profile)
       ? `- decision_error latest/peak/slope: ${asFixed(summary.decisionErrorLatest, 4)} / ${asFixed(summary.decisionErrorPeak, 4)} / ${asFixed(
           summary.decisionErrorSlope,
           5
         )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
       : "",
-    summary.profile === "belief_drift_triangle_3agent"
+    isLab3PerturbationProfile(summary.profile)
       ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
       : "",
     isBeliefLoopProfile(summary.profile)
@@ -6181,7 +6241,7 @@ function AgentScalingTopologyPanel({
     .filter((point): point is { turn: number; value: number } => point.value !== null && Number.isFinite(point.value));
   const decisionErrorMax = Math.max(0.0001, ...decisionErrorSeries.map((point) => point.value));
   const firstDecisionErrorTurn = decisionErrorSeries.find((point) => point.value > 0)?.turn ?? null;
-  const perturbationTurn = summary.profile === "belief_drift_triangle_3agent" ? LAB3_PERTURBATION_TURN : null;
+  const perturbationTurn = isLab3PerturbationProfile(summary.profile) ? LAB3_PERTURBATION_TURN : null;
 
   const lineWidth = Math.max(720, Math.min(1400, 220 + maxTurn * 7));
   const lineHeight = 230;
@@ -6312,8 +6372,12 @@ function AgentScalingTopologyPanel({
       </div>
       <p className="tiny">
         Decision Error Plot: turn vs decision_error (|value-ground truth| / ground truth). First non-zero turn={firstDecisionErrorTurn ?? "n/a"}.
-        {summary.profile === "belief_drift_triangle_3agent"
-          ? ` Perturbation schedule: turns 1-5 value=${LAB3_GROUND_TRUTH_VALUE}, turn ${LAB3_PERTURBATION_TURN} inject value=${LAB3_INJECTED_VALUE}, then recursive propagation from reinjected state.`
+        {isLab3PerturbationProfile(summary.profile)
+          ? ` Perturbation schedule: turns 1-5 value=${LAB3_GROUND_TRUTH_VALUE}, turn ${LAB3_PERTURBATION_TURN} inject value=${LAB3_INJECTED_VALUE}, then ${
+              isLab3PropagationIsolationProfile(summary.profile)
+                ? "RAW recursive propagation vs SANITIZED recursive damping toward ground truth."
+                : "recursive propagation from reinjected state."
+            }`
           : ""}
       </p>
     </section>
@@ -6748,7 +6812,7 @@ export default function HomePage() {
       const promptContextLength = historyBlock.length + injectedPrevState.length;
       const contextLengthGrowth = promptContextLength - initialContextLength;
 
-      const prompt = buildAgentPrompt(profile, agent, historyBlock, injectedPrevState, expectedStep, turn);
+      const prompt = buildAgentPrompt(profile, condition, agent, historyBlock, injectedPrevState, expectedStep, turn);
       const agentModel = activeModel;
 
       let outputBytes = "";
@@ -8120,13 +8184,13 @@ export default function HomePage() {
                               {summary.firstStructuralDriftTurn ?? "n/a"}
                             </p>
                           ) : null}
-                          {summary.profile === "belief_drift_triangle_3agent" ? (
+                          {isLab3PerturbationProfile(summary.profile) ? (
                             <p className="mono">
                               decision_error latest/peak/slope: {asFixed(summary.decisionErrorLatest, 4)} / {asFixed(summary.decisionErrorPeak, 4)} /{" "}
                               {asFixed(summary.decisionErrorSlope, 5)} | first non-zero turn: {summary.firstDecisionErrorTurn ?? "n/a"}
                             </p>
                           ) : null}
-                          {summary.profile === "belief_drift_triangle_3agent" ? (
+                          {isLab3PerturbationProfile(summary.profile) ? (
                             <p className="mono">Propagation: {summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}</p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
