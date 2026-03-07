@@ -66,7 +66,7 @@ pre,
     "brand actions"
     "controls controls";
   gap: 10px;
-  align-items: end;
+  align-items: stretch;
   padding: 10px;
 }
 
@@ -93,14 +93,15 @@ pre,
   align-items: flex-start;
   gap: 12px;
   padding: 10px 12px;
+  min-height: 116px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: linear-gradient(145deg, #f6fbf7 0%, #edf4ef 100%);
 }
 
 .brand-logo {
-  width: 52px;
-  height: 52px;
+  width: 72px;
+  height: 72px;
   border-radius: 10px;
   border: 1px solid #d2dbd4;
   background: rgba(255, 255, 255, 0.85);
@@ -218,9 +219,11 @@ pre,
 .right-toolbar {
   grid-area: actions;
   display: grid;
+  grid-template-rows: auto auto;
   gap: 8px;
-  align-content: end;
-  align-self: end;
+  align-content: space-between;
+  align-self: stretch;
+  height: 100%;
   min-width: 0;
 }
 
@@ -229,6 +232,21 @@ pre,
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.right-toolbar .row-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.right-toolbar .row-actions > button,
+.right-toolbar .row-actions > .button-link {
+  width: 100%;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
 }
 
 .spec-strip {
@@ -1286,6 +1304,8 @@ button:disabled {
   }
 
   .right-toolbar {
+    height: auto;
+    align-content: start;
     align-self: start;
   }
 
@@ -1319,6 +1339,10 @@ button:disabled {
 
   .top-controls {
     grid-template-columns: 1fr;
+  }
+
+  .right-toolbar .row-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .brand-strip {

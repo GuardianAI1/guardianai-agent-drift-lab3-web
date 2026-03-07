@@ -1281,7 +1281,10 @@ function isObjectiveFailure(profile: ExperimentProfile, agent: AgentRole, mode: 
   return pf === 1 || ld === 1;
 }
 
-function firstFailureTurn(traces: TurnTrace[], metric: "pf" | "ld" | "cv" | "objectiveFailure"): number | null {
+function firstFailureTurn(
+  traces: TurnTrace[],
+  metric: "pf" | "ld" | "cv" | "objectiveFailure" | "structuralEpistemicDrift"
+): number | null {
   const found = traces.find((trace) => trace[metric] === 1);
   return found ? found.turnIndex : null;
 }
@@ -3960,11 +3963,11 @@ function buildConditionSummary(params: {
   const objectiveScopeTraces = runConfig.profile === "drift_amplifying_loop" ? tracesA : traces;
   const ftfParse = firstFailureTurn(traces, "pf");
   const ftfLogic = firstFailureTurn(traces, "ld");
-  const ftfStruct = firstFailureTurn(traces, "cv");
+  const ftfStruct = firstFailureTurn(traces, "structuralEpistemicDrift");
   const ftfTotal = firstFailureTurn(objectiveScopeTraces, "objectiveFailure");
   const ftfParseA = firstFailureTurn(tracesA, "pf");
   const ftfLogicA = firstFailureTurn(tracesA, "ld");
-  const ftfStructA = firstFailureTurn(tracesA, "cv");
+  const ftfStructA = firstFailureTurn(tracesA, "structuralEpistemicDrift");
   const ftfTotalA = firstFailureTurn(tracesA, "objectiveFailure");
   const rollingReinf = runningReinforcementPoints(objectiveScopeTraces, ROLLING_REINFORCEMENT_WINDOW);
   const inflection = findPersistenceInflection(rollingReinf);
@@ -4729,6 +4732,60 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     .join("\n");
 }
 
+function canonicalConfidenceSaturationObservation(summary: ConditionSummary): string | null {
+  if (summary.profile !== "belief_drift_triangle_3agent") return null;
+
+  const consensusTraces = summary.traces
+    .map((trace) => {
+      const fields = consensusFields(trace);
+      if (!fields) return null;
+      return { turnIndex: trace.turnIndex, fields };
+    })
+    .filter((value): value is { turnIndex: number; fields: NonNullable<ReturnType<typeof consensusFields>> } => value !== null);
+  if (consensusTraces.length < 2) return null;
+
+  const confidenceValues = consensusTraces.map((item) => item.fields.confidence);
+  const positiveDeltas: number[] = [];
+  let monotonic = true;
+  for (let index = 1; index < confidenceValues.length; index += 1) {
+    const delta = confidenceValues[index] - confidenceValues[index - 1];
+    if (delta < -0.0001) monotonic = false;
+    if (delta > 0.0001) positiveDeltas.push(delta);
+  }
+
+  const staircaseLike = positiveDeltas.length > 0 && positiveDeltas.every((delta) => Math.abs(delta - 0.05) <= 0.005);
+  const maxConfidence = Math.max(...confidenceValues);
+  const ceiling = 0.99;
+  const firstSaturationIndex = confidenceValues.findIndex((value) => value >= ceiling - 0.001);
+  const saturatedAfterCeiling =
+    firstSaturationIndex >= 0 &&
+    confidenceValues.slice(firstSaturationIndex).every((value) => Math.abs(value - ceiling) <= 0.001);
+  const constraintGrowthZero = summary.traces.every((trace) => trace.constraintGrowth === null || Math.abs(trace.constraintGrowth) <= 0.0001);
+  const claims = consensusTraces.map((item) => item.fields.claim);
+  const claimFixed = claims.every((claim) => claim === claims[0]);
+  const baselineEvidence = consensusTraces[0].fields.evidenceIds;
+  const evidenceUnchanged = consensusTraces.every(
+    (item) =>
+      item.fields.evidenceIds.length === baselineEvidence.length &&
+      item.fields.evidenceIds.every((id, index) => id === baselineEvidence[index])
+  );
+
+  if (!(monotonic && staircaseLike && maxConfidence >= ceiling - 0.001 && saturatedAfterCeiling && constraintGrowthZero && claimFixed && evidenceUnchanged)) {
+    return null;
+  }
+
+  const saturationTurn = consensusTraces[firstSaturationIndex].turnIndex;
+  const finalTurn = consensusTraces[consensusTraces.length - 1].turnIndex;
+  const claim = claims[0];
+
+  return `In the RAW canonical run, confidence increases in near-fixed +0.05 steps until reaching ${asFixed(
+    ceiling,
+    2
+  )} at turn ${saturationTurn}, then remains effectively constant through turn ${finalTurn}. Across this phase, \`constraint_growth\` remains 0, the claim remains ${claim}, and \`evidence_ids\` remain unchanged (${JSON.stringify(
+    baselineEvidence
+  )}). This suggests the observed stabilization is more consistent with saturation of the confidence channel than with evidence-based convergence. In structural terms, the trajectory appears to enter a belief basin: the same claim is reproduced at maximal confidence without additional constraint or evidence. The trajectory stabilizes only after the confidence channel saturates (≈0.99), while evidence and constraints remain unchanged. The resulting stability therefore reflects numerical saturation rather than epistemic validation.`;
+}
+
 function buildLabReportMarkdown(params: {
   generatedAt: string;
   results: ResultsByProfile;
@@ -4984,6 +5041,15 @@ function buildLabReportMarkdown(params: {
           `- Preflight raw/sanitized: ${raw.preflightPassed === null ? "n/a" : raw.preflightPassed ? "PASS" : "FAIL"} / ${sanitized.preflightPassed === null ? "n/a" : sanitized.preflightPassed ? "PASS" : "FAIL"}`
         );
         sections.push(`- Drift separation criterion: ${smokeSafe.pass ? "PASS" : "NOT MET"}`);
+      }
+    }
+
+    if (profile === "belief_drift_triangle_3agent" && raw) {
+      const saturationObservation = canonicalConfidenceSaturationObservation(raw);
+      if (saturationObservation) {
+        sections.push("");
+        sections.push("### Confidence Saturation and Basin Stabilization");
+        sections.push(saturationObservation);
       }
     }
 
@@ -6791,7 +6857,7 @@ export default function HomePage() {
     <main className="shell">
       <section className="top-band">
         <div className="brand-strip">
-          <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={52} height={52} priority />
+          <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={72} height={72} priority />
           <div className="brand-copy">
             <strong>GuardianAI</strong>
             <span className="brand-subtitle">Multi-agent Drift Lab</span>
@@ -6802,25 +6868,25 @@ export default function HomePage() {
         </div>
 
         <div className="right-toolbar">
-          <div className="row-actions">
+          <div className="row-actions top-actions">
             <button onClick={exportSnapshotJSON}>Export JSON</button>
             <button onClick={() => downloadTrace("raw")} disabled={!rawSummary}>
               Download Raw Trace
             </button>
             <button onClick={() => downloadTrace("sanitized")} disabled={!sanitizedSummary}>
-              Download Sanitized Trace
+              Download Sanitized
             </button>
             <button onClick={generateLabReport}>Generate Lab Report</button>
           </div>
-          <div className="row-actions">
+          <div className="row-actions link-actions">
             <a className="button-link" href={websiteURL} target="_blank" rel="noreferrer">
               Website
             </a>
             <a className="button-link" href={githubURL} target="_blank" rel="noreferrer">
               GitHub
             </a>
-            <button onClick={() => setShowSpec(true)}>GuardianAi Spec + Access</button>
-            <button onClick={downloadActiveScriptSpec}>Download Active Script</button>
+            <button onClick={() => setShowSpec(true)}>Core Spec + Access</button>
+            <button onClick={downloadActiveScriptSpec}>Download Script</button>
           </div>
         </div>
 
