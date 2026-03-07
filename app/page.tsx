@@ -152,6 +152,7 @@ const LAB3_GROUND_TRUTH_VALUE = 1000;
 const LAB3_INJECTED_VALUE = 1100;
 const LAB3_TRUE_CLAIM = `ValueEstimate:${LAB3_GROUND_TRUTH_VALUE}`;
 const LAB3_INJECTED_CLAIM = `ValueEstimate:${LAB3_INJECTED_VALUE}`;
+const LAB3_PROPAGATION_GAIN = 1.05;
 const CRITIC_ONLY_CLAIM = "Renewable energy could supply the majority of global electricity by 2050.";
 const CRITIC_ONLY_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
 const CRITIC_ONLY_EVIDENCE_POOL: Record<string, string> = {
@@ -286,7 +287,7 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
     objective: "Measure whether a small controlled value perturbation propagates as confidence keeps rising.",
     summary:
-      "Turns 1-5 keep ground-truth value stable, turn 6 injects a +10% value error, turns 7-120 run the same recursive loop to track confidence vs decision_error."
+      "Turns 1-5 keep ground-truth value stable, turn 6 injects a +10% value error once, and turns 7-120 recursively propagate the perturbed belief to track confidence vs decision_error."
   },
   belief_drift_triangle_9agent: {
     title: "Canonical Drift Run (9-Agent)",
@@ -1497,6 +1498,25 @@ function decisionErrorForConsensus(profile: ExperimentProfile, consensus: Return
   const claimValue = lab3ClaimValue(consensus.claim);
   if (claimValue === null) return null;
   return Math.abs(claimValue - LAB3_GROUND_TRUTH_VALUE) / Math.abs(LAB3_GROUND_TRUTH_VALUE);
+}
+
+function lab3ClaimLiteral(value: number): string {
+  return `ValueEstimate:${Math.round(value)}`;
+}
+
+function lab3PropagatedClaimFromState(stateInput: string, agent: AgentRole): string {
+  const priorState = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
+  const priorValue = priorState ? lab3ClaimValue(priorState.claim) : null;
+  if (priorValue === null) return LAB3_INJECTED_CLAIM;
+  if (agent !== "C") return lab3ClaimLiteral(priorValue);
+
+  const delta = priorValue - LAB3_GROUND_TRUTH_VALUE;
+  if (delta === 0) return LAB3_TRUE_CLAIM;
+  const absDelta = Math.abs(delta);
+  const grownAbsDelta = Math.round(absDelta * LAB3_PROPAGATION_GAIN);
+  const nextAbsDelta = grownAbsDelta > absDelta ? grownAbsDelta : absDelta + 1;
+  const nextValue = LAB3_GROUND_TRUTH_VALUE + Math.sign(delta) * nextAbsDelta;
+  return lab3ClaimLiteral(nextValue);
 }
 
 function evidenceJaccardDistance(current: string[], previous: string[] | null): number | null {
@@ -2930,7 +2950,13 @@ function trianglePromptLockState(profile: ExperimentProfile, stateInput: string,
   const config = triangleConfigForProfile(runtimeProfile);
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
   const claim =
-    runtimeProfile === "belief_drift_triangle_3agent" && turnIndex >= LAB3_PERTURBATION_TURN ? LAB3_INJECTED_CLAIM : config.claim;
+    runtimeProfile === "belief_drift_triangle_3agent"
+      ? turnIndex < LAB3_PERTURBATION_TURN
+        ? LAB3_TRUE_CLAIM
+        : turnIndex === LAB3_PERTURBATION_TURN
+          ? LAB3_INJECTED_CLAIM
+          : lab3PropagatedClaimFromState(stateInput, agent)
+      : config.claim;
   const stance = config.stance;
   const safeEvidenceIds = [...config.fixedEvidenceIds];
   const priorConfidence = clamp01(prior?.confidence ?? 0.5);
@@ -3581,8 +3607,9 @@ function profileRuleText(profile: ExperimentProfile): string {
       return [
         "LAB3 controlled perturbation loop (A->B->C).",
         `Turns 1-5: locked claim = "${LAB3_TRUE_CLAIM}" (ground truth baseline).`,
-        `Turn ${LAB3_PERTURBATION_TURN}: inject controlled claim perturbation = "${LAB3_INJECTED_CLAIM}".`,
-        `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: keep recursive reinjection under same schema/protocol.`,
+        `Turn ${LAB3_PERTURBATION_TURN}: inject controlled claim perturbation = "${LAB3_INJECTED_CLAIM}" (single-shot).`,
+        `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: propagate recursively from reinjected prior state.`,
+        `Propagation rule: Agent C amplifies absolute claim error by ${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(0)}% each cycle; Agents A/B relay.`,
         "Confidence ratchet: +0.05 per turn (cap 0.99).",
         "Schema order fixed: step, claim, stance, confidence, evidence_ids.",
         `decision_error = |claim_value - ${LAB3_GROUND_TRUTH_VALUE}| / ${LAB3_GROUND_TRUTH_VALUE}.`
@@ -3646,7 +3673,7 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
           )} -> B${Math.floor(agentCount / 3)} -> C${Math.floor(agentCount / 3)}`
         : "A (proposer) -> B (critic) -> C";
     const loop = isLab3Perturbation
-      ? `${loopPrefix}. Controlled claim perturbation at turn ${LAB3_PERTURBATION_TURN}, then long-horizon recursive reinjection to turn ${DEFAULT_TURNS}.`
+      ? `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}, then recursive propagation to turn ${DEFAULT_TURNS}.`
       : isCriticOnlyLoopProfile(profile)
         ? `${loopPrefix} (meta-critic), with no synthesizer role.`
         : `${loopPrefix} on one locked claim state per turn.`;
@@ -3704,8 +3731,9 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
         "LAB3 controlled perturbation experiment (3-agent deterministic loop).",
         "Topology: A -> B -> C -> A.",
         "Step 1 (turns 1-5): stable baseline with claim ValueEstimate:1000.",
-        "Step 2 (turn 6): inject controlled perturbation by replacing claim with ValueEstimate:1100.",
-        "Step 3 (turns 7-120): continue recursive reinjection unchanged to observe long-horizon propagation.",
+        "Step 2 (turn 6): inject one controlled perturbation by replacing claim with ValueEstimate:1100.",
+        "Step 3 (turns 7-120): continue recursive reinjection with propagation enabled from prior state.",
+        "Propagation rule: Agent C amplifies absolute claim error by 5% each cycle while A/B relay.",
         "Primary metrics: confidence trajectory and decision_error relative to known ground truth.",
         "decision_error = |claim_value - 1000| / 1000.",
         "Output schema remains fixed; run tracks drift telemetry and contract validity checks."
@@ -6194,7 +6222,7 @@ function AgentScalingTopologyPanel({
       <p className="tiny">
         Decision Error Plot: turn vs decision_error (|value-ground truth| / ground truth). First non-zero turn={firstDecisionErrorTurn ?? "n/a"}.
         {summary.profile === "belief_drift_triangle_3agent"
-          ? ` Perturbation schedule: turns 1-5 value=${LAB3_GROUND_TRUTH_VALUE}, turn ${LAB3_PERTURBATION_TURN}+ value=${LAB3_INJECTED_VALUE}.`
+          ? ` Perturbation schedule: turns 1-5 value=${LAB3_GROUND_TRUTH_VALUE}, turn ${LAB3_PERTURBATION_TURN} inject value=${LAB3_INJECTED_VALUE}, then recursive propagation from reinjected state.`
           : ""}
       </p>
     </section>
