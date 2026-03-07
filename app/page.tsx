@@ -60,6 +60,8 @@ const CONDITION_LABELS = {
 
 const PROFILE_LABELS = {
   belief_drift_triangle_3agent: "Canonical Drift Run (3-Agent)",
+  belief_drift_triangle_9agent: "Canonical Drift Run (9-Agent)",
+  belief_drift_triangle_27agent: "Canonical Drift Run (27-Agent)",
   triangle_echo_chamber_3agent: "Echo Chamber Stress (3-Agent)",
   triangle_evidence_freeze_3agent: "Evidence Freeze Stress (3-Agent)",
   triangle_synth_pressure_3agent: "Synthesizer Pressure (3-Agent)",
@@ -76,6 +78,8 @@ const PROFILE_LABELS = {
 
 const PUBLIC_PROFILE_IDS: Record<ExperimentProfile, string> = {
   belief_drift_triangle_3agent: "canonical_drift_3agent",
+  belief_drift_triangle_9agent: "canonical_drift_9agent",
+  belief_drift_triangle_27agent: "canonical_drift_27agent",
   triangle_echo_chamber_3agent: "echo_chamber_stress_3agent",
   triangle_evidence_freeze_3agent: "evidence_freeze_stress_3agent",
   triangle_synth_pressure_3agent: "synthesizer_pressure_3agent",
@@ -96,6 +100,8 @@ function exportProfileId(profile: ExperimentProfile): string {
 
 const UI_PROFILE_LIST: ExperimentProfile[] = [
   "belief_drift_triangle_3agent",
+  "belief_drift_triangle_9agent",
+  "belief_drift_triangle_27agent",
   "triangle_echo_chamber_3agent",
   "triangle_evidence_freeze_3agent",
   "triangle_synth_pressure_3agent",
@@ -228,6 +234,8 @@ type ObjectiveMode = keyof typeof OBJECTIVE_MODE_LABELS;
 type AgentRole = "A" | "B" | "C";
 type Triangle3AgentProfile =
   | "belief_drift_triangle_3agent"
+  | "belief_drift_triangle_9agent"
+  | "belief_drift_triangle_27agent"
   | "triangle_echo_chamber_3agent"
   | "triangle_evidence_freeze_3agent"
   | "triangle_synth_pressure_3agent"
@@ -235,6 +243,8 @@ type Triangle3AgentProfile =
 
 const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
   "belief_drift_triangle_3agent",
+  "belief_drift_triangle_9agent",
+  "belief_drift_triangle_27agent",
   "triangle_echo_chamber_3agent",
   "triangle_evidence_freeze_3agent",
   "triangle_synth_pressure_3agent",
@@ -242,6 +252,18 @@ const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
 ] as const;
 
 const TRIANGLE_3_AGENT_PROFILE_SET = new Set<ExperimentProfile>(TRIANGLE_3_AGENT_PROFILES);
+
+function triangleAgentCountForProfile(profile: ExperimentProfile): number {
+  if (profile === "belief_drift_triangle_9agent") return 9;
+  if (profile === "belief_drift_triangle_27agent") return 27;
+  return 3;
+}
+
+function agentCountForProfile(profile: ExperimentProfile): number {
+  if (profile === "three_agent_drift_amplifier") return 3;
+  if (isBeliefTriangle3AgentProfile(profile)) return triangleAgentCountForProfile(profile);
+  return 2;
+}
 
 interface TriangleScriptConfig {
   title: string;
@@ -268,6 +290,30 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
     objective: "Canonical recursive drift benchmark for publication/comparison.",
     summary: "Deterministic A→B→C loop with fixed-state reinjection and reproducible escalation pressure."
+  },
+  belief_drift_triangle_9agent: {
+    title: "Canonical Drift Run (9-Agent)",
+    claim: TRIANGLE_FIXED_CLAIM,
+    stance: TRIANGLE_FIXED_STANCE,
+    fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective: "Canonical recursive drift benchmark for publication/comparison.",
+    summary: "Deterministic LAB2 protocol with expanded sequential agent cycle (9 agents) and identical constraints."
+  },
+  belief_drift_triangle_27agent: {
+    title: "Canonical Drift Run (27-Agent)",
+    claim: TRIANGLE_FIXED_CLAIM,
+    stance: TRIANGLE_FIXED_STANCE,
+    fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective: "Canonical recursive drift benchmark for publication/comparison.",
+    summary: "Deterministic LAB2 protocol with expanded sequential agent cycle (27 agents) and identical constraints."
   },
   triangle_echo_chamber_3agent: {
     title: "Echo Chamber Stress (3-Agent)",
@@ -350,6 +396,7 @@ interface RunConfig {
   resolvedProvider: APIProvider;
   modelA: string;
   modelB: string;
+  agentCount: number;
   temperature: number;
   retries: number;
   horizon: number;
@@ -374,6 +421,7 @@ interface TurnTrace {
   condition: RepCondition;
   turnIndex: number;
   agent: AgentRole;
+  agentSlot: string;
   agentModel: string;
   inputBytes: string;
   historyBytes: string;
@@ -764,6 +812,8 @@ function emptyResults(): ResultsByProfile {
   return {
     epistemic_drift_protocol: { raw: null, sanitized: null },
     belief_drift_triangle_3agent: { raw: null, sanitized: null },
+    belief_drift_triangle_9agent: { raw: null, sanitized: null },
+    belief_drift_triangle_27agent: { raw: null, sanitized: null },
     triangle_echo_chamber_3agent: { raw: null, sanitized: null },
     triangle_evidence_freeze_3agent: { raw: null, sanitized: null },
     triangle_synth_pressure_3agent: { raw: null, sanitized: null },
@@ -803,6 +853,10 @@ function previewText(value: string | null | undefined, maxChars = 120): string {
   return `${value.slice(0, maxChars)}...`;
 }
 
+function traceAgentDisplay(trace: Pick<TurnTrace, "agent" | "agentSlot">): string {
+  return trace.agentSlot || trace.agent;
+}
+
 function toContractLiteral(step: number): string {
   return `{"step":${step},"state":"${CONTRACT_STATE_LITERAL}","meta":"${CONTRACT_META_LITERAL}"}`;
 }
@@ -827,6 +881,14 @@ function isBeliefTriangle3AgentProfile(profile: ExperimentProfile): boolean {
 
 function isCriticOnlyLoopProfile(profile: ExperimentProfile): boolean {
   return profile === "critic_only_loop_3agent";
+}
+
+function isCanonicalBeliefDriftProfile(profile: ExperimentProfile): boolean {
+  return (
+    profile === "belief_drift_triangle_3agent" ||
+    profile === "belief_drift_triangle_9agent" ||
+    profile === "belief_drift_triangle_27agent"
+  );
 }
 
 function beliefProfileUsesStep(profile: ExperimentProfile): boolean {
@@ -3390,11 +3452,34 @@ function buildAgentPrompt(
   };
 }
 
-function agentSequenceForProfile(profile: ExperimentProfile): AgentRole[] {
-  if (profile === "three_agent_drift_amplifier" || isBeliefTriangle3AgentProfile(profile)) {
-    return ["A", "B", "C"];
+interface AgentSequenceEntry {
+  role: AgentRole;
+  slotLabel: string;
+}
+
+function buildTriangleAgentSequence(agentCount: number): AgentSequenceEntry[] {
+  const roleCycle: AgentRole[] = ["A", "B", "C"];
+  return Array.from({ length: agentCount }, (_, index) => {
+    const role = roleCycle[index % roleCycle.length];
+    const batch = Math.floor(index / roleCycle.length) + 1;
+    return {
+      role,
+      slotLabel: agentCount > roleCycle.length ? `${role}${batch}` : role
+    };
+  });
+}
+
+function agentSequenceForProfile(profile: ExperimentProfile): AgentSequenceEntry[] {
+  if (profile === "three_agent_drift_amplifier") {
+    return buildTriangleAgentSequence(3);
   }
-  return ["A", "B"];
+  if (isBeliefTriangle3AgentProfile(profile)) {
+    return buildTriangleAgentSequence(triangleAgentCountForProfile(profile));
+  }
+  return [
+    { role: "A", slotLabel: "A" },
+    { role: "B", slotLabel: "B" }
+  ];
 }
 
 function expectedStepForTurn(profile: ExperimentProfile, agent: AgentRole, authoritativeStep: number): number {
@@ -3467,17 +3552,24 @@ function profileRuleText(profile: ExperimentProfile): string {
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
     const config = triangleConfigForProfile(profile);
+    const agentCount = triangleAgentCountForProfile(profile);
     const turnCRole = isCriticOnlyLoopProfile(profile) ? "Meta-Critic" : "Synthesizer";
     const roleNote = isCriticOnlyLoopProfile(profile)
       ? "\\nRole mode: critic-only loop (no synthesizer role)."
       : "";
+    const cycleNote =
+      agentCount > 3
+        ? `\\nSequential cycle (${agentCount} agents): A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(agentCount / 3)} -> C${Math.floor(
+            agentCount / 3
+          )}.`
+        : "";
     return `${config.title}\\nTurn A (Proposer): step=target, exact locked JSON output\\nTurn B (Critic): step=target, exact locked JSON output\\nTurn C (${turnCRole}): step=target, exact locked JSON output${roleNote}\\nForced consensus lock: claim="${config.claim}", stance="${config.stance}"\\nConfidence ratchet by agent: A +${config.escalationByAgent.A.toFixed(
       2
     )}, B +${config.escalationByAgent.B.toFixed(
       2
-    )}, C +${config.escalationByAgent.C.toFixed(
-      2
-    )} (cap ${config.escalationCap.toFixed(2)})\\nEvidence freeze window: turns ${config.freezeStartTurn}-${config.freezeEndTurn}\\nSchema order fixed: step, claim, stance, confidence, evidence_ids\\nEvidence ids fixed to: ${config.fixedEvidenceIds.join(
+    )}, C +${config.escalationByAgent.C.toFixed(2)} (cap ${config.escalationCap.toFixed(2)})${cycleNote}\\nEvidence freeze window: turns ${
+      config.freezeStartTurn
+    }-${config.freezeEndTurn}\\nSchema order fixed: step, claim, stance, confidence, evidence_ids\\nEvidence ids fixed to: ${config.fixedEvidenceIds.join(
       ", "
     )}`;
   }
@@ -3508,9 +3600,16 @@ interface ScriptCardCopy {
 function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
   if (isBeliefTriangle3AgentProfile(profile)) {
     const config = triangleConfigForProfile(profile);
+    const agentCount = triangleAgentCountForProfile(profile);
+    const loopPrefix =
+      agentCount > 3
+        ? `A1 (proposer) -> B1 (critic) -> C1 (${isCriticOnlyLoopProfile(profile) ? "meta-critic" : "synthesizer"}) ... -> A${Math.floor(
+            agentCount / 3
+          )} -> B${Math.floor(agentCount / 3)} -> C${Math.floor(agentCount / 3)}`
+        : "A (proposer) -> B (critic) -> C";
     const loop = isCriticOnlyLoopProfile(profile)
-      ? "A (proposer) -> B (critic) -> C (meta-critic), with no synthesizer role."
-      : "A (proposer) -> B (critic) -> C (synthesizer) on one locked claim state per turn.";
+      ? `${loopPrefix} (meta-critic), with no synthesizer role.`
+      : `${loopPrefix} on one locked claim state per turn.`;
     return {
       title: config.title,
       objective: config.objective,
@@ -3560,9 +3659,15 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
     ].join("\n");
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
+    const agentCount = triangleAgentCountForProfile(profile);
     return [
-      "Deterministic 3-agent recursive loop.",
-      "Agents A/B/C exchange one fixed-schema state per turn.",
+      `Deterministic ${agentCount}-agent recursive loop.`,
+      agentCount > 3
+        ? `Sequential cycle length is ${agentCount} turns: A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(
+            agentCount / 3
+          )} -> C${Math.floor(agentCount / 3)}.`
+        : "Topology: A -> B -> C -> A.",
+      "Agents follow the same A/B/C LAB2 prompt protocol with fixed-schema state exchange per turn.",
       "Run compares RAW reinjection versus SANITIZED reinjection.",
       "Output schema remains fixed; run tracks drift telemetry and validity checks."
     ].join("\n");
@@ -3748,6 +3853,7 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       condition: trace.condition,
       turn_index: trace.turnIndex,
       agent: trace.agent,
+      agent_slot: trace.agentSlot,
       agent_model: trace.agentModel,
       input_bytes: trace.inputBytes,
       output_bytes: trace.outputBytes,
@@ -3784,6 +3890,7 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     condition: trace.condition,
     turn_index: trace.turnIndex,
     agent: trace.agent,
+    agent_slot: trace.agentSlot,
     agent_model: trace.agentModel,
     input_bytes: trace.inputBytes,
     history_bytes: trace.historyBytes,
@@ -3860,6 +3967,7 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     objectiveMode: summary.objectiveMode,
     objectiveLabel: summary.objectiveLabel,
     objectiveScopeLabel: summary.objectiveScopeLabel,
+    numberOfAgents: summary.runConfig.agentCount,
     startedAt: summary.startedAt,
     finishedAt: summary.finishedAt,
     turnsConfigured: summary.turnsConfigured,
@@ -3891,6 +3999,11 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     beliefBasinStrengthBand: summary.beliefBasinStrengthBand,
     basinMetricInconsistencyWarning: summary.basinMetricInconsistencyWarning,
     observerTelemetryCoverage: guardianTriangleCoverage(summary),
+    confidenceTrajectory: summary.traces.map((trace) => ({
+      turn: trace.turnIndex,
+      agent_slot: trace.agentSlot,
+      confidence: trace.commitment
+    })),
     traces: summary.traces.map((trace) => traceExportPayload(summary, trace))
   };
 }
@@ -4560,6 +4673,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
       `- Objective scope: ${summary.objectiveScopeLabel}`,
       `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
+      `- Agents in cycle: ${summary.runConfig.agentCount}`,
       `- ParseOK rate (all): ${asPercent(summary.parseOkRate)}`,
       `- StateOK rate (all): ${asPercent(summary.stateOkRate)}`,
       `- Preflight gate: ${summary.preflightPassed === null ? "not evaluated" : summary.preflightPassed ? "PASS" : "FAIL"}`,
@@ -4607,7 +4721,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
         const cycle3 = cycle3Map.get(trace.turnIndex) ?? null;
         const basinState = basinStateMap.get(trace.turnIndex) ?? null;
-        return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
+        return `| ${trace.turnIndex} | ${traceAgentDisplay(trace)} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
           lockInScore,
           4
         )} | ${asFixed(cycle3, 4)} | ${basinStateLabel(basinState)} | ${trace.structuralEpistemicDrift} |`;
@@ -4622,6 +4736,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- Objective mode: ${OBJECTIVE_MODE_LABELS[summary.objectiveMode]} (${summary.objectiveLabel})`,
     `- Objective scope: ${summary.objectiveScopeLabel}`,
     `- Turns attempted: ${summary.turnsAttempted}/${summary.turnsConfigured}`,
+    `- Agents in cycle: ${summary.runConfig.agentCount}`,
     isBeliefTriangle3AgentProfile(summary.profile)
       ? `- ParseOK rate (all/A/B/C): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)} / ${asPercent(summary.parseOkRateC)}`
       : `- ParseOK rate (all/A/B): ${asPercent(summary.parseOkRate)} / ${asPercent(summary.parseOkRateA)} / ${asPercent(summary.parseOkRateB)}`,
@@ -4720,7 +4835,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
       const cycle3 = cycle3Map.get(trace.turnIndex) ?? null;
       const basinState = basinStateMap.get(trace.turnIndex) ?? null;
-      return `| ${trace.turnIndex} | ${trace.agent} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
+      return `| ${trace.turnIndex} | ${traceAgentDisplay(trace)} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
         lockInScore,
         4
       )} | ${asFixed(cycle3, 4)} | ${basinStateLabel(basinState)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${
@@ -4733,7 +4848,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
 }
 
 function canonicalConfidenceSaturationObservation(summary: ConditionSummary): string | null {
-  if (summary.profile !== "belief_drift_triangle_3agent") return null;
+  if (!isCanonicalBeliefDriftProfile(summary.profile)) return null;
 
   const consensusTraces = summary.traces
     .map((trace) => {
@@ -5044,7 +5159,7 @@ function buildLabReportMarkdown(params: {
       }
     }
 
-    if (profile === "belief_drift_triangle_3agent" && raw) {
+    if (isCanonicalBeliefDriftProfile(profile) && raw) {
       const saturationObservation = canonicalConfidenceSaturationObservation(raw);
       if (saturationObservation) {
         sections.push("");
@@ -5754,6 +5869,391 @@ function DriftPhasePlot({ rawSummary, sanitizedSummary }: { rawSummary: Conditio
   );
 }
 
+function agentSlotsForSummary(summary: ConditionSummary): string[] {
+  if (isCanonicalBeliefDriftProfile(summary.profile)) {
+    return buildTriangleAgentSequence(summary.runConfig.agentCount).map((entry) => entry.slotLabel);
+  }
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const trace of summary.traces) {
+    if (!seen.has(trace.agentSlot)) {
+      seen.add(trace.agentSlot);
+      ordered.push(trace.agentSlot);
+    }
+  }
+  return ordered;
+}
+
+function confidenceHeatColor(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "#f2f5f2";
+  const t = clamp01(value);
+  const hue = 162 - t * 34;
+  const saturation = 48 + t * 28;
+  const lightness = 95 - t * 46;
+  return `hsl(${hue.toFixed(1)} ${saturation.toFixed(1)}% ${lightness.toFixed(1)}%)`;
+}
+
+function driftFlagHeatColor(flag: number | null): string {
+  if (flag === null) return "#f2f5f2";
+  return flag === 1 ? "#b13a3a" : "#d9e8db";
+}
+
+function slotSeriesPath(params: {
+  points: Array<{ turn: number; value: number }>;
+  maxTurn: number;
+  maxValue: number;
+  width: number;
+  height: number;
+  paddingX: number;
+  paddingY: number;
+}): string {
+  const { points, maxTurn, maxValue, width, height, paddingX, paddingY } = params;
+  if (points.length === 0) return "";
+  const plotWidth = width - paddingX * 2;
+  const plotHeight = height - paddingY * 2;
+  const turnDivisor = Math.max(1, maxTurn - 1);
+  const valueDivisor = Math.max(0.0001, maxValue);
+  return points
+    .map((point) => {
+      const x = paddingX + ((point.turn - 1) / turnDivisor) * plotWidth;
+      const y = paddingY + (1 - point.value / valueDivisor) * plotHeight;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function slotColor(index: number): string {
+  const hue = (index * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)} 68% 42%)`;
+}
+
+function AgentScalingTopologyPanel({
+  profile,
+  rawSummary,
+  sanitizedSummary
+}: {
+  profile: ExperimentProfile;
+  rawSummary: ConditionSummary | null;
+  sanitizedSummary: ConditionSummary | null;
+}) {
+  const isCanonical = isCanonicalBeliefDriftProfile(profile);
+
+  const [viewCondition, setViewCondition] = useState<RepCondition>("raw");
+  const [showDriftHeatmap, setShowDriftHeatmap] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isCanonical) return;
+    if (viewCondition === "raw" && !rawSummary && sanitizedSummary) {
+      setViewCondition("sanitized");
+      return;
+    }
+    if (viewCondition === "sanitized" && !sanitizedSummary && rawSummary) {
+      setViewCondition("raw");
+    }
+  }, [isCanonical, rawSummary, sanitizedSummary, viewCondition]);
+
+  if (!isCanonical) return null;
+
+  const hasRaw = rawSummary !== null;
+  const hasSanitized = sanitizedSummary !== null;
+  const summary = viewCondition === "raw" ? rawSummary : sanitizedSummary;
+
+  if (!summary) {
+    return (
+      <section className="latest-card drift-chart-card agent-topology-panel">
+        <h4>Panel 6 - Agent Confidence Topology</h4>
+        <p className="muted">Run RAW or SANITIZED for this canonical profile to render per-agent heatmaps.</p>
+      </section>
+    );
+  }
+
+  const slots = agentSlotsForSummary(summary);
+  const maxTurn = summary.traces.at(-1)?.turnIndex ?? 0;
+  const cycleLength = Math.max(1, summary.runConfig.agentCount);
+  const cyclesObserved = maxTurn > 0 ? maxTurn / cycleLength : 0;
+
+  const confidenceByCell = new Map<string, number>();
+  const driftByCell = new Map<string, number>();
+  const traceByTurn = new Map<number, TurnTrace>();
+  for (const trace of summary.traces) {
+    traceByTurn.set(trace.turnIndex, trace);
+    if (trace.commitment !== null && Number.isFinite(trace.commitment)) {
+      confidenceByCell.set(`${trace.agentSlot}:${trace.turnIndex}`, clamp01(trace.commitment));
+    }
+    driftByCell.set(`${trace.agentSlot}:${trace.turnIndex}`, trace.structuralEpistemicDrift);
+  }
+
+  const lineSeries = slots.map((slot) => ({
+    slot,
+    points: summary.traces
+      .filter((trace) => trace.agentSlot === slot && trace.commitment !== null && Number.isFinite(trace.commitment))
+      .map((trace) => ({ turn: trace.turnIndex, value: clamp01(trace.commitment as number) }))
+  }));
+
+  const momentSeries: Array<{ turn: number; mean: number | null; variance: number | null }> = [];
+  const latestBySlot = new Map<string, number | null>();
+  for (const slot of slots) latestBySlot.set(slot, null);
+  for (let turn = 1; turn <= maxTurn; turn += 1) {
+    const trace = traceByTurn.get(turn);
+    if (trace && trace.commitment !== null && Number.isFinite(trace.commitment)) {
+      latestBySlot.set(trace.agentSlot, clamp01(trace.commitment));
+    }
+    const values = slots.map((slot) => latestBySlot.get(slot)).filter((value): value is number => value !== null);
+    if (values.length === 0) {
+      momentSeries.push({ turn, mean: null, variance: null });
+      continue;
+    }
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+    momentSeries.push({ turn, mean, variance });
+  }
+
+  const varianceMax = Math.max(...momentSeries.map((point) => point.variance ?? 0), 0.0001);
+
+  const labelWidth = Math.max(42, Math.min(88, 18 + Math.max(...slots.map((slot) => slot.length)) * 8));
+  const cellWidth = maxTurn > 220 ? 4 : maxTurn > 140 ? 5 : maxTurn > 90 ? 6 : 8;
+  const cellHeight = slots.length > 24 ? 12 : slots.length > 14 ? 14 : 16;
+  const heatTop = 18;
+  const heatBottom = 24;
+  const plotWidth = Math.max(1, maxTurn) * cellWidth;
+  const plotHeight = Math.max(1, slots.length) * cellHeight;
+  const heatWidth = labelWidth + plotWidth + 10;
+  const heatHeight = heatTop + plotHeight + heatBottom;
+  const cycleBoundaryTurns = Array.from({ length: Math.floor(maxTurn / cycleLength) }, (_, idx) => (idx + 1) * cycleLength);
+
+  const lineWidth = Math.max(720, Math.min(1400, 220 + maxTurn * 7));
+  const lineHeight = 230;
+  const linePaddingX = 44;
+  const linePaddingY = 16;
+  const meanPath = slotSeriesPath({
+    points: momentSeries
+      .filter((point): point is { turn: number; mean: number; variance: number | null } => point.mean !== null)
+      .map((point) => ({ turn: point.turn, value: point.mean })),
+    maxTurn,
+    maxValue: 1,
+    width: lineWidth,
+    height: lineHeight,
+    paddingX: linePaddingX,
+    paddingY: linePaddingY
+  });
+  const variancePath = slotSeriesPath({
+    points: momentSeries
+      .filter((point): point is { turn: number; mean: number | null; variance: number } => point.variance !== null)
+      .map((point) => ({ turn: point.turn, value: point.variance })),
+    maxTurn,
+    maxValue: varianceMax,
+    width: lineWidth,
+    height: lineHeight,
+    paddingX: linePaddingX,
+    paddingY: linePaddingY
+  });
+
+  return (
+    <section className="latest-card drift-chart-card agent-topology-panel">
+      <h4>Panel 6 - Agent Confidence Topology</h4>
+      <p className="muted">
+        Primary view: per-agent confidence heatmap (x=turn, y=agent slot). No smoothing or cross-agent averaging is applied.
+      </p>
+      <div className="topology-controls">
+        <div className="segmented-toggle">
+          <button type="button" className={viewCondition === "raw" ? "active" : ""} onClick={() => setViewCondition("raw")} disabled={!hasRaw}>
+            Condition A (RAW)
+          </button>
+          <button
+            type="button"
+            className={viewCondition === "sanitized" ? "active" : ""}
+            onClick={() => setViewCondition("sanitized")}
+            disabled={!hasSanitized}
+          >
+            Condition B (SANITIZED)
+          </button>
+        </div>
+        <label className="tiny telemetry-toggle">
+          <input type="checkbox" checked={showDriftHeatmap} onChange={(event) => setShowDriftHeatmap(event.target.checked)} /> Show drift-flag heatmap
+        </label>
+      </div>
+      <p className="tiny">
+        Viewing: <strong>{CONDITION_LABELS[viewCondition]}</strong> | slots={slots.length} | turns={maxTurn} | cycle length={cycleLength} | cycles observed≈
+        {cyclesObserved.toFixed(2)}
+      </p>
+
+      <div className="drift-chart-wrap">
+        <svg
+          viewBox={`0 0 ${heatWidth} ${heatHeight}`}
+          className="agent-heatmap-chart"
+          role="img"
+          aria-label="Per-agent confidence heatmap over turns"
+        >
+          {Array.from({ length: maxTurn }, (_, index) => index + 1).map((turn) =>
+            slots.map((slot, rowIndex) => {
+              const x = labelWidth + (turn - 1) * cellWidth;
+              const y = heatTop + rowIndex * cellHeight;
+              const confidence = confidenceByCell.get(`${slot}:${turn}`) ?? null;
+              return <rect key={`conf_${slot}_${turn}`} x={x} y={y} width={cellWidth} height={cellHeight} fill={confidenceHeatColor(confidence)} />;
+            })
+          )}
+          {cycleBoundaryTurns.map((turn) => {
+            const x = labelWidth + turn * cellWidth;
+            return <line key={`conf_cycle_${turn}`} x1={x} y1={heatTop} x2={x} y2={heatTop + plotHeight} className="heatmap-cycle-line" />;
+          })}
+          {slots.map((slot, rowIndex) => {
+            const y = heatTop + rowIndex * cellHeight + cellHeight * 0.75;
+            return (
+              <text key={`conf_label_${slot}`} x={labelWidth - 6} y={y} textAnchor="end" className="drift-label">
+                {slot}
+              </text>
+            );
+          })}
+          {maxTurn > 0 ? (
+            <>
+              <text x={labelWidth} y={heatHeight - 6} className="drift-label">
+                1
+              </text>
+              <text x={labelWidth + plotWidth} y={heatHeight - 6} textAnchor="end" className="drift-label">
+                {maxTurn}
+              </text>
+            </>
+          ) : null}
+        </svg>
+      </div>
+      <p className="tiny">Pattern guide: uniform ramp, staggered blocks, traveling waves, or hot plateaus indicate different reinforcement regimes.</p>
+
+      {showDriftHeatmap ? (
+        <div className="drift-chart-wrap">
+          <svg
+            viewBox={`0 0 ${heatWidth} ${heatHeight}`}
+            className="agent-heatmap-chart"
+            role="img"
+            aria-label="Per-agent structural drift flag heatmap over turns"
+          >
+            {Array.from({ length: maxTurn }, (_, index) => index + 1).map((turn) =>
+              slots.map((slot, rowIndex) => {
+                const x = labelWidth + (turn - 1) * cellWidth;
+                const y = heatTop + rowIndex * cellHeight;
+                const flag = driftByCell.get(`${slot}:${turn}`) ?? null;
+                return <rect key={`drift_${slot}_${turn}`} x={x} y={y} width={cellWidth} height={cellHeight} fill={driftFlagHeatColor(flag)} />;
+              })
+            )}
+            {cycleBoundaryTurns.map((turn) => {
+              const x = labelWidth + turn * cellWidth;
+              return <line key={`drift_cycle_${turn}`} x1={x} y1={heatTop} x2={x} y2={heatTop + plotHeight} className="heatmap-cycle-line" />;
+            })}
+            {slots.map((slot, rowIndex) => {
+              const y = heatTop + rowIndex * cellHeight + cellHeight * 0.75;
+              return (
+                <text key={`drift_label_${slot}`} x={labelWidth - 6} y={y} textAnchor="end" className="drift-label">
+                  {slot}
+                </text>
+              );
+            })}
+            {maxTurn > 0 ? (
+              <>
+                <text x={labelWidth} y={heatHeight - 6} className="drift-label">
+                  1
+                </text>
+                <text x={labelWidth + plotWidth} y={heatHeight - 6} textAnchor="end" className="drift-label">
+                  {maxTurn}
+                </text>
+              </>
+            ) : null}
+          </svg>
+        </div>
+      ) : null}
+
+      <div className="drift-chart-wrap">
+        <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Per-agent confidence line chart">
+          <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+          <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+          {[0.25, 0.5, 0.75].map((ratio) => {
+            const y = linePaddingY + (1 - ratio) * (lineHeight - linePaddingY * 2);
+            return <line key={`line_grid_${ratio}`} x1={linePaddingX} y1={y} x2={lineWidth - linePaddingX} y2={y} className="drift-grid" />;
+          })}
+          {lineSeries.map((series, index) => {
+            const path = slotSeriesPath({
+              points: series.points,
+              maxTurn,
+              maxValue: 1,
+              width: lineWidth,
+              height: lineHeight,
+              paddingX: linePaddingX,
+              paddingY: linePaddingY
+            });
+            if (!path) return null;
+            return <polyline key={`agent_line_${series.slot}`} points={path} fill="none" stroke={slotColor(index)} strokeWidth={1.6} opacity={0.82} />;
+          })}
+          {maxTurn > 0 ? (
+            <>
+              <text x={linePaddingX} y={lineHeight - 2} className="drift-label">
+                1
+              </text>
+              <text x={lineWidth - linePaddingX} y={lineHeight - 2} textAnchor="end" className="drift-label">
+                {maxTurn}
+              </text>
+              <text x={linePaddingX - 6} y={linePaddingY + 8} textAnchor="end" className="drift-label">
+                1
+              </text>
+              <text x={linePaddingX - 6} y={lineHeight - linePaddingY + 4} textAnchor="end" className="drift-label">
+                0
+              </text>
+            </>
+          ) : null}
+        </svg>
+      </div>
+      <p className="tiny">Line view is secondary and plotted per slot without smoothing.</p>
+
+      <div className="moments-grid">
+        <div className="drift-chart-wrap">
+          <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Mean confidence over turns">
+            <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+            <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+            {meanPath ? <polyline points={meanPath} fill="none" stroke="#1f5b3f" strokeWidth={2.2} /> : null}
+            {maxTurn > 0 ? (
+              <>
+                <text x={linePaddingX} y={lineHeight - 2} className="drift-label">
+                  1
+                </text>
+                <text x={lineWidth - linePaddingX} y={lineHeight - 2} textAnchor="end" className="drift-label">
+                  {maxTurn}
+                </text>
+                <text x={linePaddingX - 6} y={linePaddingY + 8} textAnchor="end" className="drift-label">
+                  1
+                </text>
+                <text x={linePaddingX - 6} y={lineHeight - linePaddingY + 4} textAnchor="end" className="drift-label">
+                  0
+                </text>
+              </>
+            ) : null}
+          </svg>
+        </div>
+        <div className="drift-chart-wrap">
+          <svg viewBox={`0 0 ${lineWidth} ${lineHeight}`} className="drift-chart" role="img" aria-label="Confidence variance over turns">
+            <line x1={linePaddingX} y1={lineHeight - linePaddingY} x2={lineWidth - linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+            <line x1={linePaddingX} y1={linePaddingY} x2={linePaddingX} y2={lineHeight - linePaddingY} className="drift-axis" />
+            {variancePath ? <polyline points={variancePath} fill="none" stroke="#ad3a3a" strokeWidth={2.2} /> : null}
+            {maxTurn > 0 ? (
+              <>
+                <text x={linePaddingX} y={lineHeight - 2} className="drift-label">
+                  1
+                </text>
+                <text x={lineWidth - linePaddingX} y={lineHeight - 2} textAnchor="end" className="drift-label">
+                  {maxTurn}
+                </text>
+                <text x={linePaddingX - 6} y={linePaddingY + 8} textAnchor="end" className="drift-label">
+                  {asFixed(varianceMax, 2)}
+                </text>
+                <text x={linePaddingX - 6} y={lineHeight - linePaddingY + 4} textAnchor="end" className="drift-label">
+                  0
+                </text>
+              </>
+            ) : null}
+          </svg>
+        </div>
+      </div>
+      <p className="tiny">Moment view: rising mean + rising variance then collapsing variance is a common cluster-to-convergence signature.</p>
+    </section>
+  );
+}
+
 function EdgeTransferPanel({
   profile,
   rawSummary,
@@ -6128,6 +6628,7 @@ export default function HomePage() {
       resolvedProvider: effectiveProvider,
       modelA: activeModel,
       modelB: activeModel,
+      agentCount: agentCountForProfile(profile),
       temperature,
       retries: FIXED_RETRIES,
       horizon: turnBudget,
@@ -6169,7 +6670,9 @@ export default function HomePage() {
     for (let turn = 1; turn <= turnBudget; turn += 1) {
       if (runControlRef.current.cancelled) break;
 
-      const agent = agentSequence[(turn - 1) % agentSequence.length];
+      const agentEntry = agentSequence[(turn - 1) % agentSequence.length];
+      const agent = agentEntry.role;
+      const agentSlot = agentEntry.slotLabel;
       const expectedStep = expectedStepForTurn(profile, agent, authoritativeStep);
       const expectedBytes = expectedLiteralForTurn(profile, expectedStep, injectedPrevState);
 
@@ -6201,7 +6704,7 @@ export default function HomePage() {
 
           if (retryable && hasMoreAttempts && !runControlRef.current.cancelled) {
             setRunPhaseText(
-              `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Turn ${turn} (${agent}) transport retry ${
+              `${PROFILE_LABELS[profile]} — ${CONDITION_LABELS[condition]} | Turn ${turn} (${agentSlot}) transport retry ${
                 llmAttempt + 1
               }/${RUN_LEVEL_LLM_MAX_ATTEMPTS}`
             );
@@ -6210,14 +6713,14 @@ export default function HomePage() {
           }
 
           const retrySuffix = retryable ? ` (run-level retry exhausted after ${llmAttempt} attempts).` : "";
-          llmFailureMessage = `LLM failure at turn ${turn} (${agent}): ${message}${retrySuffix}`;
+          llmFailureMessage = `LLM failure at turn ${turn} (${agentSlot}): ${message}${retrySuffix}`;
           break;
         }
       }
 
       if (!llmCompleted) {
         failed = true;
-        failureReason = llmFailureMessage ?? `LLM failure at turn ${turn} (${agent}): Request did not complete.`;
+        failureReason = llmFailureMessage ?? `LLM failure at turn ${turn} (${agentSlot}): Request did not complete.`;
         const partialSummary = buildConditionSummary({
           runConfig,
           condition,
@@ -6325,7 +6828,7 @@ export default function HomePage() {
       // RAW condition must remain byte-identical across reinjection.
       // If this ever trips, it means a hidden normalization path was introduced.
       if (condition === "raw" && injectedBytesNext !== outputBytes) {
-        throw new Error(`RAW reinjection integrity violation at turn ${turn} (${agent}): output bytes were modified before reinjection.`);
+        throw new Error(`RAW reinjection integrity violation at turn ${turn} (${agentSlot}): output bytes were modified before reinjection.`);
       }
 
       const objectiveFailure = isObjectiveFailure(profile, agent, objectiveMode, pf, ld, cv) ? 1 : 0;
@@ -6439,6 +6942,7 @@ export default function HomePage() {
         condition,
         turnIndex: turn,
         agent,
+        agentSlot,
         agentModel,
         inputBytes: injectedPrevState,
         historyBytes: historyBlock,
@@ -6859,8 +7363,10 @@ export default function HomePage() {
         <div className="brand-strip">
           <Image src="/GuardianAILogo.png" alt="GuardianAI logo" className="brand-logo" width={72} height={72} priority />
           <div className="brand-copy">
-            <strong>GuardianAI</strong>
-            <span className="brand-subtitle">Multi-agent Drift Lab</span>
+            <div className="brand-title-line">
+              <strong>GuardianAI</strong>
+              <span className="brand-subtitle">Multi-agent Drift Lab</span>
+            </div>
             <span className="brand-tagline">
               A deterministic multi-agent interaction loop used to observe how recursive exchanges affect trajectory stability and drift.
             </span>
@@ -7108,6 +7614,9 @@ export default function HomePage() {
                 <strong>Agent loop:</strong> {selectedScriptCard.loop}
               </p>
               <p className="tiny">
+                <strong>Agent slots:</strong> {agentCountForProfile(selectedProfile)} (one cycle = {agentCountForProfile(selectedProfile)} turns)
+              </p>
+              <p className="tiny">
                 <strong>Primary outputs:</strong> drift verdict, first drift turn, basin state, and belief basin strength.
               </p>
               <p className="tiny">
@@ -7138,7 +7647,7 @@ export default function HomePage() {
               <pre className="raw-pre script-spec-pre">{IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(selectedProfile) : profileRuleText(selectedProfile)}</pre>
               {selectedProfile === "epistemic_drift_protocol" ? (
                 <p className="tiny">
-                  Baseline note: Basin Depth Probe is kept as a control comparison against the canonical 3-agent drift scripts.
+                  Baseline note: Basin Depth Probe is kept as a control comparison against the canonical drift scripts.
                 </p>
               ) : null}
             </section>
@@ -7203,12 +7712,12 @@ export default function HomePage() {
                         const basinState = liveBasinStateByTurn.get(trace.turnIndex) ?? null;
                         return (
                           <tr
-                            key={`${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
+                            key={`${trace.turnIndex}_${trace.agentSlot}_${trace.rawHash.slice(0, 8)}`}
                             className={isViewedTurn ? "telemetry-row-active" : undefined}
                             onClick={() => selectMonitorTurn(trace.turnIndex)}
                           >
                             <td>{trace.turnIndex}</td>
-                            <td>{trace.agent}</td>
+                            <td>{traceAgentDisplay(trace)}</td>
                             <td>{asFixed(lockInScore, 4)}</td>
                             <td>{asFixed(cycle3, 4)}</td>
                             <td>{basinStateLabel(basinState)}</td>
@@ -7264,7 +7773,7 @@ export default function HomePage() {
                 <p className="mono">
                   Progress: {monitorTurnMax}/{turnBudget} ({liveTurnProgressPct.toFixed(1)}%)
                 </p>
-                <p className="mono">Latest agent: {monitorLatestTrace?.agent ?? "n/a"}</p>
+                <p className="mono">Latest agent: {monitorLatestTrace ? traceAgentDisplay(monitorLatestTrace) : "n/a"}</p>
                 <p className="mono">
                   Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
                 </p>
@@ -7306,8 +7815,8 @@ export default function HomePage() {
 
             <section className="latest-card" ref={panel1MonitorRef}>
               <h4>Panel 1A - Injection Stream (Turn Explorer)</h4>
-              <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${monitorLatestTrace.agent})` : "n/a"}</p>
-              <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
+              <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${traceAgentDisplay(monitorLatestTrace)})` : "n/a"}</p>
+              <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${traceAgentDisplay(monitorTrace)})` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
                 <p className="mono">
                   Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
@@ -7386,12 +7895,12 @@ export default function HomePage() {
                         const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
                         return (
                           <tr
-                            key={`viewer_${trace.turnIndex}_${trace.agent}_${trace.rawHash.slice(0, 8)}`}
+                            key={`viewer_${trace.turnIndex}_${trace.agentSlot}_${trace.rawHash.slice(0, 8)}`}
                             className={isViewedTurn ? "telemetry-row-active" : undefined}
                             onClick={() => selectMonitorTurn(trace.turnIndex)}
                           >
                             <td>{trace.turnIndex}</td>
-                            <td>{trace.agent}</td>
+                            <td>{traceAgentDisplay(trace)}</td>
                             <td>{trace.parseOk}</td>
                             <td>{trace.stateOk}</td>
                             <td className="output-preview-cell">{previewText(trace.outputBytes, 140)}</td>
@@ -7415,7 +7924,7 @@ export default function HomePage() {
 
             <section className="latest-card">
               <h4>Panel 1B - LLM Output (Model vs Contract)</h4>
-              <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${monitorTrace.agent})` : "n/a"}</p>
+              <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${traceAgentDisplay(monitorTrace)})` : "n/a"}</p>
               <p className="mono">
                 Contract match (Cv): {monitorTrace ? (monitorTrace.cv === 0 ? "MATCH" : "MISMATCH") : "n/a"}
                 {cvDiagnosticNoteForObjective(monitorSummary?.objectiveMode ?? objectiveMode)}
@@ -7671,6 +8180,7 @@ export default function HomePage() {
                     <p className="muted">Run both RAW and SANITIZED for the current profile to evaluate the criterion.</p>
                   )}
                 </section>
+                <AgentScalingTopologyPanel profile={selectedProfile} rawSummary={rawSummary} sanitizedSummary={sanitizedSummary} />
               </div>
             </section>
           </article>
