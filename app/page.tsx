@@ -576,6 +576,7 @@ interface ConditionSummary {
   decisionErrorPeak: number | null;
   decisionErrorSlope: number | null;
   firstDecisionErrorTurn: number | null;
+  propagationDetected: number | null;
   driftTurns: number[];
   driftTurnModuloAgentCount: number[];
   driftWindowStartTurns: number[];
@@ -4089,6 +4090,7 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     decisionErrorPeak: summary.decisionErrorPeak,
     decisionErrorSlope: summary.decisionErrorSlope,
     firstDecisionErrorTurn: summary.firstDecisionErrorTurn,
+    propagationDetected: summary.propagationDetected,
     driftTurns: summary.driftTurns,
     driftTurnModuloAgentCount: summary.driftTurnModuloAgentCount,
     driftWindowStartTurns: summary.driftWindowStartTurns,
@@ -4243,6 +4245,18 @@ function buildConditionSummary(params: {
         )
       : null;
   const firstDecisionErrorTurn = traces.find((trace) => trace.decisionError !== null && trace.decisionError > 0)?.turnIndex ?? null;
+  const injectionDecisionError = traces.find((trace) => trace.turnIndex === LAB3_PERTURBATION_TURN)?.decisionError ?? null;
+  const postInjectionDecisionErrorPeak = traces
+    .filter((trace) => trace.turnIndex > LAB3_PERTURBATION_TURN)
+    .map((trace) => trace.decisionError)
+    .filter((value): value is number => value !== null)
+    .reduce<number | null>((max, value) => (max === null ? value : Math.max(max, value)), null);
+  const propagationDetected =
+    runConfig.profile === "belief_drift_triangle_3agent"
+      ? injectionDecisionError !== null && postInjectionDecisionErrorPeak !== null && postInjectionDecisionErrorPeak > injectionDecisionError + 0.001
+        ? 1
+        : 0
+      : null;
   const constraintGrowthValues = traces
     .map((trace) => trace.constraintGrowth)
     .filter((value): value is number => value !== null);
@@ -4452,6 +4466,7 @@ function buildConditionSummary(params: {
     decisionErrorPeak,
     decisionErrorSlope,
     firstDecisionErrorTurn,
+    propagationDetected,
     driftTurns,
     driftTurnModuloAgentCount,
     driftWindowStartTurns,
@@ -4858,6 +4873,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
             5
           )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
         : "",
+      summary.profile === "belief_drift_triangle_3agent"
+        ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
+        : "",
       isBeliefLoopProfile(summary.profile)
         ? `- drift_turn % agent_count (${summary.runConfig.agentCount}): windows [${formatTurnList(summary.driftWindowStartTurns)}] -> mod [${formatTurnList(
             summary.driftWindowStartModuloAgentCount
@@ -4938,6 +4956,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           summary.decisionErrorSlope,
           5
         )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
+      : "",
+    summary.profile === "belief_drift_triangle_3agent"
+      ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
       : "",
     isBeliefLoopProfile(summary.profile)
       ? `- drift_turn % agent_count (${summary.runConfig.agentCount}): windows [${formatTurnList(summary.driftWindowStartTurns)}] -> mod [${formatTurnList(
@@ -8104,6 +8125,9 @@ export default function HomePage() {
                               decision_error latest/peak/slope: {asFixed(summary.decisionErrorLatest, 4)} / {asFixed(summary.decisionErrorPeak, 4)} /{" "}
                               {asFixed(summary.decisionErrorSlope, 5)} | first non-zero turn: {summary.firstDecisionErrorTurn ?? "n/a"}
                             </p>
+                          ) : null}
+                          {summary.profile === "belief_drift_triangle_3agent" ? (
+                            <p className="mono">Propagation: {summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}</p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
