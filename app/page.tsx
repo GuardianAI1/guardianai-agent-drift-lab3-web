@@ -152,7 +152,8 @@ const LAB3_GROUND_TRUTH_VALUE = 1000;
 const LAB3_INJECTED_VALUE = 1100;
 const LAB3_TRUE_CLAIM = `ValueEstimate:${LAB3_GROUND_TRUTH_VALUE}`;
 const LAB3_INJECTED_CLAIM = `ValueEstimate:${LAB3_INJECTED_VALUE}`;
-const LAB3_PROPAGATION_GAIN = 1.05;
+const LAB3_PROPAGATION_GAIN = 1.1;
+const LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY = true;
 const CRITIC_ONLY_CLAIM = "Renewable energy could supply the majority of global electricity by 2050.";
 const CRITIC_ONLY_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
 const CRITIC_ONLY_EVIDENCE_POOL: Record<string, string> = {
@@ -575,6 +576,13 @@ interface ConditionSummary {
   decisionErrorPeak: number | null;
   decisionErrorSlope: number | null;
   firstDecisionErrorTurn: number | null;
+  driftTurns: number[];
+  driftTurnModuloAgentCount: number[];
+  driftWindowStartTurns: number[];
+  driftWindowStartModuloAgentCount: number[];
+  driftWindowCycleSynchronized: number | null;
+  driftWindowPeriodTurns: number | null;
+  driftWindowRecursEveryCycle: number | null;
   avgReasoningDepth: number | null;
   avgAlternativeVariance: number | null;
   avgCommitmentDeltaPos: number | null;
@@ -849,6 +857,12 @@ function asPercent(value: number | null): string {
 function asFixed(value: number | null, digits = 3): string {
   if (value === null || !Number.isFinite(value)) return "N/A";
   return value.toFixed(digits);
+}
+
+function formatTurnList(values: number[], limit = 16): string {
+  if (values.length === 0) return "n/a";
+  const shown = values.slice(0, limit).join(", ");
+  return values.length > limit ? `${shown}, ...` : shown;
 }
 
 function previewText(value: string | null | undefined, maxChars = 120): string {
@@ -1504,11 +1518,14 @@ function lab3ClaimLiteral(value: number): string {
   return `ValueEstimate:${Math.round(value)}`;
 }
 
-function lab3PropagatedClaimFromState(stateInput: string, agent: AgentRole): string {
+function lab3PropagatedClaimFromState(stateInput: string, agent: AgentRole, turnIndex: number): string {
   const priorState = consensusStateFromLiteral(stateInput, "belief_drift_triangle_3agent");
   const priorValue = priorState ? lab3ClaimValue(priorState.claim) : null;
   if (priorValue === null) return LAB3_INJECTED_CLAIM;
   if (agent !== "C") return lab3ClaimLiteral(priorValue);
+  if (LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY && turnIndex % triangleAgentCountForProfile("belief_drift_triangle_3agent") !== 0) {
+    return lab3ClaimLiteral(priorValue);
+  }
 
   const delta = priorValue - LAB3_GROUND_TRUTH_VALUE;
   if (delta === 0) return LAB3_TRUE_CLAIM;
@@ -2955,7 +2972,7 @@ function trianglePromptLockState(profile: ExperimentProfile, stateInput: string,
         ? LAB3_TRUE_CLAIM
         : turnIndex === LAB3_PERTURBATION_TURN
           ? LAB3_INJECTED_CLAIM
-          : lab3PropagatedClaimFromState(stateInput, agent)
+          : lab3PropagatedClaimFromState(stateInput, agent, turnIndex)
       : config.claim;
   const stance = config.stance;
   const safeEvidenceIds = [...config.fixedEvidenceIds];
@@ -3609,7 +3626,9 @@ function profileRuleText(profile: ExperimentProfile): string {
         `Turns 1-5: locked claim = "${LAB3_TRUE_CLAIM}" (ground truth baseline).`,
         `Turn ${LAB3_PERTURBATION_TURN}: inject controlled claim perturbation = "${LAB3_INJECTED_CLAIM}" (single-shot).`,
         `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: propagate recursively from reinjected prior state.`,
-        `Propagation rule: Agent C amplifies absolute claim error by ${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(0)}% each cycle; Agents A/B relay.`,
+        `Propagation rule: Agent C amplifies absolute claim error by ${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
+          0
+        )}% on cycle boundaries; Agents A/B relay.`,
         "Confidence ratchet: +0.05 per turn (cap 0.99).",
         "Schema order fixed: step, claim, stance, confidence, evidence_ids.",
         `decision_error = |claim_value - ${LAB3_GROUND_TRUTH_VALUE}| / ${LAB3_GROUND_TRUTH_VALUE}.`
@@ -3733,7 +3752,7 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
         "Step 1 (turns 1-5): stable baseline with claim ValueEstimate:1000.",
         "Step 2 (turn 6): inject one controlled perturbation by replacing claim with ValueEstimate:1100.",
         "Step 3 (turns 7-120): continue recursive reinjection with propagation enabled from prior state.",
-        "Propagation rule: Agent C amplifies absolute claim error by 5% each cycle while A/B relay.",
+        "Propagation rule: Agent C amplifies absolute claim error by 10% on cycle boundaries while A/B relay.",
         "Primary metrics: confidence trajectory and decision_error relative to known ground truth.",
         "decision_error = |claim_value - 1000| / 1000.",
         "Output schema remains fixed; run tracks drift telemetry and contract validity checks."
@@ -3960,6 +3979,7 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       agreement_rate: trace.agreementRate,
       evidence_diversity: trace.evidenceDiversity,
       structural_epistemic_drift: trace.structuralEpistemicDrift,
+      drift_turn_mod_agent_count: trace.structuralEpistemicDrift === 1 ? trace.turnIndex % Math.max(1, summary.runConfig.agentCount) : null,
       raw_hash: trace.rawHash,
       expected_hash: trace.expectedHash,
       parse_error: trace.parseError ?? null
@@ -4026,6 +4046,7 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     drift_rule_satisfied: trace.driftRuleSatisfied,
     drift_streak: trace.driftStreak,
     structural_epistemic_drift: trace.structuralEpistemicDrift,
+    drift_turn_mod_agent_count: trace.structuralEpistemicDrift === 1 ? trace.turnIndex % Math.max(1, summary.runConfig.agentCount) : null,
     context_length: trace.contextLength,
     context_length_growth: trace.contextLengthGrowth,
     raw_hash: trace.rawHash,
@@ -4068,6 +4089,13 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     decisionErrorPeak: summary.decisionErrorPeak,
     decisionErrorSlope: summary.decisionErrorSlope,
     firstDecisionErrorTurn: summary.firstDecisionErrorTurn,
+    driftTurns: summary.driftTurns,
+    driftTurnModuloAgentCount: summary.driftTurnModuloAgentCount,
+    driftWindowStartTurns: summary.driftWindowStartTurns,
+    driftWindowStartModuloAgentCount: summary.driftWindowStartModuloAgentCount,
+    driftWindowCycleSynchronized: summary.driftWindowCycleSynchronized,
+    driftWindowPeriodTurns: summary.driftWindowPeriodTurns,
+    driftWindowRecursEveryCycle: summary.driftWindowRecursEveryCycle,
     structuralEpistemicDriftFlag: summary.structuralEpistemicDriftFlag,
     firstStructuralDriftTurn: summary.firstStructuralDriftTurn,
     lockInOnsetTurn: summary.lockInOnsetTurn,
@@ -4237,6 +4265,27 @@ function buildConditionSummary(params: {
   const closureConstraintRatio =
     commitmentGrowthMass > 0 ? commitmentGrowthMass / Math.max(0.000001, constraintGrowthMass) : null;
   const structuralDriftStreakMax = traces.reduce((max, trace) => Math.max(max, trace.driftStreak), 0);
+  const driftTurns = traces.filter((trace) => trace.structuralEpistemicDrift === 1).map((trace) => trace.turnIndex);
+  const driftTurnModuloAgentCount = driftTurns.map((turn) => turn % Math.max(1, runConfig.agentCount));
+  const driftWindowStartTurns = traces
+    .filter((trace, index) => trace.structuralEpistemicDrift === 1 && (index === 0 || traces[index - 1].structuralEpistemicDrift === 0))
+    .map((trace) => trace.turnIndex);
+  const driftWindowStartModuloAgentCount = driftWindowStartTurns.map((turn) => turn % Math.max(1, runConfig.agentCount));
+  const driftWindowCycleSynchronized =
+    driftWindowStartModuloAgentCount.length >= 2
+      ? new Set(driftWindowStartModuloAgentCount).size === 1
+        ? 1
+        : 0
+      : null;
+  const driftWindowIntervals = driftWindowStartTurns.slice(1).map((turn, index) => turn - driftWindowStartTurns[index]);
+  const driftWindowPeriodTurns =
+    driftWindowIntervals.length === 0
+      ? null
+      : driftWindowIntervals.every((interval) => interval === driftWindowIntervals[0])
+        ? driftWindowIntervals[0]
+        : null;
+  const driftWindowRecursEveryCycle =
+    driftWindowPeriodTurns === null ? null : driftWindowPeriodTurns === Math.max(1, runConfig.agentCount) ? 1 : 0;
   const firstStructuralDriftTurn = traces.find((trace) => trace.structuralEpistemicDrift === 1)?.turnIndex ?? null;
   const lockIn = computeLockInTelemetry(traces);
   const trajectory = computeTrajectoryUiTelemetry(traces, condition);
@@ -4403,6 +4452,13 @@ function buildConditionSummary(params: {
     decisionErrorPeak,
     decisionErrorSlope,
     firstDecisionErrorTurn,
+    driftTurns,
+    driftTurnModuloAgentCount,
+    driftWindowStartTurns,
+    driftWindowStartModuloAgentCount,
+    driftWindowCycleSynchronized,
+    driftWindowPeriodTurns,
+    driftWindowRecursEveryCycle,
     avgReasoningDepth,
     avgAlternativeVariance,
     avgCommitmentDeltaPos,
@@ -4803,6 +4859,13 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
         : "",
       isBeliefLoopProfile(summary.profile)
+        ? `- drift_turn % agent_count (${summary.runConfig.agentCount}): windows [${formatTurnList(summary.driftWindowStartTurns)}] -> mod [${formatTurnList(
+            summary.driftWindowStartModuloAgentCount
+          )}] | synchronized=${summary.driftWindowCycleSynchronized === null ? "n/a" : summary.driftWindowCycleSynchronized ? "YES" : "NO"} | period=${
+            summary.driftWindowPeriodTurns ?? "N/A"
+          } | every_cycle=${summary.driftWindowRecursEveryCycle === null ? "n/a" : summary.driftWindowRecursEveryCycle ? "YES" : "NO"}`
+        : "",
+      isBeliefLoopProfile(summary.profile)
         ? `- Cycle Reinforcement (3-turn) latest/peak: ${asFixed(summary.cycleReinforcement3Latest, 4)} / ${asFixed(summary.cycleReinforcement3Peak, 4)}`
         : "",
       isBeliefLoopProfile(summary.profile)
@@ -4875,6 +4938,13 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           summary.decisionErrorSlope,
           5
         )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
+      : "",
+    isBeliefLoopProfile(summary.profile)
+      ? `- drift_turn % agent_count (${summary.runConfig.agentCount}): windows [${formatTurnList(summary.driftWindowStartTurns)}] -> mod [${formatTurnList(
+          summary.driftWindowStartModuloAgentCount
+        )}] | synchronized=${summary.driftWindowCycleSynchronized === null ? "n/a" : summary.driftWindowCycleSynchronized ? "YES" : "NO"} | period=${
+          summary.driftWindowPeriodTurns ?? "N/A"
+        } | every_cycle=${summary.driftWindowRecursEveryCycle === null ? "n/a" : summary.driftWindowRecursEveryCycle ? "YES" : "NO"}`
       : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Lag transfer A→B P(dev_B|dev_A) / P(dev_B|clean_A) / Δ: ${asPercent(summary.lagTransferABDevGivenPrevDev)} / ${asPercent(
@@ -8033,6 +8103,15 @@ export default function HomePage() {
                             <p className="mono">
                               decision_error latest/peak/slope: {asFixed(summary.decisionErrorLatest, 4)} / {asFixed(summary.decisionErrorPeak, 4)} /{" "}
                               {asFixed(summary.decisionErrorSlope, 5)} | first non-zero turn: {summary.firstDecisionErrorTurn ?? "n/a"}
+                            </p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) ? (
+                            <p className="mono">
+                              drift_turn % agent_count ({summary.runConfig.agentCount}) | windows: [{formatTurnList(summary.driftWindowStartTurns)}] -&gt; mod [
+                              {formatTurnList(summary.driftWindowStartModuloAgentCount)}] | synchronized:{" "}
+                              {summary.driftWindowCycleSynchronized === null ? "n/a" : summary.driftWindowCycleSynchronized ? "YES" : "NO"} | period:{" "}
+                              {summary.driftWindowPeriodTurns ?? "n/a"} | every cycle:{" "}
+                              {summary.driftWindowRecursEveryCycle === null ? "n/a" : summary.driftWindowRecursEveryCycle ? "YES" : "NO"}
                             </p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
