@@ -434,6 +434,7 @@ interface EdgeTransferStats {
 }
 
 type TrajectoryStatus = "exploration" | "reinforcement" | "basin_formation" | "basin_stabilization";
+type TrajectoryDynamics = "stable" | "building" | "accelerating" | "closing";
 type BasinState = "open" | "forming" | "stabilized";
 type BeliefBasinStrengthBand = "none" | "forming" | "shallow" | "deep" | "locked";
 
@@ -1716,6 +1717,58 @@ function basinStateLabel(state: BasinState | null): string {
     default:
       return "n/a";
   }
+}
+
+function trajectoryDynamicsLabel(state: TrajectoryDynamics | null): string {
+  switch (state) {
+    case "stable":
+      return "stable";
+    case "building":
+      return "building";
+    case "accelerating":
+      return "accelerating";
+    case "closing":
+      return "closing";
+    default:
+      return "n/a";
+  }
+}
+
+function trajectoryDynamicsFromSummary(summary: ConditionSummary | null): TrajectoryDynamics | null {
+  if (!summary || summary.traces.length === 0) return null;
+
+  if (summary.basinStateLatest === "stabilized" || summary.trajectoryStatusLatest === "basin_stabilization") {
+    return "closing";
+  }
+
+  let positiveStreak = 0;
+  for (let index = summary.traces.length - 1; index >= 0; index -= 1) {
+    const trace = summary.traces[index];
+    if (trace.commitmentDelta === null || trace.constraintGrowth === null) break;
+    const lockInScore = trace.commitmentDelta - trace.constraintGrowth;
+    const positiveLockIn = lockInScore > LOCK_IN_SCORE_THRESHOLD && trace.constraintGrowth <= LOCK_IN_CONSTRAINT_EPSILON;
+    if (!positiveLockIn) break;
+    positiveStreak += 1;
+  }
+
+  const cycle3Latest = summary.cycleReinforcement3Latest;
+  const accelerationReady =
+    positiveStreak >= 2 &&
+    cycle3Latest !== null &&
+    cycle3Latest >= LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD * 0.7;
+
+  const reinforcementBand =
+    summary.trajectoryStatusLatest === "reinforcement" || summary.trajectoryStatusLatest === "basin_formation";
+  if (reinforcementBand) {
+    return accelerationReady ? "accelerating" : "building";
+  }
+
+  if (summary.lockInScoreLatest !== null && summary.lockInScoreLatest > LOCK_IN_SCORE_THRESHOLD) {
+    return accelerationReady ? "accelerating" : "building";
+  }
+
+  if (positiveStreak >= 2) return "building";
+  return "stable";
 }
 
 function classifyTrajectoryStatus(params: {
@@ -4500,6 +4553,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       isBeliefLoopProfile(summary.profile)
         ? `- Trajectory Stability Index (latest/peak): ${asFixed(summary.trajectoryStabilityIndexLatest, 4)} / ${asFixed(summary.trajectoryStabilityIndexPeak, 4)}`
         : "",
+      isBeliefLoopProfile(summary.profile) ? `- Trajectory Dynamics (latest): ${trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(summary))}` : "",
       isBeliefLoopProfile(summary.profile) ? `- Basin State (latest): ${basinStateLabel(summary.basinStateLatest)}` : "",
       isBeliefLoopProfile(summary.profile)
         ? `- Belief Basin Strength: ${summary.beliefBasinStrengthBand ?? "n/a"} (depth ${asFixed(summary.beliefBasinDepth, 4)}, score ${asFixed(
@@ -4585,6 +4639,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile)
       ? `- Trajectory Stability Index (latest/peak): ${asFixed(summary.trajectoryStabilityIndexLatest, 4)} / ${asFixed(summary.trajectoryStabilityIndexPeak, 4)}`
       : "",
+    isBeliefLoopProfile(summary.profile) ? `- Trajectory Dynamics (latest): ${trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(summary))}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Basin State (latest): ${basinStateLabel(summary.basinStateLatest)}` : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Belief Basin Strength: ${summary.beliefBasinStrengthBand ?? "n/a"} (depth ${asFixed(summary.beliefBasinDepth, 4)}, score ${asFixed(
@@ -4760,6 +4815,11 @@ function buildLabReportMarkdown(params: {
         )}`
       );
       sections.push(
+        `- RAW/SAN Trajectory Dynamics (latest): ${trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(raw))} / ${trajectoryDynamicsLabel(
+          trajectoryDynamicsFromSummary(sanitized)
+        )}`
+      );
+      sections.push(
         `- RAW/SAN Belief Basin Strength: ${(consensus?.rawBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth ${asFixed(
           consensus?.rawBeliefBasinDepth ?? null,
           4
@@ -4836,6 +4896,11 @@ function buildLabReportMarkdown(params: {
           )} vs ${asFixed(consensus?.sanitizedTrajectoryStabilityIndexLatest ?? null, 4)} / ${asFixed(
             consensus?.sanitizedTrajectoryStabilityIndexPeak ?? null,
             4
+          )}`
+        );
+        sections.push(
+          `- RAW/SAN Trajectory Dynamics (latest): ${trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(raw))} / ${trajectoryDynamicsLabel(
+            trajectoryDynamicsFromSummary(sanitized)
           )}`
         );
         sections.push(
@@ -5846,6 +5911,7 @@ export default function HomePage() {
     monitorLatestTrace !== null && monitorLatestTrace !== undefined
       ? monitorBasinStateByTurn.get(monitorLatestTrace.turnIndex) ?? null
       : null;
+  const liveTrajectoryDynamics = trajectoryDynamicsFromSummary(monitorSummary);
 
   useEffect(() => {
     const panelNode = panel1MonitorRef.current;
@@ -6977,7 +7043,7 @@ export default function HomePage() {
                 <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, plus lock-in onset and cycle reinforcement persistence.
               </p>
               <p className="tiny">
-                <strong>Trajectory view:</strong> Trajectory Stability Index (TSI), Cycle Reinforcement (3-turn), Basin State, and Belief Basin Strength are derived UI indicators from core telemetry.
+                <strong>Trajectory view:</strong> Trajectory Dynamics (stable/building/accelerating/closing), TSI, Cycle Reinforcement (3-turn), Basin State, and Belief Basin Strength are derived UI indicators from core telemetry.
               </p>
               <p className="tiny">
                 <strong>Quality gate:</strong> preflight checks Agent {preflightAgentForProfile(selectedProfile)} at turn{" "}
@@ -7145,6 +7211,7 @@ export default function HomePage() {
                   Basin State: {basinStateLabel(liveBasinState)} | TSI latest/peak:{" "}
                   {asFixed(monitorSummary?.trajectoryStabilityIndexLatest ?? null, 4)} / {asFixed(monitorSummary?.trajectoryStabilityIndexPeak ?? null, 4)}
                 </p>
+                <p className="mono">Trajectory Dynamics (latest): {trajectoryDynamicsLabel(liveTrajectoryDynamics)}</p>
                 <p className="mono">
                   Belief Basin Strength: {(monitorSummary?.beliefBasinStrengthBand ?? "n/a").toUpperCase()} | depth: {asFixed(
                     monitorSummary?.beliefBasinDepth ?? null,
@@ -7407,6 +7474,9 @@ export default function HomePage() {
                             </p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
+                            <p className="mono">Trajectory Dynamics (latest): {trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(summary))}</p>
+                          ) : null}
+                          {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
                               Belief Basin Strength: {(summary.beliefBasinStrengthBand ?? "n/a").toUpperCase()} | depth: {asFixed(
                                 summary.beliefBasinDepth,
@@ -7468,6 +7538,10 @@ export default function HomePage() {
                         RAW/SAN Trajectory Stability Index (latest/peak): {asFixed(consensusEval.rawTrajectoryStabilityIndexLatest, 4)} /{" "}
                         {asFixed(consensusEval.rawTrajectoryStabilityIndexPeak, 4)} vs {asFixed(consensusEval.sanitizedTrajectoryStabilityIndexLatest, 4)} /{" "}
                         {asFixed(consensusEval.sanitizedTrajectoryStabilityIndexPeak, 4)}
+                      </p>
+                      <p className="mono">
+                        RAW/SAN Trajectory Dynamics (latest): {trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(rawSummary))} /{" "}
+                        {trajectoryDynamicsLabel(trajectoryDynamicsFromSummary(sanitizedSummary))}
                       </p>
                       <p className="mono">
                         RAW/SAN Belief Basin Strength: {(consensusEval.rawBeliefBasinStrengthBand ?? "n/a").toUpperCase()} (depth{" "}
