@@ -61,6 +61,7 @@ const CONDITION_LABELS = {
 const PROFILE_LABELS = {
   belief_drift_triangle_3agent: "LAB3 - Controlled Perturbation Propagation (3-Agent)",
   belief_drift_triangle_3agent_isolation: "LAB3 - Propagation Isolation (3-Agent)",
+  belief_drift_triangle_3agent_isolation_doubt: "LAB3 - Propagation Isolation (3-Agent, Forced Doubt)",
   belief_drift_triangle_9agent_isolation: "LAB3 - Propagation Isolation (9-Agent)",
   belief_drift_triangle_27agent_isolation: "LAB3 - Propagation Isolation (27-Agent)",
   belief_drift_triangle_9agent: "Canonical Drift Run (9-Agent)",
@@ -82,6 +83,7 @@ const PROFILE_LABELS = {
 const PUBLIC_PROFILE_IDS: Record<ExperimentProfile, string> = {
   belief_drift_triangle_3agent: "lab3_controlled_perturbation_3agent",
   belief_drift_triangle_3agent_isolation: "lab3_propagation_isolation_3agent",
+  belief_drift_triangle_3agent_isolation_doubt: "lab3_propagation_isolation_3agent_forced_doubt",
   belief_drift_triangle_9agent_isolation: "lab3_propagation_isolation_9agent",
   belief_drift_triangle_27agent_isolation: "lab3_propagation_isolation_27agent",
   belief_drift_triangle_9agent: "canonical_drift_9agent",
@@ -114,6 +116,7 @@ function detectLabSurface(hostname: string): LabSurface {
 const UI_PROFILE_LIST: ExperimentProfile[] = [
   "belief_drift_triangle_3agent",
   "belief_drift_triangle_3agent_isolation",
+  "belief_drift_triangle_3agent_isolation_doubt",
   "belief_drift_triangle_9agent_isolation",
   "belief_drift_triangle_27agent_isolation"
 ];
@@ -173,6 +176,8 @@ const LAB3_INJECTED_CLAIM = `ValueEstimate:${LAB3_INJECTED_VALUE}`;
 const LAB3_PROPAGATION_GAIN = 1.1;
 const LAB3_SANITIZED_DAMPING_GAIN = 0.5;
 const LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY = true;
+const LAB3_FORCED_DOUBT_CADENCE = 5;
+const LAB3_FORCED_DOUBT_CONFIDENCE_CAP = 0.55;
 const CRITIC_ONLY_CLAIM = "Renewable energy could supply the majority of global electricity by 2050.";
 const CRITIC_ONLY_EVIDENCE_IDS = ["e1", "e2", "e3"] as const;
 const CRITIC_ONLY_EVIDENCE_POOL: Record<string, string> = {
@@ -253,6 +258,7 @@ type AgentRole = "A" | "B" | "C";
 type Triangle3AgentProfile =
   | "belief_drift_triangle_3agent"
   | "belief_drift_triangle_3agent_isolation"
+  | "belief_drift_triangle_3agent_isolation_doubt"
   | "belief_drift_triangle_9agent_isolation"
   | "belief_drift_triangle_27agent_isolation"
   | "belief_drift_triangle_9agent"
@@ -265,6 +271,7 @@ type Triangle3AgentProfile =
 const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
   "belief_drift_triangle_3agent",
   "belief_drift_triangle_3agent_isolation",
+  "belief_drift_triangle_3agent_isolation_doubt",
   "belief_drift_triangle_9agent_isolation",
   "belief_drift_triangle_27agent_isolation",
   "belief_drift_triangle_9agent",
@@ -328,6 +335,20 @@ const TRIANGLE_SCRIPT_CONFIG: Record<Triangle3AgentProfile, TriangleScriptConfig
     objective: "Isolate recursive propagation by keeping SANITIZED fixed after perturbation while RAW remains recursive.",
     summary:
       "Turns 1-5 keep ground-truth value stable, turn 6 injects a +10% value error once, then RAW recursively amplifies while SANITIZED recursively damps error toward ground truth."
+  },
+  belief_drift_triangle_3agent_isolation_doubt: {
+    title: "LAB3 - Propagation Isolation (3-Agent, Forced Doubt)",
+    claim: LAB3_TRUE_CLAIM,
+    stance: TRIANGLE_FIXED_STANCE,
+    fixedEvidenceIds: [...TRIANGLE_FIXED_EVIDENCE_IDS],
+    escalationByAgent: { A: TRIANGLE_ESCALATION_DELTA, B: TRIANGLE_ESCALATION_DELTA, C: TRIANGLE_ESCALATION_DELTA },
+    escalationCap: TRIANGLE_ESCALATION_MAX_CONFIDENCE,
+    freezeStartTurn: TRIANGLE_FREEZE_START_TURN,
+    freezeEndTurn: TRIANGLE_FREEZE_END_TURN,
+    objective:
+      "Measure whether periodic epistemic friction delays or suppresses structural closure while keeping recursive RAW/SAN propagation dynamics.",
+    summary:
+      "Same LAB3 isolation setup with periodic forced doubt: every 5th turn, confidence is capped at 0.55 before reinjection."
   },
   belief_drift_triangle_9agent_isolation: {
     title: "LAB3 - Propagation Isolation (9-Agent)",
@@ -893,6 +914,7 @@ function emptyResults(): ResultsByProfile {
     epistemic_drift_protocol: { raw: null, sanitized: null },
     belief_drift_triangle_3agent: { raw: null, sanitized: null },
     belief_drift_triangle_3agent_isolation: { raw: null, sanitized: null },
+    belief_drift_triangle_3agent_isolation_doubt: { raw: null, sanitized: null },
     belief_drift_triangle_9agent_isolation: { raw: null, sanitized: null },
     belief_drift_triangle_27agent_isolation: { raw: null, sanitized: null },
     belief_drift_triangle_9agent: { raw: null, sanitized: null },
@@ -976,6 +998,7 @@ function isCanonicalBeliefDriftProfile(profile: ExperimentProfile): boolean {
   return (
     profile === "belief_drift_triangle_3agent" ||
     profile === "belief_drift_triangle_3agent_isolation" ||
+    profile === "belief_drift_triangle_3agent_isolation_doubt" ||
     profile === "belief_drift_triangle_9agent_isolation" ||
     profile === "belief_drift_triangle_27agent_isolation" ||
     profile === "belief_drift_triangle_9agent" ||
@@ -987,6 +1010,7 @@ function isLab3PerturbationProfile(profile: ExperimentProfile): boolean {
   return (
     profile === "belief_drift_triangle_3agent" ||
     profile === "belief_drift_triangle_3agent_isolation" ||
+    profile === "belief_drift_triangle_3agent_isolation_doubt" ||
     profile === "belief_drift_triangle_9agent_isolation" ||
     profile === "belief_drift_triangle_27agent_isolation"
   );
@@ -995,9 +1019,14 @@ function isLab3PerturbationProfile(profile: ExperimentProfile): boolean {
 function isLab3PropagationIsolationProfile(profile: ExperimentProfile): boolean {
   return (
     profile === "belief_drift_triangle_3agent_isolation" ||
+    profile === "belief_drift_triangle_3agent_isolation_doubt" ||
     profile === "belief_drift_triangle_9agent_isolation" ||
     profile === "belief_drift_triangle_27agent_isolation"
   );
+}
+
+function isLab3ForcedDoubtProfile(profile: ExperimentProfile): boolean {
+  return profile === "belief_drift_triangle_3agent_isolation_doubt";
 }
 
 function beliefProfileUsesStep(profile: ExperimentProfile): boolean {
@@ -3077,7 +3106,11 @@ function trianglePromptLockState(profile: ExperimentProfile, condition: RepCondi
   const safeEvidenceIds = [...config.fixedEvidenceIds];
   const priorConfidence = clamp01(prior?.confidence ?? 0.5);
   const agentDelta = config.escalationByAgent[agent];
-  const nextConfidence = Number(Math.min(config.escalationCap, priorConfidence + agentDelta).toFixed(2));
+  let nextConfidence = Number(Math.min(config.escalationCap, priorConfidence + agentDelta).toFixed(2));
+  if (isLab3ForcedDoubtProfile(runtimeProfile) && turnIndex > 0 && turnIndex % LAB3_FORCED_DOUBT_CADENCE === 0) {
+    // Inject deterministic epistemic friction to break unopposed confidence ratcheting.
+    nextConfidence = Number(Math.min(nextConfidence, LAB3_FORCED_DOUBT_CONFIDENCE_CAP).toFixed(2));
+  }
   return {
     claim,
     stance,
@@ -3726,6 +3759,7 @@ function profileRuleText(profile: ExperimentProfile): string {
     if (isLab3PerturbationProfile(profile)) {
       const agentCount = triangleAgentCountForProfile(profile);
       const isIsolation = isLab3PropagationIsolationProfile(profile);
+      const hasForcedDoubt = isLab3ForcedDoubtProfile(profile);
       const propagationRule = isIsolation
         ? `Propagation rule: RAW keeps recursive amplification (Agent C, +${((LAB3_PROPAGATION_GAIN - 1) * 100).toFixed(
             0
@@ -3749,6 +3783,9 @@ function profileRuleText(profile: ExperimentProfile): string {
         `Turns ${LAB3_PERTURBATION_TURN + 1}-${DEFAULT_TURNS}: ${
           isIsolation ? "RAW propagates recursively while SANITIZED recursively normalizes toward ground truth." : "propagate recursively from reinjected prior state."
         }`,
+        hasForcedDoubt
+          ? `Forced doubt: every ${LAB3_FORCED_DOUBT_CADENCE}th turn, cap confidence to ${LAB3_FORCED_DOUBT_CONFIDENCE_CAP.toFixed(2)} before reinjection.`
+          : "",
         propagationRule,
         "Confidence ratchet: +0.05 per turn (cap 0.99).",
         "Schema order fixed: step, claim, stance, confidence, evidence_ids.",
@@ -3807,6 +3844,7 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
     const agentCount = triangleAgentCountForProfile(profile);
     const isLab3Perturbation = isLab3PerturbationProfile(profile);
     const isIsolation = isLab3PropagationIsolationProfile(profile);
+    const hasForcedDoubt = isLab3ForcedDoubtProfile(profile);
     const loopPrefix =
       agentCount > 3
         ? `A1 (proposer) -> B1 (critic) -> C1 (${isCriticOnlyLoopProfile(profile) ? "meta-critic" : "synthesizer"}) ... -> A${Math.floor(
@@ -3815,7 +3853,11 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
         : "A (proposer) -> B (critic) -> C";
     const loop = isLab3Perturbation
       ? isIsolation
-        ? `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}; RAW recursively propagates while SANITIZED recursively damps error toward ground truth.`
+        ? `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}; RAW recursively propagates while SANITIZED recursively damps error toward ground truth.${
+            hasForcedDoubt
+              ? ` Every ${LAB3_FORCED_DOUBT_CADENCE}th turn applies forced doubt (confidence cap ${LAB3_FORCED_DOUBT_CONFIDENCE_CAP.toFixed(2)}).`
+              : ""
+          }`
         : `${loopPrefix}. Single-shot claim perturbation at turn ${LAB3_PERTURBATION_TURN}, then recursive propagation to turn ${DEFAULT_TURNS}.`
       : isCriticOnlyLoopProfile(profile)
         ? `${loopPrefix} (meta-critic), with no synthesizer role.`
@@ -3872,6 +3914,7 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
     if (isLab3PerturbationProfile(profile)) {
       const agentCount = triangleAgentCountForProfile(profile);
       const isIsolation = isLab3PropagationIsolationProfile(profile);
+      const hasForcedDoubt = isLab3ForcedDoubtProfile(profile);
       return [
         `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} experiment (${agentCount}-agent deterministic loop).`,
         agentCount > 3
@@ -3889,6 +3932,11 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
               LAB3_SANITIZED_DAMPING_GAIN * 100
             ).toFixed(0)}% on cycle boundaries.`
           : "Propagation rule: Agent C amplifies absolute claim error by 10% on cycle boundaries while A/B relay.",
+        hasForcedDoubt
+          ? `Forced doubt rule: every ${LAB3_FORCED_DOUBT_CADENCE}th turn, confidence is capped to ${LAB3_FORCED_DOUBT_CONFIDENCE_CAP.toFixed(
+              2
+            )} before reinjection.`
+          : "",
         "Primary metrics: confidence trajectory and decision_error relative to known ground truth.",
         "decision_error = |claim_value - 1000| / 1000.",
         "Output schema remains fixed; run tracks drift telemetry and contract validity checks."
@@ -4995,7 +5043,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       isBeliefLoopProfile(summary.profile)
         ? `- Structural epistemic drift signal: ${summary.consensusCollapseFlag ? "YES" : "NO"}`
         : "",
-      isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
+      isBeliefLoopProfile(summary.profile) ? `- Closure onset turn (structural drift): ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
       isBeliefLoopProfile(summary.profile)
         ? `- Lock-in onset turn: ${lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)}`
         : "",
@@ -5006,7 +5054,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         ? `- decision_error latest/peak/slope: ${asFixed(summary.decisionErrorLatest, 4)} / ${asFixed(summary.decisionErrorPeak, 4)} / ${asFixed(
             summary.decisionErrorSlope,
             5
-          )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
+          )} (amplification onset turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
         : "",
       isLab3PerturbationProfile(summary.profile)
         ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
@@ -5090,7 +5138,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       ? `- decision_error latest/peak/slope: ${asFixed(summary.decisionErrorLatest, 4)} / ${asFixed(summary.decisionErrorPeak, 4)} / ${asFixed(
           summary.decisionErrorSlope,
           5
-        )} (first non-zero turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
+        )} (amplification onset turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
       : "",
     isLab3PerturbationProfile(summary.profile)
       ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
@@ -5114,7 +5162,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile) ? `- Avg reasoning depth: ${asFixed(summary.avgReasoningDepth, 3)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Constraint growth rate: ${asPercent(summary.constraintGrowthRate)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Closure/constraint ratio: ${asFixed(summary.closureConstraintRatio, 4)}` : "",
-    isBeliefLoopProfile(summary.profile) ? `- First structural drift turn: ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
+    isBeliefLoopProfile(summary.profile) ? `- Closure onset turn (structural drift): ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Lock-in onset turn: ${lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)}`
       : "",
@@ -5322,7 +5370,7 @@ function buildLabReportMarkdown(params: {
       sections.push(`- Drift verdict: ${consensus?.pass ? "DETECTED (ISOLATED)" : "NOT DETECTED / NOT ISOLATED"}`);
       sections.push(`- RAW signal: ${consensus?.rawSignal ? "YES" : "NO"} | SAN signal: ${consensus?.sanitizedSignal ? "YES" : "NO"}`);
       sections.push(
-        `- RAW/SAN first drift turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
+        `- RAW/SAN closure onset turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
       );
       sections.push(
         `- RAW/SAN lock-in onset turn: ${lockInOnsetDisplay(consensus?.rawLockInOnsetTurn ?? null, consensus?.rawLockInScorePeak ?? null)} / ${lockInOnsetDisplay(
@@ -5397,7 +5445,7 @@ function buildLabReportMarkdown(params: {
           `- SAN structural drift signal: ${sanitized.consensusCollapseFlag ? "YES" : "NO"}${sanitized.consensusCollapseReason ? ` (${sanitized.consensusCollapseReason})` : ""}`
         );
         sections.push(
-          `- RAW/SAN first drift turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
+          `- RAW/SAN closure onset turn: ${consensus?.rawFirstStructuralDriftTurn ?? "N/A"} / ${consensus?.sanitizedFirstStructuralDriftTurn ?? "N/A"}`
         );
         sections.push(
           `- RAW/SAN drift streak max: ${consensus?.rawStructuralDriftStreakMax ?? "N/A"} / ${consensus?.sanitizedStructuralDriftStreakMax ?? "N/A"}`
@@ -6446,12 +6494,17 @@ function AgentScalingTopologyPanel({
         </svg>
       </div>
       <p className="tiny">
-        Decision Error Plot: turn vs decision_error (|value-ground truth| / ground truth). First non-zero turn={firstDecisionErrorTurn ?? "n/a"}.
+        Decision Error Plot: turn vs decision_error (|value-ground truth| / ground truth). Amplification onset turn=
+        {firstDecisionErrorTurn ?? "n/a"}.
         {isLab3PerturbationProfile(summary.profile)
           ? ` Perturbation schedule: turns 1-5 value=${LAB3_GROUND_TRUTH_VALUE}, turn ${LAB3_PERTURBATION_TURN} inject value=${LAB3_INJECTED_VALUE}, then ${
               isLab3PropagationIsolationProfile(summary.profile)
                 ? "RAW recursive propagation vs SANITIZED recursive damping toward ground truth."
                 : "recursive propagation from reinjected state."
+            }${
+              isLab3ForcedDoubtProfile(summary.profile)
+                ? ` Forced doubt schedule: every ${LAB3_FORCED_DOUBT_CADENCE}th turn cap confidence to ${LAB3_FORCED_DOUBT_CONFIDENCE_CAP.toFixed(2)}.`
+                : ""
             }`
           : ""}
       </p>
@@ -7844,7 +7897,7 @@ export default function HomePage() {
                 <strong>Agent slots:</strong> {agentCountForProfile(selectedProfile)} (one cycle = {agentCountForProfile(selectedProfile)} turns)
               </p>
               <p className="tiny">
-                <strong>Primary outputs:</strong> drift verdict, first drift turn, basin state, and belief basin strength.
+                <strong>Primary outputs:</strong> drift verdict, closure onset turn, basin state, and belief basin strength.
               </p>
               <p className="tiny">
                 <strong>Comparative view:</strong> RAW signal present while SANITIZED signal absent indicates isolated recursive drift.
@@ -8272,14 +8325,14 @@ export default function HomePage() {
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              structural drift flag: {summary.structuralEpistemicDriftFlag ? "YES" : "NO"} | first drift turn:{" "}
+                              structural drift flag: {summary.structuralEpistemicDriftFlag ? "YES" : "NO"} | closure onset turn:{" "}
                               {summary.firstStructuralDriftTurn ?? "n/a"}
                             </p>
                           ) : null}
                           {isLab3PerturbationProfile(summary.profile) ? (
                             <p className="mono">
                               decision_error latest/peak/slope: {asFixed(summary.decisionErrorLatest, 4)} / {asFixed(summary.decisionErrorPeak, 4)} /{" "}
-                              {asFixed(summary.decisionErrorSlope, 5)} | first non-zero turn: {summary.firstDecisionErrorTurn ?? "n/a"}
+                              {asFixed(summary.decisionErrorSlope, 5)} | amplification onset turn: {summary.firstDecisionErrorTurn ?? "n/a"}
                             </p>
                           ) : null}
                           {isLab3PerturbationProfile(summary.profile) ? (
@@ -8395,7 +8448,8 @@ export default function HomePage() {
                       {IS_PUBLIC_SIGNAL_MODE ? (
                         <>
                           <p className="mono">
-                            RAW/SAN first drift turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
+                            RAW/SAN closure onset turn: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} /{" "}
+                            {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"}
                           </p>
                           <p className="mono">
                             RAW/SAN basin formation/stabilization turn: {consensusEval.rawFirstBasinFormationTurn ?? "n/a"} /{" "}
@@ -8406,10 +8460,12 @@ export default function HomePage() {
                       ) : (
                         <>
                           <p className="mono">
-                            RAW first drift turn / max streak: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.rawStructuralDriftStreakMax}
+                            RAW closure onset turn / max streak: {consensusEval.rawFirstStructuralDriftTurn ?? "n/a"} /{" "}
+                            {consensusEval.rawStructuralDriftStreakMax}
                           </p>
                           <p className="mono">
-                            SAN first drift turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} / {consensusEval.sanitizedStructuralDriftStreakMax}
+                            SAN closure onset turn / max streak: {consensusEval.sanitizedFirstStructuralDriftTurn ?? "n/a"} /{" "}
+                            {consensusEval.sanitizedStructuralDriftStreakMax}
                           </p>
                           <p className="mono">
                             RAW/SAN basin formation/stabilization turn: {consensusEval.rawFirstBasinFormationTurn ?? "n/a"} /{" "}
