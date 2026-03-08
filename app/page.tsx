@@ -104,6 +104,13 @@ function exportProfileId(profile: ExperimentProfile): string {
   return PUBLIC_PROFILE_IDS[profile] ?? profile;
 }
 
+function detectLabSurface(hostname: string): LabSurface {
+  const normalized = hostname.trim().toLowerCase();
+  if (normalized === "app2.guardianai.fr") return "app2";
+  if (normalized === "app3.guardianai.fr") return "app3";
+  return "default";
+}
+
 const UI_PROFILE_LIST: ExperimentProfile[] = [
   "belief_drift_triangle_3agent",
   "belief_drift_triangle_3agent_isolation",
@@ -237,6 +244,7 @@ type SignalVisibilityMode = "public" | "private";
 const SIGNAL_VISIBILITY_MODE: SignalVisibilityMode = "public";
 const IS_PUBLIC_SIGNAL_MODE = true;
 type GuardianRuntimeState = "unknown" | "connected" | "degraded" | "disabled";
+type LabSurface = "default" | "app2" | "app3";
 
 type RepCondition = keyof typeof CONDITION_LABELS;
 type ExperimentProfile = keyof typeof PROFILE_LABELS;
@@ -6530,6 +6538,7 @@ function SectionDocModal({ title, body, onClose }: { title: string; body: string
 
 export default function HomePage() {
   const guardianEnabled = (process.env.NEXT_PUBLIC_GUARDIAN_ENABLED ?? "1").trim() !== "0";
+  const [labSurface, setLabSurface] = useState<LabSurface>("default");
   const [apiProvider, setApiProvider] = useState<APIProvider>(DEFAULT_PROVIDER);
   const [apiKey, setApiKey] = useState<string>("");
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
@@ -6601,10 +6610,28 @@ export default function HomePage() {
     localStorage.removeItem(STORAGE_API_KEY_VALUE_KEY);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setLabSurface(detectLabSurface(window.location.hostname));
+  }, []);
+
   const effectiveProvider = useMemo(() => resolveProvider(apiProvider, apiKey), [apiProvider, apiKey]);
   const effectiveModelOptions = useMemo(() => modelOptionsForProvider(effectiveProvider), [effectiveProvider]);
   const websiteURL = (process.env.NEXT_PUBLIC_GUARDIAN_WEBSITE_URL ?? "https://guardianai.fr").trim();
   const githubURL = (process.env.NEXT_PUBLIC_GITHUB_REPO_URL ?? "https://github.com/GuardianAI1/guardianai-agent-drift-lab3-web").trim();
+  const isApp2OrApp3 = labSurface === "app2" || labSurface === "app3";
+  const brandSubtitle = isApp2OrApp3 ? "Multi-Agent Lab" : "Multi-agent Drift Lab";
+  const brandExperimentSubtitle = labSurface === "app3" ? "— Perturbation Experiment" : labSurface === "app2" ? "— Drift Experiment" : null;
+  const brandTagline = isApp2OrApp3
+    ? "A deterministic multi-agent loop for observing stability and drift under recursion."
+    : "A deterministic multi-agent interaction loop used to observe how recursive exchanges affect trajectory stability and drift.";
+  const specDownloads = useMemo(
+    () =>
+      isApp2OrApp3
+        ? SPEC_DOWNLOADS.map((spec) => (spec.kind === "Reference Experiment" ? { ...spec, title: "Multi-Agent Lab" } : spec))
+        : SPEC_DOWNLOADS,
+    [isApp2OrApp3]
+  );
 
   useEffect(() => {
     const allowedModels = effectiveModelOptions.map((option) => option.value);
@@ -7567,11 +7594,10 @@ export default function HomePage() {
           <div className="brand-copy">
             <div className="brand-title-line">
               <strong>GuardianAI</strong>
-              <span className="brand-subtitle">Multi-agent Drift Lab</span>
+              <span className="brand-subtitle">{brandSubtitle}</span>
+              {brandExperimentSubtitle ? <span className="brand-subtitle brand-experiment-subtitle">{brandExperimentSubtitle}</span> : null}
             </div>
-            <span className="brand-tagline">
-              A deterministic multi-agent interaction loop used to observe how recursive exchanges affect trajectory stability and drift.
-            </span>
+            <span className="brand-tagline">{brandTagline}</span>
           </div>
         </div>
 
@@ -7677,7 +7703,7 @@ export default function HomePage() {
       <section className="spec-strip">
         <h3>Specifications</h3>
         <div className="spec-strip-grid">
-          {SPEC_DOWNLOADS.map((spec) => (
+          {specDownloads.map((spec) => (
             <article key={spec.title} className="spec-doc-item">
               <p className="spec-doc-kind">{spec.kind}</p>
               <p className="spec-doc-title">{spec.title}</p>

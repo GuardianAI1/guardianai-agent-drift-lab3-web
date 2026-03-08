@@ -74,7 +74,7 @@ pre,
   grid-area: controls;
   display: grid;
   grid-template-columns: minmax(112px, 1fr) minmax(112px, 1fr) minmax(190px, 1.2fr) minmax(220px, 1.55fr) minmax(170px, 1fr);
-  align-items: end;
+  align-items: start;
   gap: 8px;
   min-width: 0;
 }
@@ -138,6 +138,10 @@ pre,
 .brand-copy .brand-subtitle {
   font-size: 18px;
   line-height: 1.05;
+}
+
+.brand-copy .brand-experiment-subtitle {
+  font-size: 16px;
 }
 
 .brand-copy .brand-tagline {
