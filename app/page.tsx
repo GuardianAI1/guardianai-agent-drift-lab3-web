@@ -7687,11 +7687,10 @@ export default function HomePage() {
           <div className="field-block status-field">
             <label aria-hidden="true">&nbsp;</label>
             <div className="status-box">
-              <div className="status-line">
+              <div className="status-line combined-status-line">
                 <span className={`dot ${isRunning ? "good" : "warn"}`} />
                 <span>Run {isRunning ? "ON" : "OFF"}</span>
-              </div>
-              <div className="status-line">
+                <span className="status-divider">|</span>
                 <span className={`dot ${guardianStatusDotClass}`} />
                 <span>Guardian {guardianStatusLabel}</span>
               </div>
