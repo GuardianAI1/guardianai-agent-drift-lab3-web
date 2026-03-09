@@ -494,7 +494,7 @@ button:disabled {
 
 .run-config-grid {
   display: grid;
-  grid-template-columns: minmax(170px, 220px) minmax(170px, 210px) repeat(3, minmax(95px, 120px));
+  grid-template-columns: minmax(170px, 220px) minmax(170px, 210px) repeat(4, minmax(95px, 120px));
   gap: 8px;
   justify-content: start;
   align-items: end;
@@ -512,16 +512,20 @@ button:disabled {
   grid-column: 2 / 3;
 }
 
-.run-field-tokens {
+.run-field-agents {
   grid-column: 3 / 4;
 }
 
-.run-field-temp {
+.run-field-tokens {
   grid-column: 4 / 5;
 }
 
-.run-field-delay {
+.run-field-temp {
   grid-column: 5 / 6;
+}
+
+.run-field-delay {
+  grid-column: 6 / 7;
 }
 
 .turn-field-controls {
@@ -1033,6 +1037,39 @@ button:disabled {
   background: #f7faf8;
 }
 
+.structural-phases-card {
+  border: 1px solid var(--line);
+  background: #f7faf8;
+}
+
+.structural-phases-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.structural-phases-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.structural-phase-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.structural-phase-title {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .live-snapshot-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1479,6 +1516,10 @@ button:disabled {
 }
 
 @media (max-width: 1100px) {
+  .structural-phases-grid {
+    grid-template-columns: 1fr;
+  }
+
   .live-snapshot-grid {
     grid-template-columns: 1fr;
   }
@@ -1506,6 +1547,7 @@ button:disabled {
 
   .run-field-script,
   .run-field-turns,
+  .run-field-agents,
   .run-field-tokens,
   .run-field-temp,
   .run-field-delay {

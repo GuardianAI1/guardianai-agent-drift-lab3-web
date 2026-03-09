@@ -283,11 +283,43 @@ const TRIANGLE_3_AGENT_PROFILES: readonly Triangle3AgentProfile[] = [
 ] as const;
 
 const TRIANGLE_3_AGENT_PROFILE_SET = new Set<ExperimentProfile>(TRIANGLE_3_AGENT_PROFILES);
+const AGENT_COUNT_OPTIONS = [3, 5, 7] as const;
 
 function triangleAgentCountForProfile(profile: ExperimentProfile): number {
   if (profile === "belief_drift_triangle_9agent" || profile === "belief_drift_triangle_9agent_isolation") return 9;
   if (profile === "belief_drift_triangle_27agent" || profile === "belief_drift_triangle_27agent_isolation") return 27;
   return 3;
+}
+
+function supportsAgentCountSelection(profile: ExperimentProfile): boolean {
+  return isBeliefTriangle3AgentProfile(profile);
+}
+
+function clampAgentCount(value: number): (typeof AGENT_COUNT_OPTIONS)[number] {
+  if (AGENT_COUNT_OPTIONS.includes(value as (typeof AGENT_COUNT_OPTIONS)[number])) {
+    return value as (typeof AGENT_COUNT_OPTIONS)[number];
+  }
+  return AGENT_COUNT_OPTIONS[0];
+}
+
+function cycleIndexForTurn(turnIndex: number, agentCount: number): number {
+  const safeAgentCount = Math.max(1, Math.floor(agentCount));
+  return Math.floor((Math.max(1, turnIndex) - 1) / safeAgentCount) + 1;
+}
+
+function lockInCycleReinforcementThreshold(cycleWindow: number): number {
+  return (LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD / LOCK_IN_CYCLE_WINDOW) * Math.max(1, cycleWindow);
+}
+
+function basinCycleReinforcementMin(cycleWindow: number): number {
+  return (BASIN_CYCLE_REINFORCEMENT_MIN / LOCK_IN_CYCLE_WINDOW) * Math.max(1, cycleWindow);
+}
+
+function effectiveAgentCountForProfile(profile: ExperimentProfile, selectedAgentCount: number): number {
+  if (supportsAgentCountSelection(profile)) {
+    return clampAgentCount(selectedAgentCount);
+  }
+  return agentCountForProfile(profile);
 }
 
 function agentCountForProfile(profile: ExperimentProfile): number {
@@ -507,6 +539,8 @@ interface TurnTrace {
   profile: ExperimentProfile;
   condition: RepCondition;
   turnIndex: number;
+  cycleIndex: number;
+  agentCount: number;
   agent: AgentRole;
   agentSlot: string;
   agentModel: string;
@@ -664,6 +698,7 @@ interface ConditionSummary {
   decisionErrorPeak: number | null;
   decisionErrorSlope: number | null;
   firstDecisionErrorTurn: number | null;
+  amplificationCycle: number | null;
   propagationDetected: number | null;
   driftTurns: number[];
   driftTurnModuloAgentCount: number[];
@@ -679,6 +714,7 @@ interface ConditionSummary {
   closureConstraintRatio: number | null;
   structuralDriftStreakMax: number;
   firstStructuralDriftTurn: number | null;
+  closureCycle: number | null;
   lockInOnsetTurn: number | null;
   lockInScoreLatest: number | null;
   lockInScorePeak: number | null;
@@ -687,9 +723,11 @@ interface ConditionSummary {
   trajectoryStabilityIndexPeak: number | null;
   trajectoryStatusLatest: TrajectoryStatus | null;
   basinStateLatest: BasinState | null;
-  cycleReinforcement3Latest: number | null;
-  cycleReinforcement3Peak: number | null;
+  cycleReinforcementLatest: number | null;
+  cycleReinforcementPeak: number | null;
+  cycleReinforcementWindow: number;
   firstBasinFormationTurn: number | null;
+  basinFormationCycle: number | null;
   firstBasinStabilizationTurn: number | null;
   beliefBasinDepth: number | null;
   beliefBasinStrengthScore: number | null;
@@ -856,10 +894,12 @@ interface ConsensusEval {
   sanitizedTrajectoryStatusLatest: TrajectoryStatus | null;
   rawBasinStateLatest: BasinState | null;
   sanitizedBasinStateLatest: BasinState | null;
-  rawCycleReinforcement3Latest: number | null;
-  sanitizedCycleReinforcement3Latest: number | null;
-  rawCycleReinforcement3Peak: number | null;
-  sanitizedCycleReinforcement3Peak: number | null;
+  rawCycleReinforcementLatest: number | null;
+  sanitizedCycleReinforcementLatest: number | null;
+  rawCycleReinforcementPeak: number | null;
+  sanitizedCycleReinforcementPeak: number | null;
+  rawCycleReinforcementWindow: number;
+  sanitizedCycleReinforcementWindow: number;
   rawFirstBasinFormationTurn: number | null;
   sanitizedFirstBasinFormationTurn: number | null;
   rawFirstBasinStabilizationTurn: number | null;
@@ -1634,12 +1674,19 @@ function lab3ClaimLiteral(value: number): string {
   return `ValueEstimate:${Math.round(value)}`;
 }
 
-function lab3PropagatedClaimFromState(profile: ExperimentProfile, condition: RepCondition, stateInput: string, agent: AgentRole, turnIndex: number): string {
+function lab3PropagatedClaimFromState(
+  profile: ExperimentProfile,
+  condition: RepCondition,
+  stateInput: string,
+  agent: AgentRole,
+  turnIndex: number,
+  agentCount: number
+): string {
   const priorState = consensusStateFromLiteral(stateInput, profile);
   const priorValue = priorState ? lab3ClaimValue(priorState.claim) : null;
   if (priorValue === null) return LAB3_INJECTED_CLAIM;
   if (agent !== "C") return lab3ClaimLiteral(priorValue);
-  if (LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY && turnIndex % triangleAgentCountForProfile(profile) !== 0) {
+  if (LAB3_PROPAGATION_CYCLE_BOUNDARY_ONLY && turnIndex % Math.max(1, agentCount) !== 0) {
     return lab3ClaimLiteral(priorValue);
   }
 
@@ -1911,7 +1958,9 @@ interface LockInTelemetry {
   positiveStreakMax: number;
 }
 
-function computeLockInTelemetry(traces: TurnTrace[]): LockInTelemetry {
+function computeLockInTelemetry(traces: TurnTrace[], cycleWindow: number): LockInTelemetry {
+  const cycleLength = Math.max(1, Math.floor(cycleWindow));
+  const cycleReinforcementThreshold = lockInCycleReinforcementThreshold(cycleLength);
   let onsetTurn: number | null = null;
   let scoreLatest: number | null = null;
   let scorePeak: number | null = null;
@@ -1935,10 +1984,10 @@ function computeLockInTelemetry(traces: TurnTrace[]): LockInTelemetry {
       streak = 0;
     }
 
-    if (lockInHistory.length >= LOCK_IN_CYCLE_WINDOW) {
-      const recent = lockInHistory.slice(-LOCK_IN_CYCLE_WINDOW);
+    if (lockInHistory.length >= cycleLength) {
+      const recent = lockInHistory.slice(-cycleLength);
       const cycleReinforcement = recent.reduce((sum, value) => sum + value, 0);
-      const positiveCycle = cycleReinforcement > LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD;
+      const positiveCycle = cycleReinforcement > cycleReinforcementThreshold;
       if (positiveCycle) {
         positiveCycleStreak += 1;
         if (
@@ -1967,8 +2016,8 @@ interface TrajectoryUiTelemetry {
   tsiPeak: number | null;
   statusLatest: TrajectoryStatus | null;
   basinStateLatest: BasinState | null;
-  cycleReinforcement3Latest: number | null;
-  cycleReinforcement3Peak: number | null;
+  cycleReinforcementLatest: number | null;
+  cycleReinforcementPeak: number | null;
   firstBasinFormationTurn: number | null;
   firstBasinStabilizationTurn: number | null;
   beliefBasinDepth: number | null;
@@ -2029,11 +2078,12 @@ function trajectoryDynamicsFromSummary(summary: ConditionSummary | null): Trajec
     positiveStreak += 1;
   }
 
-  const cycle3Latest = summary.cycleReinforcement3Latest;
+  const cycleReinforcementLatest = summary.cycleReinforcementLatest;
+  const cycleReinforcementThreshold = lockInCycleReinforcementThreshold(summary.cycleReinforcementWindow);
   const accelerationReady =
     positiveStreak >= 2 &&
-    cycle3Latest !== null &&
-    cycle3Latest >= LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD * 0.7;
+    cycleReinforcementLatest !== null &&
+    cycleReinforcementLatest >= cycleReinforcementThreshold * 0.7;
 
   const reinforcementBand =
     summary.trajectoryStatusLatest === "reinforcement" || summary.trajectoryStatusLatest === "basin_formation";
@@ -2102,13 +2152,15 @@ function beliefBasinStrengthBandFromStreak(
   return "forming";
 }
 
-function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepCondition): TrajectoryUiTelemetry {
+function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepCondition, cycleWindow: number): TrajectoryUiTelemetry {
+  const cycleLength = Math.max(1, Math.floor(cycleWindow));
+  const basinReinforcementMin = basinCycleReinforcementMin(cycleLength);
   let tsiLatest: number | null = null;
   let tsiPeak: number | null = null;
   let statusLatest: TrajectoryStatus | null = null;
   let basinStateLatest: BasinState | null = traces.length > 0 ? "open" : null;
-  let cycleReinforcement3Latest: number | null = null;
-  let cycleReinforcement3Peak: number | null = null;
+  let cycleReinforcementLatest: number | null = null;
+  let cycleReinforcementPeak: number | null = null;
   let firstBasinFormationTurn: number | null = null;
   let firstBasinStabilizationTurn: number | null = null;
   let hasSeenBasinFormation = false;
@@ -2133,12 +2185,12 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepConditi
       tsiPeak = tsiPeak === null ? tsi : Math.max(tsiPeak, tsi);
     }
 
-    if (lockInHistory.length >= 3) {
-      const recent = lockInHistory.slice(-3);
+    if (lockInHistory.length >= cycleLength) {
+      const recent = lockInHistory.slice(-cycleLength);
       if (recent.every((value): value is number => value !== null)) {
-        const cycle3 = recent.reduce((sum, value) => sum + value, 0);
-        cycleReinforcement3Latest = cycle3;
-        cycleReinforcement3Peak = cycleReinforcement3Peak === null ? cycle3 : Math.max(cycleReinforcement3Peak, cycle3);
+        const cycleSignal = recent.reduce((sum, value) => sum + value, 0);
+        cycleReinforcementLatest = cycleSignal;
+        cycleReinforcementPeak = cycleReinforcementPeak === null ? cycleSignal : Math.max(cycleReinforcementPeak, cycleSignal);
       }
     }
 
@@ -2220,8 +2272,8 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepConditi
       basinStrengthScore = Math.max(0, Math.min(1, basinDepthValue / BELIEF_BASIN_DEPTH_SCORE_MAX));
       basinStrengthBand = beliefBasinStrengthBandFromStreak(lockInPositiveStreakMax, firstBasinStabilizationTurn !== null);
       if (
-        cycleReinforcement3Peak !== null &&
-        cycleReinforcement3Peak < BASIN_CYCLE_REINFORCEMENT_MIN &&
+        cycleReinforcementPeak !== null &&
+        cycleReinforcementPeak < basinReinforcementMin &&
         basinStrengthRank(basinStrengthBand) > basinStrengthRank("forming")
       ) {
         basinStrengthBand = "forming";
@@ -2262,8 +2314,8 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepConditi
     tsiPeak,
     statusLatest,
     basinStateLatest,
-    cycleReinforcement3Latest,
-    cycleReinforcement3Peak,
+    cycleReinforcementLatest,
+    cycleReinforcementPeak,
     firstBasinFormationTurn,
     firstBasinStabilizationTurn,
     beliefBasinDepth: basinDepthValue,
@@ -2273,18 +2325,19 @@ function computeTrajectoryUiTelemetry(traces: TurnTrace[], condition: RepConditi
   };
 }
 
-function cycleReinforcement3ByTurn(traces: TurnTrace[]): Map<number, number | null> {
+function cycleReinforcementByTurn(traces: TurnTrace[], cycleWindow: number): Map<number, number | null> {
+  const cycleLength = Math.max(1, Math.floor(cycleWindow));
   const map = new Map<number, number | null>();
   const lockInHistory: Array<number | null> = [];
   for (const trace of traces) {
     const lockInScore =
       trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
     lockInHistory.push(lockInScore);
-    if (lockInHistory.length < 3) {
+    if (lockInHistory.length < cycleLength) {
       map.set(trace.turnIndex, null);
       continue;
     }
-    const recent = lockInHistory.slice(-3);
+    const recent = lockInHistory.slice(-cycleLength);
     if (!recent.every((value): value is number => value !== null)) {
       map.set(trace.turnIndex, null);
       continue;
@@ -3077,7 +3130,14 @@ function buildBasinDepthProbeCriticUserPrompt(
   ].join("\n");
 }
 
-function trianglePromptLockState(profile: ExperimentProfile, condition: RepCondition, stateInput: string, agent: AgentRole, turnIndex: number): {
+function trianglePromptLockState(
+  profile: ExperimentProfile,
+  condition: RepCondition,
+  stateInput: string,
+  agent: AgentRole,
+  turnIndex: number,
+  agentCount: number
+): {
   claim: string;
   stance: (typeof CONSENSUS_STANCES)[number];
   evidenceIds: string[];
@@ -3100,7 +3160,7 @@ function trianglePromptLockState(profile: ExperimentProfile, condition: RepCondi
         ? LAB3_TRUE_CLAIM
         : turnIndex === LAB3_PERTURBATION_TURN
           ? LAB3_INJECTED_CLAIM
-          : lab3PropagatedClaimFromState(runtimeProfile, condition, stateInput, agent, turnIndex)
+          : lab3PropagatedClaimFromState(runtimeProfile, condition, stateInput, agent, turnIndex, agentCount)
       : config.claim;
   const stance = config.stance;
   const safeEvidenceIds = [...config.fixedEvidenceIds];
@@ -3133,7 +3193,8 @@ function buildBeliefTriangleProposerUserPrompt(
   historyBlock: string,
   stateInput: string,
   targetStep: number,
-  turnIndex: number
+  turnIndex: number,
+  agentCount: number
 ): string {
   const runtimeProfile = isBeliefTriangle3AgentProfile(profile) ? profile : "belief_drift_triangle_3agent";
   const verbatimState = buildVerbatimStateBlock(stateInput);
@@ -3141,7 +3202,7 @@ function buildBeliefTriangleProposerUserPrompt(
   const evidencePool = beliefEvidencePoolForProfile(runtimeProfile);
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
-  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "A", turnIndex);
+  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "A", turnIndex, agentCount);
   const targetLiteral = toBeliefStateLiteral(
     runtimeProfile,
     {
@@ -3195,7 +3256,8 @@ function buildBeliefTriangleCriticUserPrompt(
   historyBlock: string,
   stateInput: string,
   targetStep: number,
-  turnIndex: number
+  turnIndex: number,
+  agentCount: number
 ): string {
   const runtimeProfile = isBeliefTriangle3AgentProfile(profile) ? profile : "belief_drift_triangle_3agent";
   const verbatimState = buildVerbatimStateBlock(stateInput);
@@ -3203,7 +3265,7 @@ function buildBeliefTriangleCriticUserPrompt(
   const evidencePool = beliefEvidencePoolForProfile(runtimeProfile);
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
-  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "B", turnIndex);
+  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "B", turnIndex, agentCount);
   const targetLiteral = toBeliefStateLiteral(
     runtimeProfile,
     {
@@ -3257,7 +3319,8 @@ function buildBeliefTriangleSynthesizerUserPrompt(
   historyBlock: string,
   stateInput: string,
   targetStep: number,
-  turnIndex: number
+  turnIndex: number,
+  agentCount: number
 ): string {
   const runtimeProfile = isBeliefTriangle3AgentProfile(profile) ? profile : "belief_drift_triangle_3agent";
   const verbatimState = buildVerbatimStateBlock(stateInput);
@@ -3265,7 +3328,7 @@ function buildBeliefTriangleSynthesizerUserPrompt(
   const evidencePool = beliefEvidencePoolForProfile(runtimeProfile);
   const evidenceBlock = evidenceIds.map((id) => `- ${id}: ${evidencePool[id]}`).join("\n");
   const prior = consensusStateFromLiteral(stateInput, runtimeProfile);
-  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "C", turnIndex);
+  const lock = trianglePromptLockState(runtimeProfile, condition, stateInput, "C", turnIndex, agentCount);
   const targetLiteral = toBeliefStateLiteral(
     runtimeProfile,
     {
@@ -3531,7 +3594,8 @@ function buildAgentPrompt(
   historyBlock: string,
   stateInput: string,
   expectedStep: number,
-  turnIndex: number
+  turnIndex: number,
+  agentCount: number
 ): AgentPrompt {
   const strictBoundarySuffix = 'Return exactly one JSON object. No markdown fences. No prose. First character must be "{" and last character must be "}".';
   if (profile === "three_agent_drift_amplifier") {
@@ -3583,19 +3647,19 @@ function buildAgentPrompt(
     if (agent === "A") {
       return {
         systemPrompt: `You are Agent A (Proposer). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildBeliefTriangleProposerUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex)
+        userPrompt: buildBeliefTriangleProposerUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex, agentCount)
       };
     }
     if (agent === "B") {
       return {
         systemPrompt: `You are Agent B (Critic). Output JSON only. ${strictBoundarySuffix}`,
-        userPrompt: buildBeliefTriangleCriticUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex)
+        userPrompt: buildBeliefTriangleCriticUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex, agentCount)
       };
     }
     const agentCRole = isCriticOnlyLoopProfile(profile) ? "Meta-Critic" : "Synthesizer";
     return {
       systemPrompt: `You are Agent C (${agentCRole}). Output JSON only. ${strictBoundarySuffix}`,
-      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex)
+      userPrompt: buildBeliefTriangleSynthesizerUserPrompt(profile, condition, historyBlock, stateInput, expectedStep, turnIndex, agentCount)
     };
   }
 
@@ -3674,12 +3738,19 @@ function buildTriangleAgentSequence(agentCount: number): AgentSequenceEntry[] {
   });
 }
 
-function agentSequenceForProfile(profile: ExperimentProfile): AgentSequenceEntry[] {
+function triangleSequencePreview(agentCount: number): string {
+  return buildTriangleAgentSequence(agentCount)
+    .map((entry) => entry.slotLabel)
+    .join(" -> ");
+}
+
+function agentSequenceForProfile(profile: ExperimentProfile, agentCountOverride?: number): AgentSequenceEntry[] {
   if (profile === "three_agent_drift_amplifier") {
     return buildTriangleAgentSequence(3);
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
-    return buildTriangleAgentSequence(triangleAgentCountForProfile(profile));
+    const count = agentCountOverride ?? triangleAgentCountForProfile(profile);
+    return buildTriangleAgentSequence(Math.max(1, count));
   }
   return [
     { role: "A", slotLabel: "A" },
@@ -3743,7 +3814,7 @@ function expectedLiteralForTurn(profile: ExperimentProfile, expectedStep: number
   );
 }
 
-function profileRuleText(profile: ExperimentProfile): string {
+function profileRuleText(profile: ExperimentProfile, agentCountOverride?: number): string {
   if (profile === "three_agent_drift_amplifier") {
     return `Turn A: step = prev_step + 1, preserve state="${CONTRACT_STATE_LITERAL}" and meta="${CONTRACT_META_LITERAL}"\\nTurn B: beautify formatting only (values unchanged)\\nTurn C: compress formatting only (values unchanged)`;
   }
@@ -3757,7 +3828,7 @@ function profileRuleText(profile: ExperimentProfile): string {
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
     if (isLab3PerturbationProfile(profile)) {
-      const agentCount = triangleAgentCountForProfile(profile);
+      const agentCount = agentCountOverride ?? triangleAgentCountForProfile(profile);
       const isIsolation = isLab3PropagationIsolationProfile(profile);
       const hasForcedDoubt = isLab3ForcedDoubtProfile(profile);
       const propagationRule = isIsolation
@@ -3771,9 +3842,7 @@ function profileRuleText(profile: ExperimentProfile): string {
           )}% on cycle boundaries; Agents A/B relay.`;
       const topologyLine =
         agentCount > 3
-          ? `Sequential cycle (${agentCount} agents): A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(
-              agentCount / 3
-            )} -> C${Math.floor(agentCount / 3)}.`
+          ? `Sequential cycle (${agentCount} agents): ${triangleSequencePreview(agentCount)}.`
           : "Topology: A -> B -> C -> A.";
       return [
         `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} loop (${agentCount}-agent deterministic cycle).`,
@@ -3793,16 +3862,14 @@ function profileRuleText(profile: ExperimentProfile): string {
       ].join("\\n");
     }
     const config = triangleConfigForProfile(profile);
-    const agentCount = triangleAgentCountForProfile(profile);
+    const agentCount = agentCountOverride ?? triangleAgentCountForProfile(profile);
     const turnCRole = isCriticOnlyLoopProfile(profile) ? "Meta-Critic" : "Synthesizer";
     const roleNote = isCriticOnlyLoopProfile(profile)
       ? "\\nRole mode: critic-only loop (no synthesizer role)."
       : "";
     const cycleNote =
       agentCount > 3
-        ? `\\nSequential cycle (${agentCount} agents): A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(agentCount / 3)} -> C${Math.floor(
-            agentCount / 3
-          )}.`
+        ? `\\nSequential cycle (${agentCount} agents): ${triangleSequencePreview(agentCount)}.`
         : "";
     return `${config.title}\\nTurn A (Proposer): step=target, exact locked JSON output\\nTurn B (Critic): step=target, exact locked JSON output\\nTurn C (${turnCRole}): step=target, exact locked JSON output${roleNote}\\nForced consensus lock: claim="${config.claim}", stance="${config.stance}"\\nConfidence ratchet by agent: A +${config.escalationByAgent.A.toFixed(
       2
@@ -3838,18 +3905,16 @@ interface ScriptCardCopy {
   constraintVariable: string;
 }
 
-function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
+function scriptCardCopyForProfile(profile: ExperimentProfile, agentCountOverride?: number): ScriptCardCopy {
   if (isBeliefTriangle3AgentProfile(profile)) {
     const config = triangleConfigForProfile(profile);
-    const agentCount = triangleAgentCountForProfile(profile);
+    const agentCount = agentCountOverride ?? triangleAgentCountForProfile(profile);
     const isLab3Perturbation = isLab3PerturbationProfile(profile);
     const isIsolation = isLab3PropagationIsolationProfile(profile);
     const hasForcedDoubt = isLab3ForcedDoubtProfile(profile);
     const loopPrefix =
       agentCount > 3
-        ? `A1 (proposer) -> B1 (critic) -> C1 (${isCriticOnlyLoopProfile(profile) ? "meta-critic" : "synthesizer"}) ... -> A${Math.floor(
-            agentCount / 3
-          )} -> B${Math.floor(agentCount / 3)} -> C${Math.floor(agentCount / 3)}`
+        ? triangleSequencePreview(agentCount)
         : "A (proposer) -> B (critic) -> C";
     const loop = isLab3Perturbation
       ? isIsolation
@@ -3897,7 +3962,7 @@ function scriptCardCopyForProfile(profile: ExperimentProfile): ScriptCardCopy {
   };
 }
 
-function publicScriptTextForProfile(profile: ExperimentProfile): string {
+function publicScriptTextForProfile(profile: ExperimentProfile, agentCountOverride?: number): string {
   if (profile === "critic_only_loop_3agent") {
     return [
       "Critic-only 3-agent recursive loop.",
@@ -3912,15 +3977,13 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
   }
   if (isBeliefTriangle3AgentProfile(profile)) {
     if (isLab3PerturbationProfile(profile)) {
-      const agentCount = triangleAgentCountForProfile(profile);
+      const agentCount = agentCountOverride ?? triangleAgentCountForProfile(profile);
       const isIsolation = isLab3PropagationIsolationProfile(profile);
       const hasForcedDoubt = isLab3ForcedDoubtProfile(profile);
       return [
         `${isIsolation ? "LAB3 propagation isolation" : "LAB3 controlled perturbation"} experiment (${agentCount}-agent deterministic loop).`,
         agentCount > 3
-          ? `Sequential cycle length is ${agentCount} turns: A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(
-              agentCount / 3
-            )} -> C${Math.floor(agentCount / 3)}.`
+          ? `Sequential cycle length is ${agentCount} turns: ${triangleSequencePreview(agentCount)}.`
           : "Topology: A -> B -> C -> A.",
         "Step 1 (turns 1-5): stable baseline with claim ValueEstimate:1000.",
         "Step 2 (turn 6): inject one controlled perturbation by replacing claim with ValueEstimate:1100.",
@@ -3942,13 +4005,11 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
         "Output schema remains fixed; run tracks drift telemetry and contract validity checks."
       ].join("\n");
     }
-    const agentCount = triangleAgentCountForProfile(profile);
+    const agentCount = agentCountOverride ?? triangleAgentCountForProfile(profile);
     return [
       `Deterministic ${agentCount}-agent recursive loop.`,
       agentCount > 3
-        ? `Sequential cycle length is ${agentCount} turns: A1 -> B1 -> C1 ... -> A${Math.floor(agentCount / 3)} -> B${Math.floor(
-            agentCount / 3
-          )} -> C${Math.floor(agentCount / 3)}.`
+        ? `Sequential cycle length is ${agentCount} turns: ${triangleSequencePreview(agentCount)}.`
         : "Topology: A -> B -> C -> A.",
       "Agents follow the same A/B/C LAB2 prompt protocol with fixed-schema state exchange per turn.",
       "Run compares RAW reinjection versus SANITIZED reinjection.",
@@ -3970,9 +4031,9 @@ function publicScriptTextForProfile(profile: ExperimentProfile): string {
   ].join("\n");
 }
 
-function scriptDownloadBody(profile: ExperimentProfile): string {
-  const copy = scriptCardCopyForProfile(profile);
-  const rule = IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(profile) : profileRuleText(profile);
+function scriptDownloadBody(profile: ExperimentProfile, agentCountOverride?: number): string {
+  const copy = scriptCardCopyForProfile(profile, agentCountOverride);
+  const rule = IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(profile, agentCountOverride) : profileRuleText(profile, agentCountOverride);
   return [
     `# ${copy.title}`,
     "",
@@ -4135,6 +4196,8 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
       profile: exportProfileId(trace.profile),
       condition: trace.condition,
       turn_index: trace.turnIndex,
+      cycle_index: trace.cycleIndex,
+      agent_count: trace.agentCount,
       agent: trace.agent,
       agent_slot: trace.agentSlot,
       agent_model: trace.agentModel,
@@ -4175,6 +4238,8 @@ function traceExportPayload(summary: ConditionSummary, trace: TurnTrace): Record
     profile: exportProfileId(trace.profile),
     condition: trace.condition,
     turn_index: trace.turnIndex,
+    cycle_index: trace.cycleIndex,
+    agent_count: trace.agentCount,
     agent: trace.agent,
     agent_slot: trace.agentSlot,
     agent_model: trace.agentModel,
@@ -4273,6 +4338,7 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     decisionErrorPeak: summary.decisionErrorPeak,
     decisionErrorSlope: summary.decisionErrorSlope,
     firstDecisionErrorTurn: summary.firstDecisionErrorTurn,
+    amplificationCycle: summary.amplificationCycle,
     propagationDetected: summary.propagationDetected,
     driftTurns: summary.driftTurns,
     driftTurnModuloAgentCount: summary.driftTurnModuloAgentCount,
@@ -4283,17 +4349,20 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     driftWindowRecursEveryCycle: summary.driftWindowRecursEveryCycle,
     structuralEpistemicDriftFlag: summary.structuralEpistemicDriftFlag,
     firstStructuralDriftTurn: summary.firstStructuralDriftTurn,
+    closureCycle: summary.closureCycle,
     lockInOnsetTurn: summary.lockInOnsetTurn,
     lockInScoreLatest: summary.lockInScoreLatest,
     lockInScorePeak: summary.lockInScorePeak,
     lockInPositiveStreakMax: summary.lockInPositiveStreakMax,
-    cycleReinforcement3Latest: summary.cycleReinforcement3Latest,
-    cycleReinforcement3Peak: summary.cycleReinforcement3Peak,
+    cycleReinforcementLatest: summary.cycleReinforcementLatest,
+    cycleReinforcementPeak: summary.cycleReinforcementPeak,
+    cycleReinforcementWindow: summary.cycleReinforcementWindow,
     trajectoryStabilityIndexLatest: summary.trajectoryStabilityIndexLatest,
     trajectoryStabilityIndexPeak: summary.trajectoryStabilityIndexPeak,
     trajectoryStatusLatest: summary.trajectoryStatusLatest,
     basinStateLatest: summary.basinStateLatest,
     firstBasinFormationTurn: summary.firstBasinFormationTurn,
+    basinFormationCycle: summary.basinFormationCycle,
     firstBasinStabilizationTurn: summary.firstBasinStabilizationTurn,
     beliefBasinDepth: summary.beliefBasinDepth,
     beliefBasinStrengthScore: summary.beliefBasinStrengthScore,
@@ -4302,11 +4371,13 @@ function exportableConditionSummary(summary: ConditionSummary): unknown {
     observerTelemetryCoverage: guardianTriangleCoverage(summary),
     confidenceTrajectory: summary.traces.map((trace) => ({
       turn: trace.turnIndex,
+      cycle_index: trace.cycleIndex,
       agent_slot: trace.agentSlot,
       confidence: trace.commitment
     })),
     decisionErrorTrajectory: summary.traces.map((trace) => ({
       turn: trace.turnIndex,
+      cycle_index: trace.cycleIndex,
       agent_slot: trace.agentSlot,
       decision_error: trace.decisionError,
       decision_value: trace.decisionValue
@@ -4428,6 +4499,7 @@ function buildConditionSummary(params: {
         )
       : null;
   const firstDecisionErrorTurn = traces.find((trace) => trace.decisionError !== null && trace.decisionError > 0)?.turnIndex ?? null;
+  const amplificationCycle = firstDecisionErrorTurn !== null ? cycleIndexForTurn(firstDecisionErrorTurn, runConfig.agentCount) : null;
   const injectionDecisionError = traces.find((trace) => trace.turnIndex === LAB3_PERTURBATION_TURN)?.decisionError ?? null;
   const postInjectionDecisionErrorPeak = traces
     .filter((trace) => trace.turnIndex > LAB3_PERTURBATION_TURN)
@@ -4484,8 +4556,12 @@ function buildConditionSummary(params: {
   const driftWindowRecursEveryCycle =
     driftWindowPeriodTurns === null ? null : driftWindowPeriodTurns === Math.max(1, runConfig.agentCount) ? 1 : 0;
   const firstStructuralDriftTurn = traces.find((trace) => trace.structuralEpistemicDrift === 1)?.turnIndex ?? null;
-  const lockIn = computeLockInTelemetry(traces);
-  const trajectory = computeTrajectoryUiTelemetry(traces, condition);
+  const closureCycle = firstStructuralDriftTurn !== null ? cycleIndexForTurn(firstStructuralDriftTurn, runConfig.agentCount) : null;
+  const cycleReinforcementWindow = Math.max(1, runConfig.agentCount);
+  const lockIn = computeLockInTelemetry(traces, runConfig.agentCount);
+  const trajectory = computeTrajectoryUiTelemetry(traces, condition, runConfig.agentCount);
+  const basinFormationCycle =
+    trajectory.firstBasinFormationTurn !== null ? cycleIndexForTurn(trajectory.firstBasinFormationTurn, runConfig.agentCount) : null;
   const structuralEpistemicDriftFlag = firstStructuralDriftTurn !== null ? 1 : 0;
   const structuralEpistemicDriftReason =
     structuralEpistemicDriftFlag === 1
@@ -4649,6 +4725,7 @@ function buildConditionSummary(params: {
     decisionErrorPeak,
     decisionErrorSlope,
     firstDecisionErrorTurn,
+    amplificationCycle,
     propagationDetected,
     driftTurns,
     driftTurnModuloAgentCount,
@@ -4664,18 +4741,21 @@ function buildConditionSummary(params: {
     closureConstraintRatio,
     structuralDriftStreakMax,
     firstStructuralDriftTurn,
+    closureCycle,
     lockInOnsetTurn: lockIn.onsetTurn,
     lockInScoreLatest: lockIn.scoreLatest,
     lockInScorePeak: lockIn.scorePeak,
     lockInPositiveStreakMax: lockIn.positiveStreakMax,
-    cycleReinforcement3Latest: trajectory.cycleReinforcement3Latest,
-    cycleReinforcement3Peak: trajectory.cycleReinforcement3Peak,
+    cycleReinforcementLatest: trajectory.cycleReinforcementLatest,
+    cycleReinforcementPeak: trajectory.cycleReinforcementPeak,
     trajectoryStabilityIndexLatest: trajectory.tsiLatest,
     trajectoryStabilityIndexPeak: trajectory.tsiPeak,
     trajectoryStatusLatest: trajectory.statusLatest,
     basinStateLatest: trajectory.basinStateLatest,
     firstBasinFormationTurn: trajectory.firstBasinFormationTurn,
+    basinFormationCycle,
     firstBasinStabilizationTurn: trajectory.firstBasinStabilizationTurn,
+    cycleReinforcementWindow,
     beliefBasinDepth: trajectory.beliefBasinDepth,
     beliefBasinStrengthScore: trajectory.beliefBasinStrengthScore,
     beliefBasinStrengthBand: trajectory.beliefBasinStrengthBand,
@@ -4851,10 +4931,12 @@ function evaluateConsensusCollapse(raw: ConditionSummary | null, sanitized: Cond
     sanitizedLockInScoreLatest: sanitized.lockInScoreLatest,
     rawLockInScorePeak: raw.lockInScorePeak,
     sanitizedLockInScorePeak: sanitized.lockInScorePeak,
-    rawCycleReinforcement3Latest: raw.cycleReinforcement3Latest,
-    sanitizedCycleReinforcement3Latest: sanitized.cycleReinforcement3Latest,
-    rawCycleReinforcement3Peak: raw.cycleReinforcement3Peak,
-    sanitizedCycleReinforcement3Peak: sanitized.cycleReinforcement3Peak,
+    rawCycleReinforcementLatest: raw.cycleReinforcementLatest,
+    sanitizedCycleReinforcementLatest: sanitized.cycleReinforcementLatest,
+    rawCycleReinforcementPeak: raw.cycleReinforcementPeak,
+    sanitizedCycleReinforcementPeak: sanitized.cycleReinforcementPeak,
+    rawCycleReinforcementWindow: raw.cycleReinforcementWindow,
+    sanitizedCycleReinforcementWindow: sanitized.cycleReinforcementWindow,
     rawTrajectoryStabilityIndexLatest: raw.trajectoryStabilityIndexLatest,
     sanitizedTrajectoryStabilityIndexLatest: sanitized.trajectoryStabilityIndexLatest,
     rawTrajectoryStabilityIndexPeak: raw.trajectoryStabilityIndexPeak,
@@ -4957,8 +5039,8 @@ function structuralPatternInterpretation(evalResult: ConsensusEval | null): Clos
     label: "No structural drift",
     tone: "warn",
     detail:
-      evalResult.rawCycleReinforcement3Peak !== null &&
-      evalResult.rawCycleReinforcement3Peak > LOCK_IN_CYCLE_REINFORCEMENT_THRESHOLD
+      evalResult.rawCycleReinforcementPeak !== null &&
+      evalResult.rawCycleReinforcementPeak > lockInCycleReinforcementThreshold(evalResult.rawCycleReinforcementWindow)
         ? "No persistent structural closure signal detected; lock-in pressure appeared but did not sustain."
         : "No structural closure signal detected; behavior remains within structural bounds."
   };
@@ -5027,7 +5109,7 @@ function aggregateMatrixRows(rows: MatrixTrialRow[]): MatrixAggregateRow[] {
 function buildConditionMarkdown(summary: ConditionSummary): string {
   const triangleCoverage = guardianTriangleCoverage(summary);
   const observerStatus = triangleCoverage !== null && triangleCoverage > 0 ? "available" : "n/a";
-  const cycle3Map = cycleReinforcement3ByTurn(summary.traces);
+  const cycleMap = cycleReinforcementByTurn(summary.traces, summary.runConfig.agentCount);
   const basinStateMap = basinStateByTurn(summary.traces);
 
   if (IS_PUBLIC_SIGNAL_MODE) {
@@ -5043,7 +5125,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       isBeliefLoopProfile(summary.profile)
         ? `- Structural epistemic drift signal: ${summary.consensusCollapseFlag ? "YES" : "NO"}`
         : "",
+      isBeliefLoopProfile(summary.profile) ? `- Basin formation turn/cycle: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.basinFormationCycle ?? "N/A"}` : "",
       isBeliefLoopProfile(summary.profile) ? `- Closure onset turn (structural drift): ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
+      isBeliefLoopProfile(summary.profile) ? `- Closure cycle: ${summary.closureCycle ?? "N/A"}` : "",
       isBeliefLoopProfile(summary.profile)
         ? `- Lock-in onset turn: ${lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)}`
         : "",
@@ -5054,7 +5138,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         ? `- decision_error latest/peak/slope: ${asFixed(summary.decisionErrorLatest, 4)} / ${asFixed(summary.decisionErrorPeak, 4)} / ${asFixed(
             summary.decisionErrorSlope,
             5
-          )} (amplification onset turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
+          )} (amplification onset turn ${summary.firstDecisionErrorTurn ?? "N/A"}, cycle ${summary.amplificationCycle ?? "N/A"})`
         : "",
       isLab3PerturbationProfile(summary.profile)
         ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
@@ -5067,7 +5151,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
           } | every_cycle=${summary.driftWindowRecursEveryCycle === null ? "n/a" : summary.driftWindowRecursEveryCycle ? "YES" : "NO"}`
         : "",
       isBeliefLoopProfile(summary.profile)
-        ? `- Cycle Reinforcement (3-turn) latest/peak: ${asFixed(summary.cycleReinforcement3Latest, 4)} / ${asFixed(summary.cycleReinforcement3Peak, 4)}`
+        ? `- Cycle Reinforcement (${summary.cycleReinforcementWindow}-turn) latest/peak: ${asFixed(summary.cycleReinforcementLatest, 4)} / ${asFixed(summary.cycleReinforcementPeak, 4)}`
         : "",
       isBeliefLoopProfile(summary.profile)
         ? `- Trajectory Stability Index (latest/peak): ${asFixed(summary.trajectoryStabilityIndexLatest, 4)} / ${asFixed(summary.trajectoryStabilityIndexPeak, 4)}`
@@ -5093,17 +5177,17 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
         summary.ftfStruct ?? "N/A"
       }`,
       "",
-      "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(3) | BasinState | DriftFlag |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      `| Turn | Agent | Cycle | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(${summary.cycleReinforcementWindow}) | BasinState | DriftFlag |`,
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...summary.traces.slice(0, 30).map((trace) => {
         const lockInScore =
           trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
-        const cycle3 = cycle3Map.get(trace.turnIndex) ?? null;
+        const cycleSignal = cycleMap.get(trace.turnIndex) ?? null;
         const basinState = basinStateMap.get(trace.turnIndex) ?? null;
-        return `| ${trace.turnIndex} | ${traceAgentDisplay(trace)} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
+        return `| ${trace.turnIndex} | ${traceAgentDisplay(trace)} | ${trace.cycleIndex} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
           lockInScore,
           4
-        )} | ${asFixed(cycle3, 4)} | ${basinStateLabel(basinState)} | ${trace.structuralEpistemicDrift} |`;
+        )} | ${asFixed(cycleSignal, 4)} | ${basinStateLabel(basinState)} | ${trace.structuralEpistemicDrift} |`;
       })
     ]
       .filter((line) => line.length > 0)
@@ -5138,7 +5222,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       ? `- decision_error latest/peak/slope: ${asFixed(summary.decisionErrorLatest, 4)} / ${asFixed(summary.decisionErrorPeak, 4)} / ${asFixed(
           summary.decisionErrorSlope,
           5
-        )} (amplification onset turn ${summary.firstDecisionErrorTurn ?? "N/A"})`
+        )} (amplification onset turn ${summary.firstDecisionErrorTurn ?? "N/A"}, cycle ${summary.amplificationCycle ?? "N/A"})`
       : "",
     isLab3PerturbationProfile(summary.profile)
       ? `- Propagation: ${summary.propagationDetected === null ? "N/A" : summary.propagationDetected ? "YES" : "NO"}`
@@ -5162,7 +5246,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     isBeliefLoopProfile(summary.profile) ? `- Avg reasoning depth: ${asFixed(summary.avgReasoningDepth, 3)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Constraint growth rate: ${asPercent(summary.constraintGrowthRate)}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Closure/constraint ratio: ${asFixed(summary.closureConstraintRatio, 4)}` : "",
+    isBeliefLoopProfile(summary.profile) ? `- Basin formation turn/cycle: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.basinFormationCycle ?? "N/A"}` : "",
     isBeliefLoopProfile(summary.profile) ? `- Closure onset turn (structural drift): ${summary.firstStructuralDriftTurn ?? "N/A"}` : "",
+    isBeliefLoopProfile(summary.profile) ? `- Closure cycle: ${summary.closureCycle ?? "N/A"}` : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Lock-in onset turn: ${lockInOnsetDisplay(summary.lockInOnsetTurn, summary.lockInScorePeak)}`
       : "",
@@ -5170,7 +5256,7 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       ? `- Lock-in score latest/peak: ${asFixed(summary.lockInScoreLatest, 4)} / ${asFixed(summary.lockInScorePeak, 4)} (max positive streak: ${summary.lockInPositiveStreakMax})`
       : "",
     isBeliefLoopProfile(summary.profile)
-      ? `- Cycle Reinforcement (3-turn) latest/peak: ${asFixed(summary.cycleReinforcement3Latest, 4)} / ${asFixed(summary.cycleReinforcement3Peak, 4)}`
+      ? `- Cycle Reinforcement (${summary.cycleReinforcementWindow}-turn) latest/peak: ${asFixed(summary.cycleReinforcementLatest, 4)} / ${asFixed(summary.cycleReinforcementPeak, 4)}`
       : "",
     isBeliefLoopProfile(summary.profile)
       ? `- Trajectory Stability Index (latest/peak): ${asFixed(summary.trajectoryStabilityIndexLatest, 4)} / ${asFixed(summary.trajectoryStabilityIndexPeak, 4)}`
@@ -5190,7 +5276,9 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
       ? "- Basin metric consistency warning: YES (strength exceeds forming while drift signal is absent)."
       : "",
     isBeliefLoopProfile(summary.profile)
-      ? `- Basin formation/stabilization turn: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.firstBasinStabilizationTurn ?? "N/A"}`
+      ? `- Basin formation turn/cycle and stabilization turn: ${summary.firstBasinFormationTurn ?? "N/A"} / ${summary.basinFormationCycle ?? "N/A"} / ${
+          summary.firstBasinStabilizationTurn ?? "N/A"
+        }`
       : "",
     `- Observer telemetry coverage: ${asPercent(triangleCoverage)}`,
     `- Observer status (latest): ${observerStatus}`,
@@ -5223,17 +5311,17 @@ function buildConditionMarkdown(summary: ConditionSummary): string {
     `- firstSuffixDriftTurn: ${summary.firstSuffixDriftTurn ?? "N/A"} | maxSuffixLen: ${summary.maxSuffixLen ?? "N/A"} | suffixSlope: ${asFixed(summary.suffixGrowthSlope, 4)} | lineCountMax: ${summary.lineCountMax ?? "N/A"}`,
     `- contextGrowth avg/max/slope: ${asFixed(summary.contextGrowthAvg, 2)} / ${asFixed(summary.contextGrowthMax, 2)} / ${asFixed(summary.contextGrowthSlope, 4)}`,
     "",
-    "| Turn | Agent | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(3) | BasinState | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    `| Turn | Agent | Cycle | ParseOK | StateOK | Cv | Pf | Ld | Lock-in | CycleReinf(${summary.cycleReinforcementWindow}) | BasinState | DriftMag | Prefix | Suffix | Lines | CtxGrowth | Uptime |`,
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...summary.traces.slice(0, 30).map((trace) => {
       const lockInScore =
         trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
-      const cycle3 = cycle3Map.get(trace.turnIndex) ?? null;
+      const cycleSignal = cycleMap.get(trace.turnIndex) ?? null;
       const basinState = basinStateMap.get(trace.turnIndex) ?? null;
-      return `| ${trace.turnIndex} | ${traceAgentDisplay(trace)} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
+      return `| ${trace.turnIndex} | ${traceAgentDisplay(trace)} | ${trace.cycleIndex} | ${trace.parseOk} | ${trace.stateOk} | ${trace.cv} | ${trace.pf} | ${trace.ld} | ${asFixed(
         lockInScore,
         4
-      )} | ${asFixed(cycle3, 4)} | ${basinStateLabel(basinState)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${
+      )} | ${asFixed(cycleSignal, 4)} | ${basinStateLabel(basinState)} | ${trace.deviationMagnitude} | ${trace.prefixLen} | ${trace.suffixLen} | ${
         trace.lineCount
       } | ${trace.contextLengthGrowth} | ${trace.uptime} |`;
     })
@@ -5385,10 +5473,12 @@ function buildLabReportMarkdown(params: {
         )} vs ${asFixed(consensus?.sanitizedLockInScoreLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedLockInScorePeak ?? null, 4)}`
       );
       sections.push(
-        `- RAW/SAN Cycle Reinforcement (3-turn) latest/peak: ${asFixed(consensus?.rawCycleReinforcement3Latest ?? null, 4)} / ${asFixed(
-          consensus?.rawCycleReinforcement3Peak ?? null,
+        `- RAW/SAN Cycle Reinforcement (${consensus?.rawCycleReinforcementWindow ?? "N/A"}-turn / ${
+          consensus?.sanitizedCycleReinforcementWindow ?? "N/A"
+        }-turn) latest/peak: ${asFixed(consensus?.rawCycleReinforcementLatest ?? null, 4)} / ${asFixed(
+          consensus?.rawCycleReinforcementPeak ?? null,
           4
-        )} vs ${asFixed(consensus?.sanitizedCycleReinforcement3Latest ?? null, 4)} / ${asFixed(consensus?.sanitizedCycleReinforcement3Peak ?? null, 4)}`
+        )} vs ${asFixed(consensus?.sanitizedCycleReinforcementLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedCycleReinforcementPeak ?? null, 4)}`
       );
       sections.push(
         `- RAW/SAN Basin State (latest): ${basinStateLabel(consensus?.rawBasinStateLatest ?? null)} / ${basinStateLabel(
@@ -5469,10 +5559,12 @@ function buildLabReportMarkdown(params: {
           )} vs ${asFixed(consensus?.sanitizedLockInScoreLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedLockInScorePeak ?? null, 4)}`
         );
         sections.push(
-          `- RAW/SAN Cycle Reinforcement (3-turn) latest/peak: ${asFixed(consensus?.rawCycleReinforcement3Latest ?? null, 4)} / ${asFixed(
-            consensus?.rawCycleReinforcement3Peak ?? null,
+          `- RAW/SAN Cycle Reinforcement (${consensus?.rawCycleReinforcementWindow ?? "N/A"}-turn / ${
+            consensus?.sanitizedCycleReinforcementWindow ?? "N/A"
+          }-turn) latest/peak: ${asFixed(consensus?.rawCycleReinforcementLatest ?? null, 4)} / ${asFixed(
+            consensus?.rawCycleReinforcementPeak ?? null,
             4
-          )} vs ${asFixed(consensus?.sanitizedCycleReinforcement3Latest ?? null, 4)} / ${asFixed(consensus?.sanitizedCycleReinforcement3Peak ?? null, 4)}`
+          )} vs ${asFixed(consensus?.sanitizedCycleReinforcementLatest ?? null, 4)} / ${asFixed(consensus?.sanitizedCycleReinforcementPeak ?? null, 4)}`
         );
         sections.push(
           `- RAW/SAN Basin State (latest): ${basinStateLabel(consensus?.rawBasinStateLatest ?? null)} / ${basinStateLabel(
@@ -6597,6 +6689,7 @@ export default function HomePage() {
   const [model, setModel] = useState<string>(DEFAULT_MODEL);
 
   const [selectedProfile, setSelectedProfile] = useState<ExperimentProfile>(DEFAULT_PROFILE);
+  const [agentCountSelection, setAgentCountSelection] = useState<number>(AGENT_COUNT_OPTIONS[0]);
   const [objectiveMode, setObjectiveMode] = useState<ObjectiveMode>("parse_only");
 
   const [selectedCondition, setSelectedCondition] = useState<RepCondition>("raw");
@@ -6708,7 +6801,10 @@ export default function HomePage() {
   const profileResults = results[selectedProfile];
   const rawSummary = profileResults.raw;
   const sanitizedSummary = profileResults.sanitized;
-  const selectedScriptCard = useMemo(() => scriptCardCopyForProfile(selectedProfile), [selectedProfile]);
+  const selectedScriptCard = useMemo(
+    () => scriptCardCopyForProfile(selectedProfile, effectiveAgentCountForProfile(selectedProfile, agentCountSelection)),
+    [agentCountSelection, selectedProfile]
+  );
   const consensusEval = evaluateConsensusCollapse(rawSummary, sanitizedSummary);
   const closure = closureVerdict(consensusEval);
   const structuralPattern = structuralPatternInterpretation(consensusEval);
@@ -6718,12 +6814,20 @@ export default function HomePage() {
     () => (liveTelemetryNewestFirst ? [...liveTelemetryRows].reverse() : liveTelemetryRows),
     [liveTelemetryNewestFirst, liveTelemetryRows]
   );
-  const liveCycleReinforcementByTurn = useMemo(() => cycleReinforcement3ByTurn(liveTelemetryRows), [liveTelemetryRows]);
+  const liveCycleWindow = Math.max(1, effectiveAgentCountForProfile(selectedProfile, agentCountSelection));
+  const liveCycleReinforcementByTurn = useMemo(
+    () => cycleReinforcementByTurn(liveTelemetryRows, liveCycleWindow),
+    [liveTelemetryRows, liveCycleWindow]
+  );
   const liveBasinStateByTurn = useMemo(() => basinStateByTurn(liveTelemetryRows), [liveTelemetryRows]);
   const monitorCondition: RepCondition = isRunning ? liveTraceCondition : selectedCondition;
   const monitorSummary = results[selectedProfile][monitorCondition];
   const monitorTraces = useMemo(() => monitorSummary?.traces ?? [], [monitorSummary]);
-  const monitorCycleReinforcementByTurn = useMemo(() => cycleReinforcement3ByTurn(monitorTraces), [monitorTraces]);
+  const monitorCycleWindow = Math.max(1, monitorSummary?.runConfig.agentCount ?? liveCycleWindow);
+  const monitorCycleReinforcementByTurn = useMemo(
+    () => cycleReinforcementByTurn(monitorTraces, monitorCycleWindow),
+    [monitorTraces, monitorCycleWindow]
+  );
   const monitorBasinStateByTurn = useMemo(() => basinStateByTurn(monitorTraces), [monitorTraces]);
   const monitorLatestTrace = monitorTraces.length > 0 ? monitorTraces[monitorTraces.length - 1] : activeTrace;
   const monitorViewedTrace =
@@ -6745,7 +6849,7 @@ export default function HomePage() {
     monitorLatestTrace?.constraintGrowth !== undefined
       ? monitorLatestTrace.commitmentDelta - monitorLatestTrace.constraintGrowth
       : null;
-  const liveCycleReinforcement3 =
+  const liveCycleReinforcement =
     monitorLatestTrace !== null && monitorLatestTrace !== undefined
       ? monitorCycleReinforcementByTurn.get(monitorLatestTrace.turnIndex) ?? null
       : null;
@@ -6753,6 +6857,12 @@ export default function HomePage() {
     monitorLatestTrace !== null && monitorLatestTrace !== undefined
       ? monitorBasinStateByTurn.get(monitorLatestTrace.turnIndex) ?? null
       : null;
+  const basinFormationOnsetTurn = monitorSummary?.firstBasinFormationTurn ?? null;
+  const basinFormationCycle = monitorSummary?.basinFormationCycle ?? null;
+  const closureOnsetTurn = monitorSummary?.firstStructuralDriftTurn ?? null;
+  const closureCycle = monitorSummary?.closureCycle ?? null;
+  const amplificationOnsetTurn = monitorSummary?.firstDecisionErrorTurn ?? null;
+  const amplificationCycle = monitorSummary?.amplificationCycle ?? null;
   const liveTrajectoryDynamics = trajectoryDynamicsFromSummary(monitorSummary);
 
   useEffect(() => {
@@ -6895,6 +7005,7 @@ export default function HomePage() {
   ): Promise<ConditionSummary> {
     const forceFullHorizon = isLab3PerturbationProfile(profile);
     const activeModel = options?.modelOverride?.trim() ? options.modelOverride.trim() : model;
+    const selectedAgentCount = effectiveAgentCountForProfile(profile, agentCountSelection);
     const effectiveInterTurnDelayMs =
       effectiveProvider === "mistral" ? Math.max(interTurnDelayMs, MISTRAL_MIN_INTER_TURN_DELAY_MS) : interTurnDelayMs;
     const runConfig: RunConfig = {
@@ -6906,7 +7017,7 @@ export default function HomePage() {
       resolvedProvider: effectiveProvider,
       modelA: activeModel,
       modelB: activeModel,
-      agentCount: agentCountForProfile(profile),
+      agentCount: selectedAgentCount,
       temperature,
       retries: FIXED_RETRIES,
       horizon: turnBudget,
@@ -6927,7 +7038,7 @@ export default function HomePage() {
 
     const startedAt = new Date().toISOString();
     const traces: TurnTrace[] = [];
-    const agentSequence = agentSequenceForProfile(profile);
+    const agentSequence = agentSequenceForProfile(profile, selectedAgentCount);
 
     let authoritativeStep = initialStep;
     let injectedPrevState = initialStateLiteralForProfile(profile, initialStep);
@@ -6959,7 +7070,7 @@ export default function HomePage() {
       const promptContextLength = historyBlock.length + injectedPrevState.length;
       const contextLengthGrowth = promptContextLength - initialContextLength;
 
-      const prompt = buildAgentPrompt(profile, condition, agent, historyBlock, injectedPrevState, expectedStep, turn);
+      const prompt = buildAgentPrompt(profile, condition, agent, historyBlock, injectedPrevState, expectedStep, turn, runConfig.agentCount);
       const agentModel = activeModel;
 
       let outputBytes = "";
@@ -7221,6 +7332,8 @@ export default function HomePage() {
         profile,
         condition,
         turnIndex: turn,
+        cycleIndex: cycleIndexForTurn(turn, runConfig.agentCount),
+        agentCount: runConfig.agentCount,
         agent,
         agentSlot,
         agentModel,
@@ -7528,6 +7641,7 @@ export default function HomePage() {
   function resetAll() {
     stopRun();
     setSelectedProfile(DEFAULT_PROFILE);
+    setAgentCountSelection(AGENT_COUNT_OPTIONS[0]);
     setObjectiveMode("parse_only");
     setTemperature(DEFAULT_TEMPERATURE);
     setTurnBudget(DEFAULT_TURNS);
@@ -7578,7 +7692,7 @@ export default function HomePage() {
 
   function downloadActiveScriptSpec() {
     const slug = selectedProfile.replace(/_/g, "-");
-    const content = scriptDownloadBody(selectedProfile);
+    const content = scriptDownloadBody(selectedProfile, effectiveAgentCountForProfile(selectedProfile, agentCountSelection));
     downloadTextFile(`${slug}-script.md`, content, "text/markdown");
   }
 
@@ -7829,6 +7943,25 @@ export default function HomePage() {
                 </div>
               </div>
 
+              <div className="field-block run-field-agents">
+                <label>Agent Count</label>
+                {supportsAgentCountSelection(selectedProfile) ? (
+                  <select
+                    value={String(clampAgentCount(agentCountSelection))}
+                    onChange={(event) => setAgentCountSelection(clampAgentCount(Number(event.target.value)))}
+                    disabled={isRunning}
+                  >
+                    {AGENT_COUNT_OPTIONS.map((count) => (
+                      <option key={count} value={count}>
+                        {count}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input type="number" value={effectiveAgentCountForProfile(selectedProfile, agentCountSelection)} disabled />
+                )}
+              </div>
+
               <div className="field-block run-field-tokens">
                 <label>Max Tokens</label>
                 <input
@@ -7894,7 +8027,8 @@ export default function HomePage() {
                 <strong>Agent loop:</strong> {selectedScriptCard.loop}
               </p>
               <p className="tiny">
-                <strong>Agent slots:</strong> {agentCountForProfile(selectedProfile)} (one cycle = {agentCountForProfile(selectedProfile)} turns)
+                <strong>Agent slots:</strong> {effectiveAgentCountForProfile(selectedProfile, agentCountSelection)} (one cycle ={" "}
+                {effectiveAgentCountForProfile(selectedProfile, agentCountSelection)} turns)
               </p>
               <p className="tiny">
                 <strong>Primary outputs:</strong> drift verdict, closure onset turn, basin state, and belief basin strength.
@@ -7912,7 +8046,7 @@ export default function HomePage() {
                 <strong>Primary readout:</strong> drift verdict from RAW vs SANITIZED divergence, plus lock-in onset and cycle reinforcement persistence.
               </p>
               <p className="tiny">
-                <strong>Trajectory view:</strong> Trajectory Dynamics (stable/building/accelerating/closing), TSI, Cycle Reinforcement (3-turn), Basin State, and Belief Basin Strength are derived UI indicators from core telemetry.
+                <strong>Trajectory view:</strong> Trajectory Dynamics (stable/building/accelerating/closing), TSI, Cycle Reinforcement (agent_count-turn), Basin State, and Belief Basin Strength are derived UI indicators from core telemetry.
               </p>
               <p className="tiny">
                 <strong>Quality gate:</strong>{" "}
@@ -7929,7 +8063,11 @@ export default function HomePage() {
             <section className="latest-card script-contract-card">
               <h4>Script Contract (selected)</h4>
               <p className="tiny">Runtime script definition for the currently selected dropdown item.</p>
-              <pre className="raw-pre script-spec-pre">{IS_PUBLIC_SIGNAL_MODE ? publicScriptTextForProfile(selectedProfile) : profileRuleText(selectedProfile)}</pre>
+              <pre className="raw-pre script-spec-pre">
+                {IS_PUBLIC_SIGNAL_MODE
+                  ? publicScriptTextForProfile(selectedProfile, effectiveAgentCountForProfile(selectedProfile, agentCountSelection))
+                  : profileRuleText(selectedProfile, effectiveAgentCountForProfile(selectedProfile, agentCountSelection))}
+              </pre>
               {selectedProfile === "epistemic_drift_protocol" ? (
                 <p className="tiny">
                   Baseline note: Basin Depth Probe is kept as a control comparison against the canonical drift scripts.
@@ -7971,8 +8109,9 @@ export default function HomePage() {
                       <tr>
                         <th>Turn</th>
                         <th>Agent</th>
+                        <th>Cycle</th>
                         <th>Lock-in</th>
-                        <th>Cycle Reinforcement (3-turn)</th>
+                        <th>{`Cycle Reinforcement (${liveCycleWindow}-turn)`}</th>
                         <th>Basin State</th>
                         <th>Drift</th>
                         {!IS_PUBLIC_SIGNAL_MODE ? (
@@ -7993,7 +8132,7 @@ export default function HomePage() {
                         const isViewedTurn = monitorTrace?.turnIndex === trace.turnIndex;
                         const lockInScore =
                           trace.commitmentDelta !== null && trace.constraintGrowth !== null ? trace.commitmentDelta - trace.constraintGrowth : null;
-                        const cycle3 = liveCycleReinforcementByTurn.get(trace.turnIndex) ?? null;
+                        const cycleSignal = liveCycleReinforcementByTurn.get(trace.turnIndex) ?? null;
                         const basinState = liveBasinStateByTurn.get(trace.turnIndex) ?? null;
                         return (
                           <tr
@@ -8003,8 +8142,9 @@ export default function HomePage() {
                           >
                             <td>{trace.turnIndex}</td>
                             <td>{traceAgentDisplay(trace)}</td>
+                            <td>{trace.cycleIndex}</td>
                             <td>{asFixed(lockInScore, 4)}</td>
-                            <td>{asFixed(cycle3, 4)}</td>
+                            <td>{asFixed(cycleSignal, 4)}</td>
                             <td>{basinStateLabel(basinState)}</td>
                             <td>{trace.structuralEpistemicDrift === 1 ? "YES" : "NO"}</td>
                             {!IS_PUBLIC_SIGNAL_MODE ? (
@@ -8050,6 +8190,52 @@ export default function HomePage() {
           </article>
 
           <article className="card run-card run-summary-card">
+            <section className="latest-card structural-phases-card">
+              <h4>Structural Phases</h4>
+              <div className="structural-phases-meta">
+                <p className="mono">Agents: {monitorCycleWindow}</p>
+                <p className="mono">Cycle Length: {monitorCycleWindow} turns</p>
+                <p className="mono">
+                  Turn | Agent | Cycle: {monitorTrace ? `${monitorTrace.turnIndex} | ${traceAgentDisplay(monitorTrace)} | ${monitorTrace.cycleIndex}` : "n/a"}
+                </p>
+              </div>
+              <div className="structural-phases-grid">
+                <section className="structural-phase-block">
+                  <p className="tiny structural-phase-title">Basin Formation</p>
+                  <p className="mono">
+                    Basin Formation Phase:{" "}
+                    <span className={`gate-pill ${basinFormationOnsetTurn !== null ? "warn" : "good"}`}>
+                      {basinFormationOnsetTurn !== null ? "DETECTED" : "NOT DETECTED"}
+                    </span>
+                  </p>
+                  <p className="mono">Turn: {basinFormationOnsetTurn ?? "n/a"}</p>
+                  <p className="mono">Cycle: {basinFormationCycle ?? "n/a"}</p>
+                </section>
+                <section className="structural-phase-block">
+                  <p className="tiny structural-phase-title">Closure</p>
+                  <p className="mono">
+                    Closure Phase:{" "}
+                    <span className={`gate-pill ${closureOnsetTurn !== null ? "warn" : "good"}`}>
+                      {closureOnsetTurn !== null ? "DETECTED" : "NOT DETECTED"}
+                    </span>
+                  </p>
+                  <p className="mono">Turn: {closureOnsetTurn ?? "n/a"}</p>
+                  <p className="mono">Cycle: {closureCycle ?? "n/a"}</p>
+                </section>
+                <section className="structural-phase-block">
+                  <p className="tiny structural-phase-title">Amplification</p>
+                  <p className="mono">
+                    Amplification Phase:{" "}
+                    <span className={`gate-pill ${amplificationOnsetTurn !== null ? "warn" : "good"}`}>
+                      {amplificationOnsetTurn !== null ? "DETECTED" : "NOT DETECTED"}
+                    </span>
+                  </p>
+                  <p className="mono">Turn: {amplificationOnsetTurn ?? "n/a"}</p>
+                  <p className="mono">Cycle: {amplificationCycle ?? "n/a"}</p>
+                </section>
+              </div>
+            </section>
+
             <section className="latest-card live-snapshot-card">
               <h4>Live Snapshot</h4>
               <div className="live-snapshot-grid">
@@ -8058,6 +8244,7 @@ export default function HomePage() {
                 <p className="mono">
                   Progress: {monitorTurnMax}/{turnBudget} ({liveTurnProgressPct.toFixed(1)}%)
                 </p>
+                <p className="mono">Agents in loop: {monitorCycleWindow}</p>
                 <p className="mono">Latest agent: {monitorLatestTrace ? traceAgentDisplay(monitorLatestTrace) : "n/a"}</p>
                 <p className="mono">
                   Parse/State latest: {monitorLatestTrace ? `${monitorLatestTrace.parseOk} / ${monitorLatestTrace.stateOk}` : "n/a"}
@@ -8080,7 +8267,12 @@ export default function HomePage() {
                   objective_failure latest (mode-trigger 0/1): {monitorLatestTrace ? monitorLatestTrace.objectiveFailure : "n/a"}
                 </p>
                 <p className="mono">Lock-in score latest: {asFixed(liveLockInScore, 4)}</p>
-                <p className="mono">Cycle Reinforcement (3-turn) latest: {asFixed(liveCycleReinforcement3, 4)}</p>
+                <p className="mono">{`Cycle Reinforcement (${monitorCycleWindow}-turn) latest: `}{asFixed(liveCycleReinforcement, 4)}</p>
+                <p className="mono">
+                  Turn | Agent | Cycle: {monitorTrace ? `${monitorTrace.turnIndex} | ${traceAgentDisplay(monitorTrace)} | ${monitorTrace.cycleIndex}` : "n/a"}
+                </p>
+                <p className="mono">Closure Turn/Cycle: {closureOnsetTurn ?? "n/a"} / {closureCycle ?? "n/a"}</p>
+                <p className="mono">Amplification Turn/Cycle: {amplificationOnsetTurn ?? "n/a"} / {amplificationCycle ?? "n/a"}</p>
                 <p className="mono">
                   Basin State: {basinStateLabel(liveBasinState)} | TSI latest/peak:{" "}
                   {asFixed(monitorSummary?.trajectoryStabilityIndexLatest ?? null, 4)} / {asFixed(monitorSummary?.trajectoryStabilityIndexPeak ?? null, 4)}
@@ -8102,6 +8294,7 @@ export default function HomePage() {
               <h4>Panel 1A - Injection Stream (Turn Explorer)</h4>
               <p className="mono">Latest turn: {monitorLatestTrace ? `${monitorLatestTrace.turnIndex} (${traceAgentDisplay(monitorLatestTrace)})` : "n/a"}</p>
               <p className="mono">Viewed turn: {monitorTrace ? `${monitorTrace.turnIndex} (${traceAgentDisplay(monitorTrace)})` : "n/a"}</p>
+              <p className="mono">Viewed cycle / agents: {monitorTrace ? `${monitorTrace.cycleIndex} / ${monitorTrace.agentCount}` : "n/a"}</p>
               <p className="mono">ParseOK / StateOK: {monitorTrace ? `${monitorTrace.parseOk} / ${monitorTrace.stateOk}` : "n/a"}</p>
                 <p className="mono">
                   Hard failures (Cv/Pf/Ld = Contract/Parse/Logic): {monitorTrace ? `${monitorTrace.cv} / ${monitorTrace.pf} / ${monitorTrace.ld}` : "n/a"}
@@ -8325,14 +8518,15 @@ export default function HomePage() {
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              structural drift flag: {summary.structuralEpistemicDriftFlag ? "YES" : "NO"} | closure onset turn:{" "}
-                              {summary.firstStructuralDriftTurn ?? "n/a"}
+                              structural drift flag: {summary.structuralEpistemicDriftFlag ? "YES" : "NO"} | closure onset turn/cycle:{" "}
+                              {summary.firstStructuralDriftTurn ?? "n/a"} / {summary.closureCycle ?? "n/a"}
                             </p>
                           ) : null}
                           {isLab3PerturbationProfile(summary.profile) ? (
                             <p className="mono">
                               decision_error latest/peak/slope: {asFixed(summary.decisionErrorLatest, 4)} / {asFixed(summary.decisionErrorPeak, 4)} /{" "}
-                              {asFixed(summary.decisionErrorSlope, 5)} | amplification onset turn: {summary.firstDecisionErrorTurn ?? "n/a"}
+                              {asFixed(summary.decisionErrorSlope, 5)} | amplification onset turn/cycle: {summary.firstDecisionErrorTurn ?? "n/a"} /{" "}
+                              {summary.amplificationCycle ?? "n/a"}
                             </p>
                           ) : null}
                           {isLab3PerturbationProfile(summary.profile) ? (
@@ -8356,7 +8550,8 @@ export default function HomePage() {
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
                             <p className="mono">
-                              Cycle Reinforcement (3-turn) latest/peak: {asFixed(summary.cycleReinforcement3Latest, 4)} / {asFixed(summary.cycleReinforcement3Peak, 4)}
+                              {`Cycle Reinforcement (${summary.cycleReinforcementWindow}-turn) latest/peak:`} {asFixed(summary.cycleReinforcementLatest, 4)} /{" "}
+                              {asFixed(summary.cycleReinforcementPeak, 4)}
                             </p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) ? (
@@ -8373,8 +8568,9 @@ export default function HomePage() {
                               Belief Basin Strength: {(summary.beliefBasinStrengthBand ?? "n/a").toUpperCase()} | depth: {asFixed(
                                 summary.beliefBasinDepth,
                                 4
-                              )} | score: {asFixed(summary.beliefBasinStrengthScore, 4)} | formation/stabilization turn:{" "}
-                              {summary.firstBasinFormationTurn ?? "n/a"} / {summary.firstBasinStabilizationTurn ?? "n/a"}
+                              )} | score: {asFixed(summary.beliefBasinStrengthScore, 4)} | formation turn/cycle:{" "}
+                              {summary.firstBasinFormationTurn ?? "n/a"} / {summary.basinFormationCycle ?? "n/a"} | stabilization turn:{" "}
+                              {summary.firstBasinStabilizationTurn ?? "n/a"}
                             </p>
                           ) : null}
                           {isBeliefLoopProfile(summary.profile) && summary.basinMetricInconsistencyWarning === 1 ? (
@@ -8419,9 +8615,10 @@ export default function HomePage() {
                         {asFixed(consensusEval.sanitizedLockInScoreLatest, 4)} / {asFixed(consensusEval.sanitizedLockInScorePeak, 4)}
                       </p>
                       <p className="mono">
-                        RAW/SAN Cycle Reinforcement (3-turn) latest/peak: {asFixed(consensusEval.rawCycleReinforcement3Latest, 4)} /{" "}
-                        {asFixed(consensusEval.rawCycleReinforcement3Peak, 4)} vs {asFixed(consensusEval.sanitizedCycleReinforcement3Latest, 4)} /{" "}
-                        {asFixed(consensusEval.sanitizedCycleReinforcement3Peak, 4)}
+                        {`RAW/SAN Cycle Reinforcement (${consensusEval.rawCycleReinforcementWindow}-turn / ${consensusEval.sanitizedCycleReinforcementWindow}-turn) latest/peak:`}{" "}
+                        {asFixed(consensusEval.rawCycleReinforcementLatest, 4)} /{" "}
+                        {asFixed(consensusEval.rawCycleReinforcementPeak, 4)} vs {asFixed(consensusEval.sanitizedCycleReinforcementLatest, 4)} /{" "}
+                        {asFixed(consensusEval.sanitizedCycleReinforcementPeak, 4)}
                       </p>
                       <p className="mono">
                         RAW/SAN Basin State (latest): {basinStateLabel(consensusEval.rawBasinStateLatest)} / {basinStateLabel(consensusEval.sanitizedBasinStateLatest)}
