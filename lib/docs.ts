@@ -48,34 +48,41 @@ Interpretation guardrail:
 Do not infer reasoning quality from Cv alone.
 The key signal is comparative FTF separation between raw and sanitized loops under identical deterministic settings.`;
 
-export const guardianSpecText = `Overview
-GuardianAI Core is a structural observation and gating engine.
-It produces telemetry and gate decisions derived from structural properties of model outputs.
+export const guardianPaperUrl = "https://zenodo.org/records/19219811";
 
-Framing
-GuardianAI doesn't detect wrong answers.
-It detects when systems close faster than their constraints justify.
+export const guardianSpecText = `GuardianAI
+GuardianAI is structural epistemic infrastructure for recursive AI systems.
 
-In deterministic contracts, this shows up instantly because the constraint is binary.
-In real pipelines, the same drift often unfolds gradually across steps and decisions.
+What it does
+GuardianAI does not detect wrong answers.
+It detects when a trajectory closes faster than its external constraints justify.
 
-The lab demo isolates the mechanism.
-In production systems, that same dynamic can remain invisible unless something observes it.
+Published grounding
+The Zenodo paper "Error Persistence in Recursive LLM Systems: Trajectory State Determines Whether Perturbations Persist or Decay" shows that error persistence is not just a model property.
+It depends on trajectory state under recursive reuse.
 
-Core Design Principles
-1. Structural Signal Basis
-2. No Semantic Interpretation
-3. Deterministic Gate Logic
-4. Trajectory Awareness
-5. Separation from Contract Enforcement
+In RAW recursive reuse, reinforcement accumulates and perturbations persist.
+In SANITIZED control, the same perturbation decays because the trajectory stays open and revisable.
 
-Intended Role
-GuardianAI Core is a structural boundary observer designed to detect instability and deterministic contract drift at the interface level.
+Operational role
+GuardianAI is a boundary observer for recursive AI systems.
+It monitors structural trajectory signals over time and emits read-only telemetry plus structural decision states.
+It does not react to single outputs. It evaluates whether a trajectory remains closed over time and is approaching a consequence-bearing boundary.
+Persistence is measured by failure to reopen as time passes, not by duration alone.
+It does not inspect semantics, judge truth content, generate answers, or enforce policy.
+
+Why it matters
+The lab isolates the mechanism in a controlled setting.
+In production systems, the same loss of revisability can stay hidden unless something observes trajectory state directly.
+
+Paper
+Zenodo: https://zenodo.org/records/19219811
+DOI: 10.5281/zenodo.19219811
 
 Access
 For https:// access endpoints contact thom (at) guardianai (dot) fr
 
-please send:
+Please send:
 1) Your web app domain(s) (if browser-based), and/or
 2) Your server public IP(s) (if server-to-server),
 3) A technical contact email
